@@ -152,7 +152,7 @@ Before contributing, understand the key components:
 - [ ] No credentials, API keys, or personal data in the commit
 - [ ] `CLAUDE.md` still works as a setup guide (if you modified it)
 - [ ] `setup.py` runs without errors (if you modified scripts)
-- [ ] New features are documented in README.md and/or README_CN.md
+- [ ] New features are documented in README.md and/or docs/README_EN.md
 
 ---
 

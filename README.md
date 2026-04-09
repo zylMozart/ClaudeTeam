@@ -1,20 +1,20 @@
 # ClaudeTeam
 
-[English](README.md) | [中文](docs/README_CN.md)
+[English](docs/README_EN.md) | [中文](README.md)
 
-> *Harness your Claude Code*
+> *Harness Your Claude Code*
 
-Your Claude Code agent keeps polluting its own context. Fix A, break B. Fix B, break A.
+你的 Claude Code 总在污染自己的上下文。修好 A，B 坏了。修好 B，A 又坏了。
 
-You don't need a smarter agent. You need a Harness — isolated agents, parallel execution, zero cross-contamination.
+你需要的不是更强的 Agent，而是一个 Harness —— 隔离的 Agent、并行执行、零交叉污染。
 
-**ClaudeTeam: your first Harness.** One repo, multiple Claude Code agents, coordinated through Feishu.
+**ClaudeTeam：你的第一个 Harness。** 一个仓库，多个 Claude Code Agent，通过飞书协同。
 
-*2025, Prompt Engineering. 2026, Harness Engineering.*
+*2025，Prompt Engineering。2026，Harness Engineering。*
 
-### Screenshots
+### 效果展示
 
-**Feishu Group Chat — Control your AI team in real-time**
+**飞书群聊 — 实时操控 AI Agent 团队**
 
 <table>
   <tr>
@@ -26,60 +26,60 @@ You don't need a smarter agent. You need a Harness — isolated agents, parallel
   </tr>
 </table>
 
-**tmux Backend — Claude Code agents running in parallel**
+**tmux 后台 — Claude Code Agent 并行运行**
 
 <p><img src="docs/media/example/tmux_example.png" width="800" /></p>
 
 ---
 
-## What It Does
+## 它能做什么
 
-ClaudeTeam turns Claude Code into a multi-agent system. Each agent runs in its own tmux window, has its own identity and memory, and communicates with teammates through a Feishu group chat. A manager agent coordinates the team, assigns tasks, reviews output, and reports to you.
+ClaudeTeam 把 Claude Code 变成多智能体系统。每个 Agent 运行在独立的 tmux 窗口中，拥有自己的身份、记忆和工作空间，通过飞书群聊与队友协作。一个 Manager Agent 负责统筹全局 —— 分配任务、审查产出、向你汇报。
 
-**How it works:**
+**工作原理：**
 
 ```
-You (Feishu group chat)
+你（飞书群聊）
   ↕
-Router (polls Feishu, delivers messages)
+路由守护进程（轮询飞书，分发消息）
   ↕
 ┌──────────┬──────────┬──────────┐
-│ Manager  │ Agent A  │ Agent B  │  ← tmux windows, each running Claude Code
-│(assigns) │(executes)│(executes)│     (you define the roles)
+│  主管     │ Agent A  │ Agent B  │  ← tmux 窗口，各自运行 Claude Code
+│(分配任务) │(执行任务) │(执行任务) │    （你来定义角色）
 └──────────┴──────────┴──────────┘
   ↕
-Feishu Bitable (message storage, status board, kanban)
+飞书多维表格（消息存储、状态看板、任务追踪）
 ```
 
-You talk to the team in a Feishu group. The manager distributes work. Agents execute, collaborate, and report back. All messages are logged in Feishu Bitable for full traceability.
+你在飞书群里发消息，主管分配工作，Agent 执行、协作、汇报。所有消息记录在飞书多维表格中，全程可追溯。
 
 ---
 
-## Features
+## 特性
 
-- **One-command setup** — Clone, run `setup.py`, CLAUDE.md is auto-generated for Claude Code
-- **Real-time collaboration** — Agents communicate through Feishu group chat with colored message cards
-- **Autonomous agents** — Each agent has its own identity, memory, workspace, and task queue
-- **Team management** — `/hire` and `/fire` slash commands to add or remove agents on the fly
-- **Watchdog** — Crashed agents auto-restart, with notifications
-- **Kanban board** — Task status synced to Feishu Bitable in real-time
-- **Extensible** — Add any role you need: architect, tester, researcher, ops, educator...
+- **一键启动** —— Clone 仓库、运行 `setup.py`，CLAUDE.md 自动生成供 Claude Code 读取
+- **实时协作** —— Agent 通过飞书群聊通讯，彩色消息卡片一眼看清谁在说话
+- **自治 Agent** —— 每个 Agent 拥有独立的身份、记忆、工作空间和任务队列
+- **团队管理** —— `/hire` 和 `/fire` 斜杠命令，随时增减 Agent
+- **自动看门狗** —— Agent 崩溃自动重启，飞书群内通知
+- **看板同步** —— 任务状态实时同步到飞书多维表格
+- **灵活扩展** —— 按需添加角色：架构师、测试、调研员、运维、教育者……
 
 ---
 
-## Prerequisites
+## 前提条件
 
 
-| Requirement     | Version    | Check                                    |
-| --------------- | ---------- | ---------------------------------------- |
-| macOS or Linux  | —          | —                                        |
-| Python          | 3.8+       | `python3 --version`                      |
-| tmux            | any        | `tmux -V`                                |
-| Claude Code CLI | latest     | `claude --version`                       |
-| Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
+| 依赖              | 版本   | 检查命令                                     |
+| --------------- | ---- | ---------------------------------------- |
+| macOS 或 Linux   | —    | —                                        |
+| Python          | 3.8+ | `python3 --version`                      |
+| tmux            | 任意   | `tmux -V`                                |
+| Claude Code CLI | 最新版  | `claude --version`                       |
+| 飞书账号            | 企业版  | [open.feishu.cn](https://open.feishu.cn) |
 
 
-Install Claude Code if you haven't:
+安装 Claude Code：
 
 ```bash
 npm install -g @anthropic-ai/claude-code
@@ -87,7 +87,7 @@ npm install -g @anthropic-ai/claude-code
 
 ---
 
-## Quick Start (30 Seconds)
+## 快速开始（30 秒）
 
 ```bash
 git clone https://github.com/zylMozart/ClaudeTeam.git
@@ -95,46 +95,46 @@ cd ClaudeTeam
 claude
 ```
 
-That's it. The setup generates `CLAUDE.md` automatically, which Claude Code reads on startup:
+就这么简单。初始化会自动生成 `CLAUDE.md`，Claude Code 启动时读取它：
 
-1. **Feishu credentials** — Create an app on Feishu Open Platform, paste your App ID and Secret
-2. **Team design** — Define your team roles (manager + whatever you need)
-3. **Auto-setup** — Creates Feishu group, Bitable tables, agent directories
-4. **Launch** — Starts all agents in tmux, begins operation
+1. **飞书凭证** —— 在飞书开放平台创建应用，粘贴 App ID 和 App Secret
+2. **设计团队** —— 定义你的团队角色（manager + 任何你需要的角色）
+3. **自动初始化** —— 创建飞书群组、多维表格、Agent 目录
+4. **启动** —— 在 tmux 中启动所有 Agent，开始运行
 
-The whole process takes about 5 minutes, most of which is creating the Feishu app.
+全程约 5 分钟，大部分时间花在创建飞书应用上。
 
 ---
 
-## Manual Setup (If You Prefer)
+## 手动设置（如果你更喜欢）
 
-Click to expand manual setup steps
+点击展开手动设置步骤
 
-### 1. Configure Feishu Credentials
+### 1. 配置飞书凭证
 
 ```bash
 cp .env.example .env
-# Edit .env with your Feishu App ID and App Secret
+# 编辑 .env，填入飞书 App ID 和 App Secret
 ```
 
-**Getting Feishu credentials:**
+**获取飞书凭证：**
 
-1. Visit [Feishu Open Platform](https://open.feishu.cn) → Developer Console
-2. Create a Custom App (企业自建应用)
-3. Copy App ID and App Secret from Credentials page
-4. Add required permissions:
-  - `bitable:app` (Bitable full access)
-  - `im:chat` (Chat management)
-  - `im:message` (Send & receive messages)
-  - `im:resource` (Upload & download files)
-5. (Optional) For document sync features, also add:
-  - `docx:document` (Document read/write)
-  - `drive:drive` (Drive file management)
-6. Publish the app
+1. 访问 [飞书开放平台](https://open.feishu.cn) → 开发者后台
+2. 创建企业自建应用
+3. 在「凭证与基础信息」页面复制 App ID 和 App Secret
+4. 添加必选权限：
+  - `bitable:app`（多维表格）
+  - `im:chat`（群组管理）
+  - `im:message`（消息收发）
+  - `im:resource`（文件上传下载）
+5. （可选）如需文档同步功能，还需添加：
+  - `docx:document`（文档读写）
+  - `drive:drive`（云空间管理）
+6. 发布应用
 
-### 2. Define Your Team
+### 2. 定义团队
 
-Create `team.json` in the project root. Every team must include a `manager`; add any other roles you need. See `templates/` for identity templates.
+在项目根目录创建 `team.json`。每个团队必须包含 `manager`，其他角色自行定义。参考 `templates/` 目录下的身份模板。
 
 ```json
 {
@@ -145,194 +145,192 @@ Create `team.json` in the project root. Every team must include a `manager`; add
 }
 ```
 
-### 3. Install Dependencies and Initialize
+### 3. 安装依赖并初始化
 
 ```bash
 pip install -r requirements.txt
 python3 scripts/setup.py
 ```
 
-### 4. Launch
+### 4. 启动
 
 ```bash
 bash scripts/start-team.sh
 ```
 
-
-
 ---
 
-## Usage
+## 使用方法
 
-### Talking to Your Team
+### 与团队对话
 
-Send messages in the Feishu group chat. The manager agent reads them and distributes work. You can @mention specific agents to talk to them directly.
+在飞书群聊中发消息，主管 Agent 会阅读并分配工作。你可以 @某个 Agent 直接与其对话。
 
-### Viewing the Team
+### 查看团队
 
 ```bash
-# Attach to the tmux session
+# 进入 tmux 会话
 tmux attach -t <session-name>
 
-# Navigate between agent windows
-Ctrl+B, n     # next window
-Ctrl+B, p     # previous window
-Ctrl+B, 0-9   # jump to window by number
+# 切换 Agent 窗口
+Ctrl+B, n     # 下一个窗口
+Ctrl+B, p     # 上一个窗口
+Ctrl+B, 0-9   # 按编号跳转
 
-# Detach (leave running in background)
+# 分离（保持后台运行）
 Ctrl+B, d
 ```
 
-### Managing Agents
+### 管理 Agent
 
-From within Claude Code (as manager):
+在 Claude Code 中（以 manager 身份）：
 
 ```
-/hire <role-name> "<role-description>"
-/fire <role-name>
+/hire <角色名> "<角色描述>"
+/fire <角色名>
 ```
 
-### Communication Commands
+### 通讯命令
 
-All agents use `feishu_msg.py` for communication:
+所有 Agent 使用 `feishu_msg.py` 通讯：
 
 ```bash
-# Send direct message
-python3 scripts/feishu_msg.py send <to> <from> "<message>" [高|中|低]
+# 发送私信
+python3 scripts/feishu_msg.py send <收件人> <发件人> "<消息>" [高|中|低]
 
-# Post to group chat
-python3 scripts/feishu_msg.py say <name> "<message>"
+# 群聊发言
+python3 scripts/feishu_msg.py say <名字> "<消息>"
 
-# Check inbox
-python3 scripts/feishu_msg.py inbox <name>
+# 查看收件箱
+python3 scripts/feishu_msg.py inbox <名字>
 
-# Update status
-python3 scripts/feishu_msg.py status <name> <状态> "<description>"
+# 更新状态
+python3 scripts/feishu_msg.py status <名字> <状态> "<描述>"
 
-# Log work
-python3 scripts/feishu_msg.py log <name> 任务日志 "<what you did>"
+# 记录日志
+python3 scripts/feishu_msg.py log <名字> 任务日志 "<做了什么>"
 ```
 
 ---
 
-## Team Customization
+## 团队自定义
 
-Every team must include a **manager** agent. Beyond that, you define whatever roles your project needs — there are no fixed templates. During the guided setup, Claude will ask you what roles to create.
+每个团队必须包含一个 **manager** Agent。除此之外，你可以定义任何你需要的角色 —— 没有固定模板。在引导式设置中，Claude 会询问你需要哪些角色。
 
-Use `/hire` and `/fire` to add or remove agents at any time. See `templates/` for the identity templates used when creating new agents.
+使用 `/hire` 和 `/fire` 随时增减 Agent。参考 `templates/` 目录下的身份模板了解角色定义方式。
 
 ---
 
-## Project Structure
+## 项目结构
 
 ```
 ClaudeTeam/
-├── README.md                  # This file
-├── LICENSE                    # MIT
-├── .env.example               # Credential template
-├── requirements.txt           # Python dependencies
+├── README.md                  # 本文件（中文文档）
+├── LICENSE                    # MIT 许可证
+├── .env.example               # 凭证模板
+├── requirements.txt           # Python 依赖
 │
-├── docs/                      # Documentation
-│   ├── POLICY.md              # Team communication rules
-│   ├── README_CN.md           # Chinese documentation
-│   └── CONTRIBUTING.md        # Contribution guidelines
+├── docs/                      # 文档
+│   ├── POLICY.md              # 团队通讯规范
+│   ├── README_EN.md           # English documentation
+│   └── CONTRIBUTING.md        # 贡献指南
 │
-├── scripts/                   # Runtime scripts
-│   ├── config.py              # Configuration loader
-│   ├── setup.py               # One-time initialization
-│   ├── start-team.sh          # Team launcher
-│   ├── feishu_msg.py          # Message bus
-│   ├── feishu_router.py       # Message router daemon
-│   ├── tmux_utils.py          # tmux utilities
-│   ├── token_cache.py         # Feishu token management
-│   ├── hire_agent.py          # Agent creation helper
-│   ├── fire_agent.py          # Agent removal helper
-│   ├── watchdog.py            # Process monitor
-│   ├── memory_manager.py      # Agent memory management
-│   ├── kanban_sync.py         # Kanban board sync
-│   ├── task_tracker.py        # Task tracking system
-│   ├── feishu_sync.py         # File sync to Feishu Docs (optional)
-│   └── upload_folded_doc.py   # Markdown to Feishu Docs (optional)
+├── scripts/                   # 运行时脚本
+│   ├── config.py              # 配置加载器
+│   ├── setup.py               # 一键初始化
+│   ├── start-team.sh          # 团队启动器
+│   ├── feishu_msg.py          # 消息总线
+│   ├── feishu_router.py       # 消息路由守护进程
+│   ├── tmux_utils.py          # tmux 工具
+│   ├── token_cache.py         # 飞书 Token 管理
+│   ├── hire_agent.py          # Agent 招聘助手
+│   ├── fire_agent.py          # Agent 裁撤助手
+│   ├── watchdog.py            # 进程监控
+│   ├── memory_manager.py      # Agent 记忆管理
+│   ├── kanban_sync.py         # 看板同步
+│   ├── task_tracker.py        # 任务追踪
+│   ├── feishu_sync.py         # 文件同步到飞书文档（可选）
+│   └── upload_folded_doc.py   # Markdown 上传飞书文档（可选）
 │
-├── templates/                 # Identity templates
-│   ├── manager.identity.md    # Manager role template
-│   └── worker.identity.md     # Generic worker template
+├── templates/                 # 身份模板
+│   ├── manager.identity.md    # 主管角色模板
+│   └── worker.identity.md     # 通用员工模板
 │
-└── .claude/skills/            # Slash commands
-    ├── hire/SKILL.md           # /hire command
-    └── fire/SKILL.md           # /fire command
+└── .claude/skills/            # 斜杠命令
+    ├── hire/SKILL.md           # /hire 命令
+    └── fire/SKILL.md           # /fire 命令
 ```
 
-**Runtime-generated (gitignored):** `.env`, `team.json`, `CLAUDE.md`, `agents/`, `workspace/`, `scripts/runtime_config.json`
+**运行时生成（已 gitignore）：** `.env`、`team.json`、`CLAUDE.md`、`agents/`、`workspace/`、`scripts/runtime_config.json`
 
 ---
 
-## How It Works (Architecture)
+## 工作原理（架构）
 
-### Message Flow
+### 消息流
 
-1. **User** posts in Feishu group chat
-2. **Router** (`feishu_router.py`) polls the group every 3 seconds, detects new messages
-3. Router parses @mentions and injects the message into the target agent's tmux window
-4. **Agent** (Claude Code) processes the message, executes tasks
-5. Agent uses `feishu_msg.py` to respond — message appears in Feishu group + Bitable
+1. **用户** 在飞书群聊发消息
+2. **路由器**（`feishu_router.py`）每 3 秒轮询群消息，检测新消息
+3. 路由器解析 @提及，将消息注入目标 Agent 的 tmux 窗口
+4. **Agent**（Claude Code）处理消息，执行任务
+5. Agent 使用 `feishu_msg.py` 回复 —— 消息同时出现在飞书群和多维表格中
 
-### Infrastructure
-
-
-| Component   | Script             | Purpose                                        |
-| ----------- | ------------------ | ---------------------------------------------- |
-| Message Bus | `feishu_msg.py`    | Send/receive messages, update status, log work |
-| Router      | `feishu_router.py` | Poll Feishu group → deliver to agents via tmux |
-| Watchdog    | `watchdog.py`      | Monitor processes, auto-restart on failure     |
-| Kanban      | `kanban_sync.py`   | Sync task status to Feishu Bitable             |
-| Token Cache | `token_cache.py`   | Cache Feishu API tokens (1.5h TTL)             |
+### 基础设施
 
 
-### Agent Lifecycle
+| 组件       | 脚本                 | 用途                         |
+| -------- | ------------------ | -------------------------- |
+| 消息总线     | `feishu_msg.py`    | 收发消息、更新状态、记录日志             |
+| 路由器      | `feishu_router.py` | 轮询飞书群 → 通过 tmux 分发给 Agent  |
+| 看门狗      | `watchdog.py`      | 监控进程，崩溃自动重启                |
+| 看板       | `kanban_sync.py`   | 任务状态同步到飞书多维表格              |
+| Token 缓存 | `token_cache.py`   | 缓存飞书 API Token（1.5 小时 TTL） |
+
+
+### Agent 生命周期
 
 ```
-/hire → create directory → generate identity.md → create Bitable table
-     → open tmux window → start Claude Code → send init message
-     → agent reads identity → checks inbox → starts working
+/hire → 创建目录 → 生成 identity.md → 创建多维表格
+     → 打开 tmux 窗口 → 启动 Claude Code → 发送初始化消息
+     → Agent 读取身份 → 查收件箱 → 开始工作
 
-/fire → archive workspace → close tmux window → remove from team.json
-     → clean up Bitable resources
+/fire → 归档工作空间 → 关闭 tmux 窗口 → 从 team.json 移除
+     → 清理飞书资源
 ```
 
 ---
 
-## FAQ
+## 常见问题
 
-**Q: Does this work with other LLMs?**
-A: Currently ClaudeTeam is built specifically for Claude Code. The agent harness (tmux management, message routing, identity system) could theoretically work with other CLI-based LLM tools, but this hasn't been tested.
+**Q：支持其他大模型吗？**
+A：目前 ClaudeTeam 专为 Claude Code 构建。Agent 外壳（tmux 管理、消息路由、身份系统）理论上可以适配其他 CLI 大模型工具，但尚未测试。
 
-**Q: Can I use Slack/Discord instead of Feishu?**
-A: Not out of the box. The messaging layer (`feishu_msg.py`) is Feishu-specific. You'd need to rewrite the message bus and router for another platform.
+**Q：能用 Slack/Discord 替代飞书吗？**
+A：开箱不支持。消息层（`feishu_msg.py`）是飞书专用的，替换平台需要重写消息总线和路由器。
 
-**Q: How many agents can I run?**
-A: Tested with up to 10 agents on a single machine. Each agent is a Claude Code process, so resource usage scales linearly. 8GB RAM handles 5 agents comfortably.
+**Q：能跑多少个 Agent？**
+A：单机测试过最多 10 个。每个 Agent 是一个 Claude Code 进程，资源消耗线性增长。8GB 内存可以舒适运行 5 个 Agent。
 
-**Q: Is it safe to use `--dangerously-skip-permissions`?**
-A: This flag lets agents execute commands without manual approval, which is required for autonomous operation. Only use this in trusted environments. The agents operate within their workspace directories, but exercise caution with what tasks you assign.
+**Q：`--dangerously-skip-permissions` 安全吗？**
+A：该标志允许 Agent 无需手动审批就执行命令，这是自治运行的必要条件。请仅在可信环境中使用，谨慎评估分配的任务。
 
-**Q: What if an agent crashes?**
-A: The watchdog monitors all agent processes and auto-restarts them. You'll see a notification in the Feishu group when this happens.
+**Q：Agent 崩溃了怎么办？**
+A：看门狗会监控所有 Agent 进程并自动重启，飞书群内会收到通知。
 
-**Q: Can I stop and resume the team?**
-A: Yes. Detach from tmux (`Ctrl+B, d`) — agents keep running in the background. To fully stop: `tmux kill-session -t <session-name>`. To resume: `bash scripts/start-team.sh`.
+**Q：能停止后再恢复吗？**
+A：可以。tmux 分离（`Ctrl+B, d`）后 Agent 保持后台运行。完全停止：`tmux kill-session -t <session-name>`。恢复：`bash scripts/start-team.sh`。
 
-**Q: How much does it cost?**
-A: ClaudeTeam itself is free and open source. Costs come from Claude API usage (each agent makes API calls) and Feishu (free tier is sufficient for most teams).
-
----
-
-## Contributing
-
-Contributions are welcome! Please see [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on how to submit issues, pull requests, and follow our code style.
+**Q：要花多少钱？**
+A：ClaudeTeam 本身免费开源。费用来自 Claude API 调用（每个 Agent 会消耗 API 额度）和飞书（免费版足够大多数团队使用）。
 
 ---
 
-## License
+## 贡献
 
-[MIT](LICENSE) — Use it however you want.
+欢迎贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解提交 Issue 和 Pull Request 的规范。
+
+---
+
+## 许可证
+
+[MIT](LICENSE) —— 随便用。
