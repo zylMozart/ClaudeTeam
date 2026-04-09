@@ -12,6 +12,24 @@ You don't need a smarter agent. You need a Harness — isolated agents, parallel
 
 *2025, Prompt Engineering. 2026, Harness Engineering.*
 
+### Screenshots
+
+**Feishu Group Chat — Control your AI team in real-time**
+
+<table>
+  <tr>
+    <td><img src="docs/media/example/feishu_example1.jpg" width="200" /></td>
+    <td><img src="docs/media/example/feishu_example2.jpg" width="200" /></td>
+    <td><img src="docs/media/example/feishu_example3.jpg" width="200" /></td>
+    <td><img src="docs/media/example/feishu_example4.jpg" width="200" /></td>
+    <td><img src="docs/media/example/feishu_example5.jpg" width="200" /></td>
+  </tr>
+</table>
+
+**tmux Backend — Claude Code agents running in parallel**
+
+<p><img src="docs/media/example/tmux_example.png" width="800" /></p>
+
 ---
 
 ## What It Does
@@ -34,24 +52,6 @@ Feishu Bitable (message storage, status board, kanban)
 ```
 
 You talk to the team in a Feishu group. The manager distributes work. Agents execute, collaborate, and report back. All messages are logged in Feishu Bitable for full traceability.
-
-### Screenshots
-
-**Feishu Group Chat — Control your AI team in real-time**
-
-<table>
-  <tr>
-    <td><img src="docs/media/example/feishu_example1.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example2.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example3.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example4.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example5.jpg" width="200" /></td>
-  </tr>
-</table>
-
-**tmux Backend — Claude Code agents running in parallel**
-
-<p><img src="docs/media/example/tmux_example.png" width="800" /></p>
 
 ---
 
