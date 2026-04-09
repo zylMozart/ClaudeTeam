@@ -231,7 +231,6 @@ ClaudeTeam/
 ├── requirements.txt           # Python dependencies
 │
 ├── docs/                      # Documentation
-│   ├── SETUP_GUIDE.md         # Setup guide template (used to generate CLAUDE.md)
 │   ├── POLICY.md              # Team communication rules
 │   ├── README_CN.md           # Chinese documentation
 │   └── CONTRIBUTING.md        # Contribution guidelines
