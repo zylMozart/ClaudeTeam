@@ -4,11 +4,13 @@
 
 > *Harness your Claude Code*
 
-**Clone the repo, run setup, and watch an entire AI team spin up — connected to Feishu, fully autonomous, zero config.**
+Your Claude Code agent keeps polluting its own context. Fix A, break B. Fix B, break A.
 
-Build and run AI agent teams that collaborate through Feishu, powered by Claude Code.
+You don't need a smarter agent. You need a Harness — isolated agents, parallel execution, zero cross-contamination.
 
-One markdown file. One command. A full AI team — each member running autonomously, communicating in real-time, coordinated by an AI manager.
+**ClaudeTeam: your first Harness.** One repo, multiple Claude Code agents, coordinated through Feishu.
+
+*2025, Prompt Engineering. 2026, Harness Engineering.*
 
 ---
 

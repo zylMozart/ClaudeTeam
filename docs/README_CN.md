@@ -4,11 +4,13 @@
 
 > *Harness Your Claude Code*
 
-**Clone 仓库、运行初始化，一支 AI 团队自动组建 —— 接入飞书、全员自治、零配置。**
+你的 Claude Code 总在污染自己的上下文。修好 A，B 坏了。修好 B，A 又坏了。
 
-基于 Claude Code + 飞书的 AI 多智能体团队协作框架。
+你需要的不是更强的 Agent，而是一个 Harness —— 隔离的 Agent、并行执行、零交叉污染。
 
-一个 Markdown 文件，一条命令，一支完整的 AI 团队 —— 每个成员独立运行、实时沟通、由 AI 主管统一调度。
+**ClaudeTeam：你的第一个 Harness。** 一个仓库，多个 Claude Code Agent，通过飞书协同。
+
+*2025，Prompt Engineering。2026，Harness Engineering。*
 
 ---
 
