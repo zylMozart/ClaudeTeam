@@ -1,0 +1,33 @@
+# ── 凭证与运行时配置（绝不入库）──
+.env
+scripts/runtime_config.json
+scripts/sync_manifest.json
+scripts/.router_seen_ids.json
+scripts/.token_cache.json
+
+# ── 运行时生成的文件与目录 ──
+CLAUDE.md
+agents/
+workspace/
+team.json
+
+# ── 数据库 ──
+*.db
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ── macOS ──
+.DS_Store
+
+# ── 编辑器 ──
+.vscode/
+.idea/
+*.swp
+
+# ── 其他 ──
+.playwright-mcp/
+tools/
