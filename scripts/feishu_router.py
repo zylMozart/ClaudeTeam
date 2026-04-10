@@ -11,6 +11,7 @@ from config import BASE, AGENTS, TMUX_SESSION, ROUTER_POLL_INTERVAL, PROJECT_ROO
 from tmux_utils import inject_when_idle, is_agent_idle
 from feishu_api import get_token, h
 from token_cache import invalidate as _invalidate_token
+from msg_parser import parse_message
 
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", "images")
 
@@ -432,88 +433,22 @@ def main():
                 if create_ts * 1000 > since_ts:
                     since_ts = int(time.time() * 1000)
 
-                # 解析消息内容（按 msg_type 分支处理）
-                msg_type    = msg.get("msg_type", "text")
-                content_raw = msg.get("body", {}).get("content", "{}")
+                # 解析消息内容
+                parsed = parse_message(msg)
+                if parsed["skipped"]:
+                    print(f"  ⏭️  跳过不支持的消息类型: {parsed['msg_type']}")
+                    continue
+                text = parsed["text"]
+                msg_type = parsed["msg_type"]
                 create_time = msg.get("create_time", str(int(time.time())))
 
-                if msg_type == "image":
-                    # 方案 C：图片异步下载，先投递占位通知
-                    content_obj = json.loads(content_raw) if content_raw else {}
-                    image_key   = content_obj.get("image_key", "")
-                    text = f"[图片消息] image_key: {image_key}（下载中...）"
-                    # 异步下载（目标 agent 在路由阶段确定后再绑定回调）
+                # 方案 C：图片异步下载
+                for image_key in parsed["image_keys"]:
                     _img_futures.append({
                         "future": _download_pool.submit(
                             download_image, token, msg_id, image_key, create_time),
                         "msg_id": msg_id,
                     })
-
-                elif msg_type == "text":
-                    try:
-                        content_obj = json.loads(content_raw)
-                        text = content_obj.get("text", "")
-                    except Exception:
-                        text = content_raw
-
-                elif msg_type == "post":
-                    try:
-                        content_obj = json.loads(content_raw) if content_raw else {}
-                    except Exception:
-                        content_obj = {}
-                    # 递归提取所有文本，不逐个解析标签
-                    def _extract_text(obj):
-                        parts = []
-                        if isinstance(obj, dict):
-                            if obj.get("tag") == "img":
-                                image_key = obj.get("image_key", "")
-                                if image_key:
-                                    _img_futures.append({
-                                        "future": _download_pool.submit(
-                                            download_image, token, msg_id,
-                                            image_key, create_time),
-                                        "msg_id": msg_id,
-                                    })
-                            elif "text" in obj:
-                                parts.append(obj["text"])
-                            for v in obj.values():
-                                if isinstance(v, (dict, list)):
-                                    parts.extend(_extract_text(v))
-                        elif isinstance(obj, list):
-                            for item in obj:
-                                parts.extend(_extract_text(item))
-                        return parts
-                    text_parts = _extract_text(content_obj)
-                    text = " ".join(t for t in text_parts if t).strip()
-                    if not text and not _img_futures:
-                        text = "[富文本消息，无法解析内容]"
-
-                elif msg_type == "interactive":
-                    # 消息卡片：飞书 API 返回的 body.content 是简化格式
-                    # 格式: {"title":"emoji agent · role","elements":[[{"tag":"text","text":"内容"}]]}
-                    try:
-                        card = json.loads(content_raw) if content_raw else {}
-                        # title 是扁平字符串（非嵌套的 header.title.content）
-                        header_text = card.get("title", "")
-                        if not header_text:
-                            header_text = card.get("header", {}).get("title", {}).get("content", "")
-                        # elements 是双层数组 [[{tag,text},...],...]
-                        body_parts = []
-                        for row in card.get("elements", []):
-                            if isinstance(row, list):
-                                for elem in row:
-                                    if isinstance(elem, dict):
-                                        body_parts.append(elem.get("text", "") or elem.get("content", ""))
-                            elif isinstance(row, dict):
-                                body_parts.append(row.get("content", "") or row.get("text", ""))
-                        body_text = "\n".join(p for p in body_parts if p)
-                        text = f"{header_text}\n{body_text}" if header_text else body_text
-                    except Exception:
-                        text = content_raw
-
-                else:
-                    print(f"  ⏭️  跳过不支持的消息类型: {msg_type}")
-                    continue
 
                 sender_id = msg.get("sender", {}).get("id", "")
                 print(f"[{time.strftime('%H:%M:%S')}] 新消息: {text[:10000]}")
