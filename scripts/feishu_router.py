@@ -3,7 +3,7 @@
 Router Daemon — 轮询飞书群组消息，解析 @mention，路由到对应 tmux 窗口
 运行：python3 scripts/feishu_router.py
 """
-import sys, os, json, time, re, subprocess, requests, threading, atexit, signal
+import sys, os, json, time, re, subprocess, requests, atexit, signal
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -12,6 +12,7 @@ from tmux_utils import inject_when_idle, is_agent_idle
 from feishu_api import get_token, h
 from token_cache import invalidate as _invalidate_token
 from msg_parser import parse_message
+from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
 
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", "images")
 
@@ -87,137 +88,6 @@ def parse_sender(text):
             return name
     return None
 
-# ── 消息待投递队列（方案 A）─────────────────────────────────────
-
-PENDING_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", ".pending_msgs")
-_queue_lock = threading.Lock()  # 保护队列文件读写（回调线程 + 主线程）
-
-def queue_message(agent_name, msg_text, msg_id, is_user_msg=False):
-    """将消息加入待投递队列（线程安全）"""
-    with _queue_lock:
-        os.makedirs(PENDING_DIR, exist_ok=True)
-        queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
-
-        queue = []
-        if os.path.exists(queue_file):
-            with open(queue_file) as f:
-                queue = json.load(f)
-
-        # 去重：同一 msg_id 不重复入队
-        if any(m["msg_id"] == msg_id for m in queue):
-            return
-
-        queue.append({
-            "msg_id": msg_id,
-            "text": msg_text,
-            "is_user_msg": is_user_msg,
-            "queued_at": time.time(),
-            "attempts": 0,
-            "last_attempt": 0,
-        })
-
-        _save_queue_unlocked(agent_name, queue)
-
-def _save_queue_unlocked(agent_name, queue):
-    """保存队列，清理超过 10 分钟的过期消息（调用方需持有 _queue_lock）"""
-    now = time.time()
-
-    # 检查并记录即将过期的消息
-    expired = [m for m in queue if now - m["queued_at"] >= 600]
-    for m in expired:
-        wait_secs = int(now - m["queued_at"])
-        msg_id_short = m.get("msg_id", "?")[:8]
-        if m.get("is_user_msg"):
-            print(f"  ⚠️ [{agent_name}] 用户消息过期丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s")
-        else:
-            print(f"  🗑️ [{agent_name}] 队列消息过期丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s")
-
-    queue = [m for m in queue if now - m["queued_at"] < 600]
-
-    os.makedirs(PENDING_DIR, exist_ok=True)
-    queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
-    with open(queue_file, "w") as f:
-        json.dump(queue, f, ensure_ascii=False)
-
-def try_deliver_pending(agent_name):
-    """尝试投递队列中的待处理消息（线程安全）"""
-    with _queue_lock:
-        queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
-        if not os.path.exists(queue_file):
-            return
-
-        with open(queue_file) as f:
-            queue = json.load(f)
-
-        if not queue:
-            return
-
-        # 检查 agent 是否空闲
-        if not is_agent_idle(TMUX_SESSION, agent_name):
-            # 不空闲：检查是否需要紧急升级（用户消息等待超过 30 秒）
-            oldest_user_msg = next(
-                (m for m in queue if m["is_user_msg"]), None
-            )
-            if oldest_user_msg:
-                wait_time = time.time() - oldest_user_msg["queued_at"]
-                if wait_time > 30 and oldest_user_msg["attempts"] < 3:
-                    urgent_prompt = (
-                        f"⚠️【紧急】你有 {len(queue)} 条未处理消息"
-                        f"（用户消息等待 {int(wait_time)} 秒）。\n"
-                        f"请尽快处理当前任务后执行: "
-                        f"python3 scripts/feishu_msg.py inbox {agent_name}"
-                    )
-                    inject_when_idle(TMUX_SESSION, agent_name, urgent_prompt,
-                                    wait_secs=2, force_after_wait=True)
-                    oldest_user_msg["attempts"] += 1
-                    oldest_user_msg["last_attempt"] = time.time()
-                    _save_queue_unlocked(agent_name, queue)
-            return
-
-        # 空闲：投递队列中最早的消息
-        msg = queue[0]
-        ok = inject_when_idle(TMUX_SESSION, agent_name, msg["text"],
-                              wait_secs=2, force_after_wait=False)
-        if ok:
-            queue.pop(0)
-            print(f"  ✅ 待投递消息已送达 {agent_name} (msg_id: {msg['msg_id'][:8]})")
-        else:
-            msg["attempts"] += 1
-            msg["last_attempt"] = time.time()
-
-        _save_queue_unlocked(agent_name, queue)
-
-# ── Manager 未读提醒（方案 D）───────────────────────────────────
-
-_last_unread_check = 0
-UNREAD_CHECK_INTERVAL = 30  # 秒
-
-def check_manager_unread():
-    """检查 manager 是否有积压的未读用户消息"""
-    global _last_unread_check
-    now = time.time()
-    if now - _last_unread_check < UNREAD_CHECK_INTERVAL:
-        return
-    _last_unread_check = now
-
-    queue_file = os.path.join(PENDING_DIR, "manager.json")
-    if not os.path.exists(queue_file):
-        return
-
-    with open(queue_file) as f:
-        queue = json.load(f)
-
-    user_msgs = [m for m in queue if m["is_user_msg"]]
-    if not user_msgs:
-        return
-
-    oldest_wait = now - min(m["queued_at"] for m in user_msgs)
-    if oldest_wait > 60:
-        if is_agent_idle(TMUX_SESSION, "manager"):
-            try_deliver_pending("manager")
-        else:
-            print(f"  ⚠️ Manager 有 {len(user_msgs)} 条用户消息积压 {int(oldest_wait)}s")
-
 # ── 触发 tmux 窗口 ────────────────────────────────────────────
 
 def wake_agent(agent_name, message_preview, sender_agent=None,
@@ -255,13 +125,7 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
     is_user_msg = (sender_agent is None)
 
     # 检查该 agent 的待投递队列是否有积压消息
-    has_pending = False
-    with _queue_lock:
-        queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
-        if os.path.exists(queue_file):
-            with open(queue_file) as f:
-                pending = json.load(f)
-            has_pending = len(pending) > 0
+    has_pending = has_pending_messages(agent_name)
 
     # 仅当队列为空且 agent 空闲时，才可以直接投递（保证 FIFO）
     if not has_pending and is_agent_idle(TMUX_SESSION, agent_name):
@@ -272,9 +136,9 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
             return
 
     # 队列有积压 或 agent 忙碌 → 入队等待（保证 FIFO 顺序）
-    queue_message(agent_name, prompt, msg_id, is_user_msg=is_user_msg)
+    enqueue_message(agent_name, prompt, msg_id, is_user_msg=is_user_msg)
     if has_pending:
-        print(f"  📥 消息已入队 {agent_name}（队列有 {len(pending)} 条积压，保证 FIFO）")
+        print(f"  📥 消息已入队 {agent_name}（队列有积压，保证 FIFO）")
     else:
         print(f"  📥 消息已入队 {agent_name}（agent 忙碌，等待投递）")
 
@@ -319,7 +183,7 @@ def _on_image_downloaded(future, agent_name, msg_id):
                 f"本地路径: {local_path}\n"
                 f"你可以使用 Read 工具查看图片。"
             )
-            queue_message(agent_name, notify, f"{msg_id}_img", is_user_msg=True)
+            enqueue_message(agent_name, notify, f"{msg_id}_img", is_user_msg=True)
     except Exception as e:
         print(f"  ⚠️ 图片下载回调异常: {e}")
 
@@ -398,8 +262,8 @@ def main():
         sys.exit(1)
 
     seen = load_seen()
-    # 从当前时间开始，只处理新消息
     since_ts = int(time.time() * 1000)
+    last_unread_check = 0
 
     print(f"💬 监听群组: {chat_id}")
     print(f"🔄 轮询间隔: {ROUTER_POLL_INTERVAL}s")
@@ -523,8 +387,8 @@ def main():
 
             # 方案 A + D：每轮尝试投递所有 agent 的待处理消息
             for agent_name in reload_agents():
-                try_deliver_pending(agent_name)
-            check_manager_unread()
+                dequeue_pending(agent_name)
+            last_unread_check = check_manager_unread(last_unread_check)
 
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️  Router 异常: {e}")
