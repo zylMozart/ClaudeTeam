@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 飞书配置中心 — ClaudeTeam 项目
 
@@ -7,9 +8,8 @@ Agent 团队定义从项目根目录 team.json 读取。
 import sys as _sys, os as _os, json as _json
 
 # 项目根目录
-import os
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_FILE  = os.path.join(PROJECT_ROOT, "scripts", "runtime_config.json")
+PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+CONFIG_FILE  = _os.path.join(PROJECT_ROOT, "scripts", "runtime_config.json")
 
 def _load_env():
     """从项目根目录的 .env 加载环境变量（优先用 python-dotenv，否则手动解析）。"""
