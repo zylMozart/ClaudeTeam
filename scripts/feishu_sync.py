@@ -198,7 +198,8 @@ def sync_one_file(token, rel_path, manifest, verbose=True):
             print(f"  ─ 未变化，跳过: {rel_path}")
         return
 
-    content = open(abs_path, encoding="utf-8").read()
+    with open(abs_path, encoding="utf-8") as f:
+        content = f.read()
     folder_token = manifest["folder_token"]
     doc_title = rel_path.replace("/", "_").replace(".md", "")
 

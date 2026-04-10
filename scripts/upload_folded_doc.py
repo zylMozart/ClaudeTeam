@@ -171,7 +171,8 @@ def main():
         print("❌ 未配置 sync_folder_token")
         sys.exit(1)
 
-    content = open(abs_path, encoding="utf-8").read()
+    with open(abs_path, encoding="utf-8") as f:
+        content = f.read()
     token = get_token()
 
     # 解析 Markdown
