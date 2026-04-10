@@ -10,10 +10,12 @@ from config import BASE, AGENTS, CONFIG_FILE, TMUX_SESSION, save_runtime_config
 from feishu_api import get_token, h, now_ms
 
 
-def _api(method, url, token, **kwargs):
-    """发送飞书 API 请求并检查返回值。"""
+def _api(method, url, token, label="API", **kwargs):
+    """发送飞书 API 请求，失败时打印警告。返回响应 dict。"""
     r = requests.request(method, url, headers=h(token), **kwargs)
     d = r.json()
+    if d.get("code") != 0 and d.get("code") is not None:
+        print(f"   ⚠️ {label}: {d.get('msg', d)}")
     return d
 
 
@@ -37,9 +39,10 @@ def configure_inbox_table(token, bitable_token, table_id):
     """配置消息收件箱表（重命名默认表字段 + 添加新字段）。"""
     print("📬 配置消息收件箱表...")
     _api("PATCH", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}", token,
-         json={"name": "消息收件箱"})
+         label="重命名收件箱表", json={"name": "消息收件箱"})
 
-    d = _api("GET", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields", token)
+    d = _api("GET", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields", token,
+             label="获取字段列表")
     fields = d.get("data", {}).get("items", [])
     field_map = {"文本": ("消息内容", 1), "单选": ("优先级", 3), "日期": ("时间", 5)}
     for f_ in fields:
@@ -51,10 +54,10 @@ def configure_inbox_table(token, bitable_token, table_id):
                 body["property"] = {"options": [
                     {"name": "高", "color": 0}, {"name": "中", "color": 1}, {"name": "低", "color": 2}]}
             _api("PUT", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields/{fid}",
-                 token, json=body)
+                 token, label=f"重命名字段 {fname}→{new_name}", json=body)
         elif fname == "附件":
             _api("DELETE", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields/{fid}",
-                 token)
+                 token, label="删除附件字段")
 
     for field_def in [
         {"field_name": "收件人", "type": 1},
@@ -62,7 +65,7 @@ def configure_inbox_table(token, bitable_token, table_id):
         {"field_name": "已读",   "type": 7},
     ]:
         _api("POST", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields",
-             token, json=field_def)
+             token, label=f"添加字段 {field_def['field_name']}", json=field_def)
     print(f"   table_id: {table_id} ✅\n")
 
 
@@ -90,7 +93,7 @@ def create_status_table(token, bitable_token):
                             "当前任务": "等待启动", "更新时间": now_ms()}}
                for n, info in AGENTS.items()]
     _api("POST", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{sta_table}/records/batch_create",
-         token, json={"records": records})
+         token, label="写入初始状态", json={"records": records})
     print(f"   table_id: {sta_table} ✅\n")
     return sta_table
 
