@@ -26,8 +26,8 @@ import sys, os, re, json, time, glob, hashlib, requests, atexit, signal
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, CONFIG_FILE
-from token_cache import get_token_cached
+from config import BASE, CONFIG_FILE
+from feishu_api import get_token, h, api_request
 
 ROOT          = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST_FILE = os.path.join(os.path.dirname(__file__), "sync_manifest.json")
@@ -40,12 +40,6 @@ SYNC_PATTERNS = [
 ]
 
 # ── 基础工具 ──────────────────────────────────────────────────
-
-def get_token():
-    return get_token_cached(APP_ID, APP_SECRET, BASE)
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 def now_str():
     return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S+08:00")
@@ -256,20 +250,6 @@ def parse_markdown_to_blocks(content):
             i += 1
 
     return blocks
-
-# ── 飞书 API（含 429 指数退避）───────────────────────────────
-
-def api_request(method, url, token, **kwargs):
-    """带指数退避重试的 API 调用（最多3次）。"""
-    for attempt in range(3):
-        resp = requests.request(method, url, headers=h(token), **kwargs)
-        if resp.status_code == 429:
-            wait = 2 ** attempt
-            print(f"  ⏳ 触发限流，{wait}s 后重试...")
-            time.sleep(wait)
-            continue
-        return resp
-    return resp  # 最后一次失败时也返回
 
 # ── 飞书 Drive 文件夹 ─────────────────────────────────────────
 

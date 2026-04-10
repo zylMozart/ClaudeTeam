@@ -18,19 +18,12 @@ import sys, os, json, time, requests, atexit, signal
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, CONFIG_FILE
+from config import BASE, CONFIG_FILE
+from feishu_api import get_token, h, extract_text
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")
 
 # ── 基础工具 ──────────────────────────────────────────────────
-
-from token_cache import get_token_cached
-
-def get_token():
-    return get_token_cached(APP_ID, APP_SECRET, BASE)
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 def load_cfg():
     if not os.path.exists(CONFIG_FILE):
@@ -49,9 +42,7 @@ def load_tasks():
     with open(TASKS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
-def txt(v):
-    if isinstance(v, list): return v[0].get("text", "") if v else ""
-    return str(v) if v else ""
+txt = extract_text  # backward compat alias for existing calls
 
 def to_ms(iso_str):
     """ISO 8601 字符串 → Unix 毫秒时间戳，解析失败返回 0。"""

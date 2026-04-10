@@ -11,26 +11,11 @@ import sys, os, re, json, time, hashlib, requests
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE
-from token_cache import get_token_cached
+from config import BASE
+from feishu_api import get_token, h, api_request as api
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST_FILE = os.path.join(os.path.dirname(__file__), "sync_manifest.json")
-
-def get_token():
-    return get_token_cached(APP_ID, APP_SECRET, BASE)
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-def api(method, url, token, **kwargs):
-    for attempt in range(3):
-        resp = requests.request(method, url, headers=h(token), **kwargs)
-        if resp.status_code == 429:
-            time.sleep(2 ** attempt)
-            continue
-        return resp
-    return resp
 
 # ── Block 构建工具 ──────────────────────────────────────────
 

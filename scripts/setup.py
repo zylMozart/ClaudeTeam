@@ -6,17 +6,8 @@
 import sys, os, json, time, requests
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, AGENTS, CONFIG_FILE, TMUX_SESSION
-from token_cache import get_token_cached
-
-def get_token():
-    return get_token_cached(APP_ID, APP_SECRET, BASE)
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-def now_ms():
-    return int(time.time() * 1000)
+from config import BASE, AGENTS, CONFIG_FILE, TMUX_SESSION
+from feishu_api import get_token, h, now_ms
 
 def main():
     # 幂等性检查：如果 runtime_config.json 已存在且内容完整，跳过

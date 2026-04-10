@@ -7,18 +7,12 @@ import sys, os, json, time, re, subprocess, requests, threading, atexit, signal
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, AGENTS, TMUX_SESSION, ROUTER_POLL_INTERVAL, CONFIG_FILE, PROJECT_ROOT
+from config import BASE, AGENTS, TMUX_SESSION, ROUTER_POLL_INTERVAL, CONFIG_FILE, PROJECT_ROOT
 from tmux_utils import inject_when_idle, is_agent_idle
+from feishu_api import get_token, h
+from token_cache import invalidate as _invalidate_token
 
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", "images")
-
-from token_cache import get_token_cached, invalidate as _invalidate_token
-
-def get_token():
-    return get_token_cached(APP_ID, APP_SECRET, BASE)
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 BOT_OPEN_ID = ""
 
