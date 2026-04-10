@@ -3,10 +3,10 @@
 一键初始化：创建飞书群组、Bitable、工作空间表，保存配置
 运行：python3 scripts/setup.py
 """
-import sys, os, json, time, shutil, requests
+import sys, os, json, time, requests
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, AGENTS, CONFIG_FILE, TMUX_SESSION, PROJECT_ROOT
+from config import APP_ID, APP_SECRET, BASE, AGENTS, CONFIG_FILE, TMUX_SESSION
 
 def get_token():
     r = requests.post(f"{BASE}/auth/v3/app_access_token/internal",
@@ -182,45 +182,6 @@ def main():
     with open(CONFIG_FILE, "w") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
     print(f"✅ 配置已保存到 {CONFIG_FILE}")
-
-    # ── 8. 生成 CLAUDE.md（运行时引导文件）──────────────────────
-    claude_md = os.path.join(PROJECT_ROOT, "CLAUDE.md")
-    if not os.path.exists(claude_md):
-        agent_list = ", ".join(AGENTS.keys()) if AGENTS else "manager"
-        with open(claude_md, "w") as f:
-            f.write(f"""# ClaudeTeam — AI Multi-Agent Team
-
-> 本文件由 setup.py 自动生成，Claude Code 启动时自动读取。
-
-## 快速检查
-
-- `.env` 已配置 ✅
-- `team.json` 已配置 ✅
-- `scripts/runtime_config.json` 已生成 ✅
-
-## 启动团队
-
-```bash
-bash scripts/start-team.sh
-```
-
-## 你是 manager
-
-团队已初始化完成。启动后你将成为 manager，请读取 `agents/manager/identity.md` 了解职责。
-
-当前团队成员：{agent_list}
-
-## 通讯规范
-
-参见 `docs/POLICY.md`
-
-## 团队管理
-
-- 招聘：`/hire <角色名> "<描述>"`
-- 裁撤：`/fire <角色名>`
-""")
-        print(f"✅ CLAUDE.md 已生成")
-
     print()
     print("=" * 50)
     print("📊 Bitable:")

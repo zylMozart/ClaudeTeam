@@ -149,16 +149,10 @@ def cmd_start_tmux(agent_name):
                     "claude --dangerously-skip-permissions", "Enter"],
                    capture_output=True)
     print(f"⏳ 等待 Claude 启动...")
-
-    # 等待 Claude 完全就绪（trust dialog 通过后）
-    from tmux_utils import inject_when_idle, wait_for_ready, auto_accept_trust
-    auto_accept_trust(session, agent_name, timeout=5)
-    if wait_for_ready(session, agent_name, timeout=30):
-        print(f"   ✅ Claude 已就绪")
-    else:
-        print(f"   ⚠️  等待超时，尝试强制发送")
+    time.sleep(3)
 
     # 发送初始化消息
+    from tmux_utils import inject_when_idle
     init_msg = (
         f"你是团队的 {agent_name}。\n\n"
         f"【必读】请读取：agents/{agent_name}/identity.md — 了解你的角色和通讯规范\n"

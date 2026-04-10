@@ -3,7 +3,7 @@
 Router Daemon — 轮询飞书群组消息，解析 @mention，路由到对应 tmux 窗口
 运行：python3 scripts/feishu_router.py
 """
-import sys, os, json, time, re, subprocess, requests, threading
+import sys, os, json, time, re, subprocess, requests, threading, atexit, signal
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -19,6 +19,20 @@ def get_token():
 
 def h(token):
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+BOT_OPEN_ID = ""
+
+def get_bot_open_id():
+    """启动时调用 /bot/v3/info 获取 bot 自身的 open_id"""
+    global BOT_OPEN_ID
+    token = get_token()
+    r = requests.get(f"{BASE}/bot/v3/info", headers=h(token))
+    if r.status_code == 200:
+        data = r.json().get("bot", {})
+        BOT_OPEN_ID = data.get("open_id", "")
+        print(f"🤖 Bot open_id: {BOT_OPEN_ID}")
+    else:
+        print(f"⚠️ 获取 bot info 失败: HTTP {r.status_code}, 自回声过滤将不可用")
 
 def load_cfg():
     with open(CONFIG_FILE) as f:
@@ -114,6 +128,17 @@ def queue_message(agent_name, msg_text, msg_id, is_user_msg=False):
 def _save_queue_unlocked(agent_name, queue):
     """保存队列，清理超过 10 分钟的过期消息（调用方需持有 _queue_lock）"""
     now = time.time()
+
+    # 检查并记录即将过期的消息
+    expired = [m for m in queue if now - m["queued_at"] >= 600]
+    for m in expired:
+        wait_secs = int(now - m["queued_at"])
+        msg_id_short = m.get("msg_id", "?")[:8]
+        if m.get("is_user_msg"):
+            print(f"  ⚠️ [{agent_name}] 用户消息过期丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s")
+        else:
+            print(f"  🗑️ [{agent_name}] 队列消息过期丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s")
+
     queue = [m for m in queue if now - m["queued_at"] < 600]
 
     os.makedirs(PENDING_DIR, exist_ok=True)
@@ -236,17 +261,29 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
 
     is_user_msg = (sender_agent is None)
 
-    # 先尝试直接投递（agent 空闲时）
-    if is_agent_idle(TMUX_SESSION, agent_name):
+    # 检查该 agent 的待投递队列是否有积压消息
+    has_pending = False
+    with _queue_lock:
+        queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
+        if os.path.exists(queue_file):
+            with open(queue_file) as f:
+                pending = json.load(f)
+            has_pending = len(pending) > 0
+
+    # 仅当队列为空且 agent 空闲时，才可以直接投递（保证 FIFO）
+    if not has_pending and is_agent_idle(TMUX_SESSION, agent_name):
         ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
                               wait_secs=2, force_after_wait=False)
         if ok:
             print(f"  → 已触发 {agent_name} 窗口（直接投递）")
             return
 
-    # agent 忙碌 → 入队等待
+    # 队列有积压 或 agent 忙碌 → 入队等待（保证 FIFO 顺序）
     queue_message(agent_name, prompt, msg_id, is_user_msg=is_user_msg)
-    print(f"  📥 消息已入队 {agent_name}（agent 忙碌，等待投递）")
+    if has_pending:
+        print(f"  📥 消息已入队 {agent_name}（队列有 {len(pending)} 条积压，保证 FIFO）")
+    else:
+        print(f"  📥 消息已入队 {agent_name}（agent 忙碌，等待投递）")
 
 # ── 图片下载 ─────────────────────────────────────────────────
 
@@ -320,37 +357,52 @@ def poll_messages(token, chat_id, since_ts_ms):
         return []
     return d.get("data", {}).get("items", [])
 
-# ── 主循环 ────────────────────────────────────────────────────
+# ── PID 锁文件（防止重复启动）────────────────────────────────────
 
-def _startup_token(max_retries=5, delay=3):
-    """启动时获取 token，带重试（避免 setup 刚完成 token 未就绪）"""
-    for attempt in range(1, max_retries + 1):
+PID_FILE = os.path.join(os.path.dirname(__file__), ".router.pid")
+
+def acquire_pid_lock():
+    """获取 PID 锁，如果已有活着的实例则退出"""
+    if os.path.exists(PID_FILE):
         try:
-            token = get_token()
-            # 验证 token 可用：发一个轻量请求
-            r = requests.get(f"{BASE}/im/v1/chats?page_size=1",
-                             headers=h(token))
-            if r.json().get("code") == 0:
-                return token
-            raise RuntimeError(r.json().get("msg", "unknown"))
-        except Exception as e:
-            print(f"  ⚠️  Token 获取失败 (第{attempt}次): {e}")
-            if attempt < max_retries:
-                time.sleep(delay)
-    print("❌ 启动失败：无法获取有效 Token，请检查 .env 凭证和网络")
-    sys.exit(1)
+            with open(PID_FILE) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)  # 检测进程是否存活（不发送信号）
+            print(f"❌ Router 已在运行 (PID {old_pid})，请勿重复启动")
+            sys.exit(1)
+        except (ValueError, OSError):
+            # PID 文件损坏或进程已不存在，清理旧文件继续启动
+            pass
+
+    with open(PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(_cleanup_pid)
+
+def _cleanup_pid():
+    """退出时清理 PID 文件"""
+    try:
+        if os.path.exists(PID_FILE):
+            with open(PID_FILE) as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(PID_FILE)
+    except Exception:
+        pass
+
+# SIGTERM 也触发正常退出（atexit 会被调用）
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
+# ── 主循环 ────────────────────────────────────────────────────
 
 def main():
     print("🚀 Router Daemon 启动")
+    acquire_pid_lock()
+    get_bot_open_id()
     cfg = load_cfg()
     chat_id = cfg.get("chat_id", "")
     if not chat_id:
         print("❌ chat_id 未配置，请先运行 setup.py")
         sys.exit(1)
-
-    # 启动时验证 token，带重试
-    _startup_token()
-    print("✅ Token 验证通过")
 
     seen = load_seen()
     # 从当前时间开始，只处理新消息
@@ -376,6 +428,12 @@ def main():
                 if msg_id in seen:
                     continue
                 seen.add(msg_id)
+
+                # 过滤 bot 自己发的消息（防止自回声）
+                msg_sender_id = msg.get("sender", {}).get("id", "")
+                if BOT_OPEN_ID and msg_sender_id == BOT_OPEN_ID:
+                    print(f"  ⏭️  跳过 bot 自己的消息: {msg_id}")
+                    continue
 
                 # 更新时间窗口（用当前本地时间，避免 since_ts 超过服务器时间）
                 create_ts = int(msg.get("create_time", "0"))
@@ -411,25 +469,32 @@ def main():
                         content_obj = json.loads(content_raw) if content_raw else {}
                     except Exception:
                         content_obj = {}
-                    paragraphs = content_obj.get("zh_cn", [])
-                    text_parts = []
-                    for para in paragraphs:
-                        for elem in para:
-                            if elem.get("tag") == "text":
-                                text_parts.append(elem.get("text", ""))
-                            elif elem.get("tag") == "img":
-                                image_key = elem.get("image_key", "")
+                    # 递归提取所有文本，不逐个解析标签
+                    def _extract_text(obj):
+                        parts = []
+                        if isinstance(obj, dict):
+                            if obj.get("tag") == "img":
+                                image_key = obj.get("image_key", "")
                                 if image_key:
-                                    # 方案 C：图片异步下载
                                     _img_futures.append({
                                         "future": _download_pool.submit(
                                             download_image, token, msg_id,
                                             image_key, create_time),
                                         "msg_id": msg_id,
                                     })
-                    text = " ".join(text_parts).strip()
-                    if not text:
-                        text = "[富文本消息] 图片正在下载中..."
+                            elif "text" in obj:
+                                parts.append(obj["text"])
+                            for v in obj.values():
+                                if isinstance(v, (dict, list)):
+                                    parts.extend(_extract_text(v))
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                parts.extend(_extract_text(item))
+                        return parts
+                    text_parts = _extract_text(content_obj)
+                    text = " ".join(t for t in text_parts if t).strip()
+                    if not text and not _img_futures:
+                        text = "[富文本消息，无法解析内容]"
 
                 elif msg_type == "interactive":
                     # 消息卡片：飞书 API 返回的 body.content 是简化格式

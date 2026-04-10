@@ -23,6 +23,7 @@ PROCS = [
         "name":  "feishu_router.py",
         "match": "feishu_router.py",
         "cmd":   ["python3", "scripts/feishu_router.py"],
+        "pid_file": os.path.join(os.path.dirname(__file__), ".router.pid"),
         "health_file": os.path.join(os.path.dirname(__file__), ".router_seen_ids.json"),
         "health_stale_secs": 300,  # 5 分钟无更新视为异常
         "max_retries": 3,
@@ -40,7 +41,20 @@ PROCS = [
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
+def is_running_by_pid_file(pid_file):
+    """通过 PID 锁文件检测进程是否存活（精确匹配本项目）"""
+    if not os.path.exists(pid_file):
+        return False
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except (ValueError, OSError):
+        return False
+
 def is_running(match_str):
+    """降级方案：pgrep 匹配（用于没有 PID 文件的进程）"""
     r = subprocess.run(["pgrep", "-f", match_str], capture_output=True)
     return r.returncode == 0
 
@@ -66,7 +80,11 @@ def notify_manager(proc_name):
 
 def is_healthy(proc):
     """进程存在 + 健康检查通过"""
-    if not is_running(proc["match"]):
+    pid_file = proc.get("pid_file")
+    if pid_file:
+        if not is_running_by_pid_file(pid_file):
+            return False
+    elif not is_running(proc["match"]):
         return False
     health_file = proc.get("health_file")
     if health_file and os.path.exists(health_file):
