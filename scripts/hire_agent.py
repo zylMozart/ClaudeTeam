@@ -19,13 +19,12 @@ import sys, os, json, time, re, subprocess, requests
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import APP_ID, APP_SECRET, BASE, CONFIG_FILE, PROJECT_ROOT
+from token_cache import get_token_cached
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
 def get_token():
-    r = requests.post(f"{BASE}/auth/v3/app_access_token/internal",
-                      json={"app_id": APP_ID, "app_secret": APP_SECRET})
-    return r.json()["app_access_token"]
+    return get_token_cached(APP_ID, APP_SECRET, BASE)
 
 def h(token):
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
