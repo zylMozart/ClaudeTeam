@@ -13,54 +13,10 @@ from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.dirname(__file__))
 from config import BASE
 from feishu_api import get_token, h, api_request as api
+from feishu_blocks import make_text_run, make_text_block, parse_inline, parse_single_line
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST_FILE = os.path.join(os.path.dirname(__file__), "sync_manifest.json")
-
-# ── Block 构建工具 ──────────────────────────────────────────
-
-def text_run(content, bold=False, italic=False, link_url=""):
-    style = {}
-    if bold: style["bold"] = True
-    if italic: style["italic"] = True
-    if link_url: style["link"] = {"url": link_url}
-    elem = {"text_run": {"content": content}}
-    if style:
-        elem["text_run"]["text_element_style"] = style
-    return elem
-
-_TOKEN_RE = re.compile(
-    r'(`[^`]+`)'
-    r'|(\*\*[^*]+\*\*)'
-    r'|(\*[^*]+\*)'
-    r'|(\[[^\]]+\]\([^)]+\))'
-    r'|([^`*\[]+)'
-)
-
-def parse_inline(text):
-    runs = []
-    for m in _TOKEN_RE.finditer(text):
-        raw = m.group(0)
-        if raw.startswith('`') and raw.endswith('`') and len(raw) >= 2:
-            runs.append(text_run(raw[1:-1], bold=True))
-        elif raw.startswith('**'):
-            runs.append(text_run(raw[2:-2], bold=True))
-        elif raw.startswith('*'):
-            runs.append(text_run(raw[1:-1], italic=True))
-        elif raw.startswith('['):
-            lm = re.match(r'\[([^\]]+)\]\(([^)]+)\)', raw)
-            if lm:
-                runs.append(text_run(lm.group(1), link_url=lm.group(2)))
-        else:
-            if raw:
-                runs.append(text_run(raw))
-    return runs if runs else [text_run(text)]
-
-def make_block(block_type, runs, style=None):
-    key = {2: "text", 3: "heading1", 4: "heading2", 5: "heading3",
-           6: "heading4", 12: "bullet", 13: "ordered"}[block_type]
-    block = {"block_type": block_type, key: {"elements": runs, "style": style or {}}}
-    return block
 
 # ── Markdown 解析 ──────────────────────────────────────────
 
@@ -80,7 +36,7 @@ def parse_md(content):
         # 折叠区域标记：**📌 xxx**
         if line.startswith("**📌 "):
             title = line.strip("*").strip()
-            heading = make_block(5, [text_run(title, bold=True)])
+            heading = make_text_block(5, [make_text_run(title, bold=True)])
             children = []
             i += 1
             # 收集直到下一个 ### 或 ## 或 # 或另一个 **📌
@@ -110,30 +66,6 @@ def parse_md(content):
         i += 1
 
     return result
-
-def parse_single_line(line, lines, i):
-    """解析单行，返回 block dict 或 None（空行/分隔线），
-    或 (block, new_i) 如果消耗了多行。"""
-
-    if re.match(r'^#{4,} ', line):
-        return make_block(6, parse_inline(re.sub(r'^#{4,} ', '', line)))
-    if line.startswith("### "):
-        return make_block(5, parse_inline(line[4:]))
-    if line.startswith("## "):
-        return make_block(4, parse_inline(line[3:]))
-    if line.startswith("# "):
-        return make_block(3, parse_inline(line[2:]))
-    if re.match(r'^[-*] ', line):
-        return make_block(12, parse_inline(line[2:]))
-    if re.match(r'^\d+\. ', line):
-        return make_block(13, parse_inline(re.sub(r'^\d+\. ', '', line)))
-    if re.match(r'^[-*_]{3,}$', line.strip()):
-        return None
-    if line.strip() == "":
-        return None
-
-    # 普通文本
-    return make_block(2, parse_inline(line))
 
 # ── 飞书文档操作 ──────────────────────────────────────────
 
