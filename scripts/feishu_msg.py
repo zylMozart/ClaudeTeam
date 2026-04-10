@@ -19,23 +19,14 @@
 import sys, os, json, time, requests
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, AGENTS, CONFIG_FILE, PROJECT_ROOT
+from config import BASE, AGENTS, PROJECT_ROOT, load_runtime_config
 from feishu_api import get_token, h, now_ms, extract_text
 
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
 
-_cfg = None
 def cfg():
-    global _cfg
-    if _cfg is None:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE) as f:
-                _cfg = json.load(f)
-        else:
-            print("❌ 未找到 runtime_config.json，请先运行 python3 scripts/setup.py")
-            sys.exit(1)
-    return _cfg
+    return load_runtime_config()
 
 def BT():  return cfg()["bitable_app_token"]
 def MT():  return cfg()["msg_table_id"]

@@ -7,7 +7,7 @@ import sys, os, json, time, re, subprocess, requests, threading, atexit, signal
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, AGENTS, TMUX_SESSION, ROUTER_POLL_INTERVAL, CONFIG_FILE, PROJECT_ROOT
+from config import BASE, AGENTS, TMUX_SESSION, ROUTER_POLL_INTERVAL, PROJECT_ROOT, load_runtime_config
 from tmux_utils import inject_when_idle, is_agent_idle
 from feishu_api import get_token, h
 from token_cache import invalidate as _invalidate_token
@@ -28,9 +28,7 @@ def get_bot_open_id():
     else:
         print(f"⚠️ 获取 bot info 失败: HTTP {r.status_code}, 自回声过滤将不可用")
 
-def load_cfg():
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
+load_cfg = load_runtime_config
 
 # ── 已处理消息 ID（防重复）────────────────────────────────────
 

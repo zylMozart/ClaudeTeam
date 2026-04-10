@@ -26,7 +26,7 @@ import sys, os, re, json, time, glob, hashlib, requests, atexit, signal
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, CONFIG_FILE
+from config import BASE, load_runtime_config, save_runtime_config
 from feishu_api import get_token, h, api_request
 from feishu_blocks import (parse_markdown_to_blocks, make_text_run, make_text_block,
                            make_code_block, parse_inline, resolve_language)
@@ -46,16 +46,8 @@ SYNC_PATTERNS = [
 def now_str():
     return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
-def load_cfg():
-    if not os.path.exists(CONFIG_FILE):
-        print("❌ 未找到 runtime_config.json，请先运行 python3 scripts/setup.py")
-        sys.exit(1)
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
-
-def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+load_cfg = load_runtime_config
+save_cfg = save_runtime_config
 
 def load_manifest():
     if not os.path.exists(MANIFEST_FILE):

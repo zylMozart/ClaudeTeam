@@ -19,7 +19,7 @@ import sys, os, json, time, re, shutil, subprocess
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import CONFIG_FILE, PROJECT_ROOT
+from config import PROJECT_ROOT, load_runtime_config, save_runtime_config
 
 def validate_name(name):
     if not re.match(r'^[a-z0-9_-]+$', name):
@@ -34,14 +34,12 @@ def load_team():
         return json.load(f)
 
 def load_cfg():
-    if not os.path.exists(CONFIG_FILE):
+    try:
+        return load_runtime_config()
+    except SystemExit:
         return None
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
 
-def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+save_cfg = save_runtime_config
 
 # ── 命令：stop-tmux ──────────────────────────────────────────
 

@@ -18,23 +18,15 @@ import sys, os, json, time, requests, atexit, signal
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, CONFIG_FILE
+from config import BASE, load_runtime_config, save_runtime_config
 from feishu_api import get_token, h, extract_text
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
-def load_cfg():
-    if not os.path.exists(CONFIG_FILE):
-        print("❌ 未找到 runtime_config.json，请先运行 python3 scripts/setup.py")
-        sys.exit(1)
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
-
-def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+load_cfg = load_runtime_config
+save_cfg = save_runtime_config
 
 def load_tasks():
     if not os.path.exists(TASKS_FILE):

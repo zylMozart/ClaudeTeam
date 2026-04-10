@@ -6,7 +6,7 @@
 import sys, os, json, time, requests
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, AGENTS, CONFIG_FILE, TMUX_SESSION
+from config import BASE, AGENTS, CONFIG_FILE, TMUX_SESSION, save_runtime_config
 from feishu_api import get_token, h, now_ms
 
 def main():
@@ -169,8 +169,7 @@ def main():
         print(f"   chat_id: {chat_id} ✅\n")
 
     # ── 7. 保存运行时配置 ─────────────────────────────────────
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    save_runtime_config(cfg)
     print(f"✅ 配置已保存到 {CONFIG_FILE}")
     print()
     print("=" * 50)
