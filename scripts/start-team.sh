@@ -27,7 +27,7 @@ SESSION=$(python3 -c "import json; print(json.load(open('team.json'))['session']
 AGENTS=($(python3 -c "import json; print(' '.join(json.load(open('team.json'))['agents'].keys()))"))
 
 # 检查 session 是否已存在
-if tmux has-session -t $SESSION 2>/dev/null; then
+if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "⚠️  Session '$SESSION' 已存在"
   echo "   终止旧的: tmux kill-session -t $SESSION"
   echo "   查看: tmux attach -t $SESSION"
@@ -35,35 +35,35 @@ if tmux has-session -t $SESSION 2>/dev/null; then
 fi
 
 echo "🚀 启动 Agent 团队..."
-echo "   tmux session: $SESSION"
+echo "   tmux session: ${SESSION}"
 echo "   Agents: ${AGENTS[*]}"
 echo ""
 
 # ── 创建 tmux session ─────────────────────────────────────────
 
 # window 0: 第一个 agent
-tmux new-session -d -s $SESSION -n "${AGENTS[0]}" -c "$ROOT"
-tmux send-keys -t $SESSION:${AGENTS[0]} "claude --dangerously-skip-permissions --name ${AGENTS[0]}" Enter
+tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$ROOT"
+tmux send-keys -t "$SESSION:${AGENTS[0]}" "claude --dangerously-skip-permissions --name ${AGENTS[0]}" Enter
 sleep 2
 
 # 其他 Agent 窗口
 for agent in "${AGENTS[@]:1}"; do
-  tmux new-window -t $SESSION -n "$agent" -c "$ROOT"
-  tmux send-keys -t $SESSION:$agent "claude --dangerously-skip-permissions --name $agent" Enter
+  tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
+  tmux send-keys -t "$SESSION:$agent" "claude --dangerously-skip-permissions --name $agent" Enter
   sleep 2
 done
 
 # window: router
-tmux new-window -t $SESSION -n "router" -c "$ROOT"
-tmux send-keys -t $SESSION:router "python3 scripts/feishu_router.py" Enter
+tmux new-window -t "$SESSION" -n "router" -c "$ROOT"
+tmux send-keys -t "$SESSION:router" "python3 scripts/feishu_router.py" Enter
 
 # window: kanban (看板同步守护进程)
-tmux new-window -t $SESSION -n "kanban" -c "$ROOT"
-tmux send-keys -t $SESSION:kanban "python3 scripts/kanban_sync.py daemon" Enter
+tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"
+tmux send-keys -t "$SESSION:kanban" "python3 scripts/kanban_sync.py daemon" Enter
 
 # window: watchdog
-tmux new-window -t $SESSION -n "watchdog" -c "$ROOT"
-tmux send-keys -t $SESSION:watchdog "python3 scripts/watchdog.py" Enter
+tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
+tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
 sleep 2
 
@@ -79,7 +79,7 @@ for agent in "${AGENTS[@]}"; do
 
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
-  tmux send-keys -t $SESSION:$agent "$INIT_MSG" Enter
+  tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
   sleep 1
 done
 
@@ -94,7 +94,7 @@ echo "    router    — 消息路由守护进程"
 echo "    kanban    — 看板同步守护进程（60秒一次）"
 echo "    watchdog  — 看门狗（监控 Router + 看板同步）"
 echo ""
-echo "  查看团队: tmux attach -t $SESSION"
+echo "  查看团队: tmux attach -t ${SESSION}"
 echo "  切换窗口: Ctrl+B, n/p 或 Ctrl+B, 0-${#AGENTS[@]}"
 echo ""
 echo "  飞书测试:"
@@ -102,5 +102,5 @@ echo "    python3 scripts/feishu_msg.py send ${AGENTS[1]:-writer} ${AGENTS[0]} \
 echo "    python3 scripts/feishu_msg.py inbox ${AGENTS[0]}"
 
 # 切到第一个 agent 窗口
-tmux select-window -t $SESSION:${AGENTS[0]}
-tmux attach -t $SESSION
+tmux select-window -t "$SESSION:${AGENTS[0]}"
+tmux attach -t "$SESSION"
