@@ -13,7 +13,7 @@ tmux 工具函数 — 检测 Agent 空闲状态后安全注入文本
   或"Thinking"等流式输出特征。inject_when_idle 轮询最多 wait_secs 秒，
   确认空闲后用 send-keys -l（字面模式）注入，避免 # $ 等字符被 tmux/shell 解释。
 """
-import subprocess, time, os
+import subprocess, time, os, tempfile
 
 # ── 状态特征字符串 ─────────────────────────────────────────────
 
@@ -89,7 +89,6 @@ def check_agent_alive(session, window, stale_minutes=15):
         )
         if r.returncode == 0 and r.stdout.strip():
             last_activity = int(r.stdout.strip())
-            import time
             idle_minutes = (time.time() - last_activity) / 60
             if idle_minutes > stale_minutes:
                 return False, f"pane 已 {idle_minutes:.0f} 分钟无活动（阈值 {stale_minutes} 分钟）"
@@ -145,7 +144,6 @@ def inject_when_idle(session, window, text,
     target = f"{session}:{window}"
     if len(text) > 600:
         # 长文本：写临时文件 → tmux load-buffer → paste-buffer（绕过 pty 缓冲限制）
-        import tempfile
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
                                           delete=False, encoding="utf-8")
         tmp.write(text)

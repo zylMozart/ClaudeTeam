@@ -7,7 +7,8 @@
 
 用法：python3 scripts/upload_folded_doc.py <markdown文件路径>
 """
-import sys, os, re, json, time, requests
+import sys, os, re, json, time, hashlib, requests
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import APP_ID, APP_SECRET, BASE
@@ -310,7 +311,6 @@ def main():
     enable_link_share(token, doc_id)
 
     # 更新 manifest
-    import hashlib
     with open(abs_path, "rb") as f:
         file_hash = "sha256:" + hashlib.sha256(f.read()).hexdigest()[:16]
 
@@ -320,7 +320,6 @@ def main():
     else:
         manifest = {"folder_token": folder_token, "files": {}}
 
-    from datetime import datetime, timezone, timedelta
     manifest["files"][rel_path] = {
         "doc_token": doc_id,
         "last_hash": file_hash,
