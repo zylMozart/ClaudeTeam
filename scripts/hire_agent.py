@@ -145,7 +145,7 @@ def cmd_start_tmux(agent_name):
 
     # 启动 Claude
     subprocess.run(["tmux", "send-keys", "-t", f"{session}:{agent_name}",
-                    "claude --dangerously-skip-permissions", "Enter"],
+                    f"claude --dangerously-skip-permissions --name {agent_name}", "Enter"],
                    capture_output=True)
     print(f"⏳ 等待 Claude 启动...")
     time.sleep(3)
