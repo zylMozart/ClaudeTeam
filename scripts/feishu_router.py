@@ -16,6 +16,47 @@ from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, ch
 
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", "images")
 
+# ── 消息模板常量 ──────────────────────────────────────────────
+
+TPL_AGENT_NOTIFY = (
+    "【Router】你有来自 {sender} 的新消息。\n"
+    "执行: python3 scripts/feishu_msg.py inbox {agent}\n"
+    "消息预览: {preview}"
+)
+
+TPL_USER_MSG_SHORT = (
+    "【群聊消息】用户在群里对你说:\n{content}\n\n"
+    "请直接处理，然后用以下命令回复群里:\n"
+    "python3 scripts/feishu_msg.py say {agent} \"<你的回复>\""
+)
+
+TPL_USER_MSG_LONG = (
+    "【群聊消息】用户在群里发了消息（较长，已保存到文件）。\n"
+    "请先读取文件: {file_path}\n"
+    "预览: {preview}\n\n"
+    "处理完成后用以下命令回复群里:\n"
+    "python3 scripts/feishu_msg.py say {agent} \"<你的回复>\""
+)
+
+TPL_IMAGE_RICH_TEXT = (
+    "【群聊消息】用户在群里发送了图片/富文本消息:\n{content}\n\n"
+    "你可以使用 Read 工具读取图片。处理完成后用以下命令回复群里:\n"
+    "python3 scripts/feishu_msg.py say manager \"<你的回复>\""
+)
+
+TPL_IMAGE_DOWNLOADED = (
+    "【Router 补充】之前的图片已下载完成。\n"
+    "本地路径: {path}\n"
+    "你可以使用 Read 工具查看图片。"
+)
+
+TPL_COMBINED_MSGS = (
+    "【群聊消息】用户连续发了 {count} 条消息:\n\n"
+    "{messages}"
+    "请逐条处理，然后用以下命令回复群里:\n"
+    "python3 scripts/feishu_msg.py say {agent} \"<你的回复>\""
+)
+
 BOT_OPEN_ID = ""
 
 def get_bot_open_id():
@@ -95,11 +136,9 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
     """向 agent 投递消息：先尝试直接投递，忙碌则入队"""
     # 构建 prompt
     if sender_agent:
-        prompt = (
-            f"【Router】你有来自 {sender_agent} 的新消息。\n"
-            f"执行: python3 scripts/feishu_msg.py inbox {agent_name}\n"
-            f"消息预览: {message_preview[:500]}"
-        )
+        prompt = TPL_AGENT_NOTIFY.format(
+            sender=sender_agent, agent=agent_name,
+            preview=message_preview[:500])
     else:
         content = full_text or message_preview
         if len(content) > 400:
@@ -108,19 +147,11 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
             os.makedirs(os.path.dirname(msg_file), exist_ok=True)
             with open(msg_file, "w", encoding="utf-8") as f:
                 f.write(content)
-            prompt = (
-                f"【群聊消息】用户在群里发了消息（较长，已保存到文件）。\n"
-                f"请先读取文件: {msg_file}\n"
-                f"预览: {content[:200]}\n\n"
-                f"处理完成后用以下命令回复群里:\n"
-                f"python3 scripts/feishu_msg.py say {agent_name} \"<你的回复>\""
-            )
+            prompt = TPL_USER_MSG_LONG.format(
+                file_path=msg_file, preview=content[:200], agent=agent_name)
         else:
-            prompt = (
-                f"【群聊消息】用户在群里对你说:\n{content}\n\n"
-                f"请直接处理，然后用以下命令回复群里:\n"
-                f"python3 scripts/feishu_msg.py say {agent_name} \"<你的回复>\""
-            )
+            prompt = TPL_USER_MSG_SHORT.format(
+                content=content, agent=agent_name)
 
     is_user_msg = (sender_agent is None)
 
@@ -178,11 +209,7 @@ def _on_image_downloaded(future, agent_name, msg_id):
     try:
         local_path = future.result()
         if local_path:
-            notify = (
-                f"【Router 补充】之前的图片已下载完成。\n"
-                f"本地路径: {local_path}\n"
-                f"你可以使用 Read 工具查看图片。"
-            )
+            notify = TPL_IMAGE_DOWNLOADED.format(path=local_path)
             enqueue_message(agent_name, notify, f"{msg_id}_img", is_user_msg=True)
     except Exception as e:
         print(f"  ⚠️ 图片下载回调异常: {e}")
@@ -324,11 +351,7 @@ def main():
                 if msg_type in ("image", "post") and not sender_agent:
                     has_images = "图片路径:" in text or "image_key:" in text
                     if has_images:
-                        full_text_override = (
-                            f"【群聊消息】用户在群里发送了图片/富文本消息:\n{text}\n\n"
-                            f"你可以使用 Read 工具读取图片。处理完成后用以下命令回复群里:\n"
-                            f"python3 scripts/feishu_msg.py say manager \"<你的回复>\""
-                        )
+                        full_text_override = TPL_IMAGE_RICH_TEXT.format(content=text)
                     else:
                         full_text_override = text
                 else:
@@ -370,15 +393,12 @@ def main():
                                msg_id=user_msgs[0]["msg_id"],
                                full_text=user_msgs[0]["full_text"])
                 else:
-                    combined = f"【群聊消息】用户连续发了 {len(user_msgs)} 条消息:\n\n"
+                    msg_parts = ""
                     for i, um in enumerate(user_msgs, 1):
                         content = um["full_text"] or um["text"]
-                        combined += f"--- 第 {i} 条 ---\n{content}\n\n"
-                    combined += (
-                        f"请逐条处理，然后用以下命令回复群里:\n"
-                        f"python3 scripts/feishu_msg.py say {agent_name} "
-                        f"\"<你的回复>\""
-                    )
+                        msg_parts += f"--- 第 {i} 条 ---\n{content}\n\n"
+                    combined = TPL_COMBINED_MSGS.format(
+                        count=len(user_msgs), messages=msg_parts, agent=agent_name)
                     wake_agent(agent_name, combined,
                                msg_id=user_msgs[0]["msg_id"],
                                full_text=combined)
