@@ -14,7 +14,7 @@
 依赖:
   Python 3.6+，requests，runtime_config.json（先运行 setup.py）
 """
-import sys, os, json, time, requests
+import sys, os, json, time, requests, atexit, signal
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -213,7 +213,36 @@ def cmd_sync():
 
 # ── 命令：daemon ──────────────────────────────────────────────
 
+_PID_FILE = os.path.join(os.path.dirname(__file__), ".kanban_sync.pid")
+
+def _acquire_pid_lock():
+    if os.path.exists(_PID_FILE):
+        try:
+            with open(_PID_FILE) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)
+            print(f"❌ kanban_sync daemon 已在运行 (PID {old_pid})")
+            sys.exit(1)
+        except (ValueError, OSError):
+            pass
+    with open(_PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(_cleanup_pid)
+
+def _cleanup_pid():
+    try:
+        if os.path.exists(_PID_FILE):
+            with open(_PID_FILE) as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(_PID_FILE)
+    except Exception:
+        pass
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
 def cmd_daemon(interval=60):
+    _acquire_pid_lock()
     print(f"🔄 看板同步守护进程启动（每 {interval} 秒同步一次）")
     while True:
         try:

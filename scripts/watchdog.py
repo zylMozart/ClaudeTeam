@@ -11,7 +11,7 @@ Watchdog Daemon — 监控并自动重启关键守护进程
 重启方式: subprocess.Popen start_new_session=True
 通知方式: 子进程调用 feishu_msg.py send
 """
-import sys, os, time, subprocess
+import sys, os, time, subprocess, atexit, signal
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import PROJECT_ROOT
@@ -33,6 +33,7 @@ PROCS = [
         "name":  "kanban_sync.py",
         "match": "kanban_sync.py daemon",
         "cmd":   ["python3", "scripts/kanban_sync.py", "daemon"],
+        "pid_file": os.path.join(os.path.dirname(__file__), ".kanban_sync.pid"),
         "max_retries": 3,
         "retry_count": 0,
     },
@@ -115,7 +116,36 @@ def check_once():
     if all_ok:
         log("✅ 所有守护进程运行正常")
 
+_PID_FILE = os.path.join(os.path.dirname(__file__), ".watchdog.pid")
+
+def _acquire_pid_lock():
+    if os.path.exists(_PID_FILE):
+        try:
+            with open(_PID_FILE) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)
+            log(f"❌ Watchdog 已在运行 (PID {old_pid})")
+            sys.exit(1)
+        except (ValueError, OSError):
+            pass
+    with open(_PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(_cleanup_pid)
+
+def _cleanup_pid():
+    try:
+        if os.path.exists(_PID_FILE):
+            with open(_PID_FILE) as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(_PID_FILE)
+    except Exception:
+        pass
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
 def main():
+    _acquire_pid_lock()
     log("🐕 Watchdog 启动")
     log(f"   监控对象: {', '.join(p['name'] for p in PROCS)}")
     log(f"   检查间隔: {CHECK_INTERVAL}s")
