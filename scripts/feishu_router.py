@@ -57,77 +57,85 @@ TPL_COMBINED_MSGS = (
     "python3 scripts/feishu_msg.py say {agent} \"<你的回复>\""
 )
 
-BOT_OPEN_ID = ""
-
-def get_bot_open_id():
-    """启动时调用 /bot/v3/info 获取 bot 自身的 open_id"""
-    global BOT_OPEN_ID
-    token = get_token()
-    r = requests.get(f"{BASE}/bot/v3/info", headers=h(token))
-    if r.status_code == 200:
-        data = r.json().get("bot", {})
-        BOT_OPEN_ID = data.get("open_id", "")
-        print(f"🤖 Bot open_id: {BOT_OPEN_ID}")
-    else:
-        print(f"⚠️ 获取 bot info 失败: HTTP {r.status_code}, 自回声过滤将不可用")
-
 load_cfg = load_runtime_config
 
-# ── 已处理消息 ID（防重复）────────────────────────────────────
+# ── Router 状态管理 ──────────────────────────────────────────
 
-SEEN_IDS_FILE = os.path.join(os.path.dirname(__file__), ".router_seen_ids.json")
+_SEEN_IDS_FILE = os.path.join(os.path.dirname(__file__), ".router_seen_ids.json")
+_TEAM_FILE = os.path.join(PROJECT_ROOT, "team.json")
 
-def load_seen():
-    if os.path.exists(SEEN_IDS_FILE):
-        with open(SEEN_IDS_FILE) as f:
-            return set(json.load(f))
-    return set()
 
-def save_seen(ids):
-    # 只保留最近 500 条，防止文件无限增长
-    lst = list(ids)[-500:]
-    with open(SEEN_IDS_FILE, "w") as f:
-        json.dump(lst, f)
+class RouterState:
+    """封装 Router 的全局可变状态，避免裸全局变量。"""
 
-# ── Agent 列表热加载（基于 team.json mtime）─────────────────────
+    def __init__(self):
+        self.bot_open_id = ""
+        self._team_mtime = 0
+        self._agent_names = []
+        self.seen_ids = set()
 
-_team_file = os.path.join(PROJECT_ROOT, "team.json")
-_team_mtime = 0
-_agent_names = []
+    def init_bot_id(self):
+        """启动时调用 /bot/v3/info 获取 bot 自身的 open_id。"""
+        token = get_token()
+        r = requests.get(f"{BASE}/bot/v3/info", headers=h(token))
+        if r.status_code == 200:
+            data = r.json().get("bot", {})
+            self.bot_open_id = data.get("open_id", "")
+            print(f"🤖 Bot open_id: {self.bot_open_id}")
+        else:
+            print(f"⚠️ 获取 bot info 失败: HTTP {r.status_code}, 自回声过滤将不可用")
 
-def reload_agents():
-    """检查 team.json 变更，热加载 agent 列表"""
-    global _team_mtime, _agent_names
-    try:
-        mt = os.path.getmtime(_team_file)
-        if mt != _team_mtime:
-            with open(_team_file) as f:
-                data = json.load(f)
-            _agent_names = list(data.get("agents", {}).keys())
-            _team_mtime = mt
-            print(f"🔄 Agent 列表已刷新: {', '.join(_agent_names)}")
-    except Exception as e:
-        print(f"⚠️ reload_agents 失败: {e}")
-    return _agent_names
+    def load_seen(self):
+        """从文件加载已处理消息 ID。"""
+        if os.path.exists(_SEEN_IDS_FILE):
+            with open(_SEEN_IDS_FILE) as f:
+                self.seen_ids = set(json.load(f))
+        return self.seen_ids
 
-# ── 解析消息中的 @agent 指令 ─────────────────────────────────
+    def save_seen(self):
+        """持久化已处理消息 ID（保留最近 500 条）。"""
+        lst = list(self.seen_ids)[-500:]
+        with open(_SEEN_IDS_FILE, "w") as f:
+            json.dump(lst, f)
 
-def parse_targets(text):
-    """从消息文本中提取被 @mention 的 agent 名称列表"""
-    found = []
-    for name in reload_agents():
-        if f"@{name}" in text:
-            found.append(name)
-    return found
+    def reload_agents(self):
+        """检查 team.json 变更，热加载 agent 列表。"""
+        try:
+            mt = os.path.getmtime(_TEAM_FILE)
+            if mt != self._team_mtime:
+                with open(_TEAM_FILE) as f:
+                    data = json.load(f)
+                self._agent_names = list(data.get("agents", {}).keys())
+                self._team_mtime = mt
+                print(f"🔄 Agent 列表已刷新: {', '.join(self._agent_names)}")
+        except Exception as e:
+            print(f"⚠️ reload_agents 失败: {e}")
+        return self._agent_names
 
-def parse_sender(text):
-    """从消息格式 【agent · role】 中提取发件人"""
-    m = re.search(r"【(\w[\w-]*)[\s·]", text)
-    if m:
-        name = m.group(1)
-        if name in reload_agents():
-            return name
-    return None
+    def is_bot_message(self, sender_id):
+        """检查消息是否来自 bot 自身。"""
+        return bool(self.bot_open_id and sender_id == self.bot_open_id)
+
+    def parse_targets(self, text):
+        """从消息文本中提取被 @mention 的 agent 名称列表。"""
+        found = []
+        for name in self.reload_agents():
+            if f"@{name}" in text:
+                found.append(name)
+        return found
+
+    def parse_sender(self, text):
+        """从消息格式 【agent · role】 中提取发件人。"""
+        m = re.search(r"【(\w[\w-]*)[\s·]", text)
+        if m:
+            name = m.group(1)
+            if name in self.reload_agents():
+                return name
+        return None
+
+
+# 模块级单例
+_state = RouterState()
 
 # ── 触发 tmux 窗口 ────────────────────────────────────────────
 
@@ -281,20 +289,20 @@ signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 def main():
     print("🚀 Router Daemon 启动")
     acquire_pid_lock()
-    get_bot_open_id()
+    _state.init_bot_id()
     cfg = load_cfg()
     chat_id = cfg.get("chat_id", "")
     if not chat_id:
         print("❌ chat_id 未配置，请先运行 setup.py")
         sys.exit(1)
 
-    seen = load_seen()
+    _state.load_seen()
     since_ts = int(time.time() * 1000)
     last_unread_check = 0
 
     print(f"💬 监听群组: {chat_id}")
     print(f"🔄 轮询间隔: {ROUTER_POLL_INTERVAL}s")
-    print(f"👥 Agent 列表: {', '.join(reload_agents())}")
+    print(f"👥 Agent 列表: {', '.join(_state.reload_agents())}")
     print("=" * 50)
 
     while True:
@@ -309,13 +317,13 @@ def main():
 
             for msg in msgs:
                 msg_id  = msg.get("message_id", "")
-                if msg_id in seen:
+                if msg_id in _state.seen_ids:
                     continue
-                seen.add(msg_id)
+                _state.seen_ids.add(msg_id)
 
                 # 过滤 bot 自己发的消息（防止自回声）
                 msg_sender_id = msg.get("sender", {}).get("id", "")
-                if BOT_OPEN_ID and msg_sender_id == BOT_OPEN_ID:
+                if _state.is_bot_message(msg_sender_id):
                     print(f"  ⏭️  跳过 bot 自己的消息: {msg_id}")
                     continue
 
@@ -344,8 +352,8 @@ def main():
                 sender_id = msg.get("sender", {}).get("id", "")
                 print(f"[{time.strftime('%H:%M:%S')}] 新消息: {text[:10000]}")
 
-                sender_agent = parse_sender(text)
-                targets = parse_targets(text)
+                sender_agent = _state.parse_sender(text)
+                targets = _state.parse_targets(text)
 
                 # 图片/富文本消息生成更具体的 full_text 提示
                 if msg_type in ("image", "post") and not sender_agent:
@@ -403,10 +411,10 @@ def main():
                                msg_id=user_msgs[0]["msg_id"],
                                full_text=combined)
 
-            save_seen(seen)
+            _state.save_seen()
 
             # 方案 A + D：每轮尝试投递所有 agent 的待处理消息
-            for agent_name in reload_agents():
+            for agent_name in _state.reload_agents():
                 dequeue_pending(agent_name)
             last_unread_check = check_manager_unread(last_unread_check)
 
