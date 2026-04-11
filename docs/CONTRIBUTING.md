@@ -123,12 +123,14 @@ Before contributing, understand the key components:
 
 | Component | File | Role |
 |-----------|------|------|
-| Message Bus | `scripts/feishu_msg.py` | All inter-agent communication |
-| Router | `scripts/feishu_router.py` | Feishu → tmux message delivery |
+| Message Bus | `scripts/feishu_msg.py` | All inter-agent communication (lark-cli wrapper) |
+| Router | `scripts/feishu_router.py` | lark-cli WebSocket events → tmux delivery |
+| Message Queue | `scripts/msg_queue.py` | FIFO queue for pending message delivery |
 | Config | `scripts/config.py` | Central configuration loader |
-| Setup | `scripts/setup.py` | One-time Feishu resource creation |
+| Setup | `scripts/setup.py` | One-time Feishu resource creation (lark-cli) |
 | Launcher | `scripts/start-team.sh` | tmux session + agent startup |
 | Guidance | `CLAUDE.md` | Claude Code reads this on startup |
+| lark-cli | `@larksuite/cli` | Feishu API operations (auth, messaging, bitable) |
 
 **Key principles:**
 - `scripts/` contains runtime infrastructure — changes here affect all users
