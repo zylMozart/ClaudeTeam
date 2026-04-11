@@ -3,37 +3,13 @@
 配置中心 — ClaudeTeam 项目
 
 Agent 团队定义从项目根目录 team.json 读取。
-lark-cli 管理飞书认证，不再需要 .env 中的飞书凭据。
+飞书认证由 lark-cli 管理（lark-cli config init）。
 """
 import sys as _sys, os as _os, json as _json
 
 # 项目根目录
 PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 CONFIG_FILE  = _os.path.join(PROJECT_ROOT, "scripts", "runtime_config.json")
-
-# ── 飞书凭据（仅供尚未迁移到 lark-cli 的旧脚本使用）──────────────
-
-def _load_env():
-    """从 .env 加载环境变量（过渡期保留，lark-cli 迁移完成后删除）。"""
-    _env_path = _os.path.join(PROJECT_ROOT, ".env")
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(_env_path)
-    except ImportError:
-        if _os.path.exists(_env_path):
-            with open(_env_path) as _f:
-                for _line in _f:
-                    _line = _line.strip()
-                    if _line and not _line.startswith("#") and "=" in _line:
-                        _k, _, _v = _line.partition("=")
-                        _os.environ.setdefault(_k.strip(), _v.strip())
-
-_load_env()
-
-# 过渡期保留：尚未迁移的脚本（router/kanban/hire/setup）仍需这些值
-APP_ID     = _os.environ.get("FEISHU_APP_ID", "")
-APP_SECRET = _os.environ.get("FEISHU_APP_SECRET", "")
-BASE       = _os.environ.get("FEISHU_BASE", "https://open.feishu.cn/open-apis")
 
 # ── Agent 团队定义（从 team.json 读取）─────────────────────────
 
@@ -51,9 +27,6 @@ def _load_team():
 _TEAM = _load_team()
 AGENTS = _TEAM.get("agents", {})
 TMUX_SESSION = _TEAM.get("session", "ClaudeTeam")
-
-# Router 轮询间隔（秒）
-ROUTER_POLL_INTERVAL = 3   # 每 3 秒轮询群消息
 
 # ── runtime_config.json 统一访问 ────────────────────────────────
 
