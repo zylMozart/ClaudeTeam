@@ -72,7 +72,7 @@ def fetch_all_agent_status(cfg):
               label="拉取状态表")
     result = {}
     seen = set()
-    for item in (d or {}).get("data", {}).get("items", []):
+    for item in (d or {}).get("items", []):
         f = item.get("fields", {})
         agent = txt(f.get("Agent名称", ""))
         if agent and agent not in seen:
@@ -93,7 +93,7 @@ def get_all_kanban_record_ids(cfg):
     d = _lark(["base", "+record-list", "--base-token", bt,
                "--table-id", kt, "--limit", "500", "--as", "bot"],
               label="获取看板记录")
-    return [item["record_id"] for item in (d or {}).get("data", {}).get("items", [])]
+    return [item["record_id"] for item in (d or {}).get("items", [])]
 
 def delete_all_kanban_records(cfg):
     """删除看板表所有记录。"""

@@ -194,11 +194,13 @@ def bitable_insert_message(to, frm, content, priority):
                            "时间": now_ms(), "已读": False})
     if d is None:
         return None
-    # lark-cli batch-create 返回的 records 列表
-    records = d.get("data", {}).get("records", [])
+    # +record-batch-create 返回 record_id_list 或 records
+    rid_list = d.get("record_id_list", [])
+    if rid_list:
+        return rid_list[0]
+    records = d.get("records", [])
     if records:
         return records[0].get("record_id", "")
-    # 兼容不同返回格式
     return d.get("record_id", "")
 
 # ── 命令：send ────────────────────────────────────────────────
@@ -257,7 +259,7 @@ def cmd_inbox(agent_name):
         ]},
         "sort": [{"field_name": "时间", "desc": False}]
     })
-    records = (d or {}).get("data", {}).get("items", [])
+    records = (d or {}).get("items", [])
     if not records:
         print(f"📭 {agent_name} 暂无未读消息")
         return
@@ -292,7 +294,7 @@ def cmd_status(agent_name, status, task, blocker=""):
             {"field_name": "Agent名称", "operator": "is", "value": [agent_name]}
         ]}
     })
-    records = (d or {}).get("data", {}).get("items", [])
+    records = (d or {}).get("items", [])
     fields = {"Agent名称": agent_name, "状态": status, "当前任务": task,
               "阻塞原因": blocker, "更新时间": now_ms()}
     if records:
@@ -324,7 +326,7 @@ def cmd_workspace(agent_name):
     if not tid:
         print(f"❌ 找不到 {agent_name} 的工作空间"); sys.exit(1)
     d = _lark_base_list(BT(), tid, limit=20)
-    items = (d or {}).get("data", {}).get("items", [])
+    items = (d or {}).get("items", [])
     print(f"📁 {agent_name} 工作空间 (最近 {len(items)} 条):\n")
     for rec in items:
         f = rec.get("fields", {})
