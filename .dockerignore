@@ -1,0 +1,37 @@
+# Runtime data (generated inside container)
+agents/
+workspace/
+team.json
+CLAUDE.md
+
+# Runtime config (mounted via volume)
+scripts/runtime_config.json
+scripts/sync_manifest.json
+scripts/.router_seen_ids.json
+scripts/.token_cache.json
+scripts/.router.pid
+
+# Credentials (injected via env or volume)
+.env
+.env.*
+
+# Git
+.git/
+.gitignore
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Other
+*.db
+.playwright-mcp/
+tools/
