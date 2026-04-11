@@ -23,7 +23,8 @@
 import sys, os, json, time, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, PROJECT_ROOT, load_runtime_config, LARK_CLI
+from config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
+from tmux_utils import inject_when_idle
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
 
@@ -203,6 +204,18 @@ def bitable_insert_message(to, frm, content, priority):
 
 # ── 命令：send ────────────────────────────────────────────────
 
+def _notify_agent_tmux(to_agent, from_agent, message):
+    """向目标 agent 的 tmux 窗口注入收件通知（best-effort）。"""
+    try:
+        notify_text = (
+            f"你有来自 {from_agent} 的新消息。"
+            f"请执行: python3 scripts/feishu_msg.py inbox {to_agent}"
+        )
+        inject_when_idle(TMUX_SESSION, to_agent, notify_text, wait_secs=5)
+    except Exception:
+        pass  # best-effort，不影响消息发送本身
+
+
 def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
     actual_message = f"[{task_id}] {message}" if task_id else message
     rid = bitable_insert_message(to_agent, from_agent, actual_message, priority)
@@ -213,6 +226,7 @@ def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
     ws_log(from_agent, "消息发出", f"→ {to_agent}：{actual_message[:10000]}", ref_str)
     ws_log(to_agent, "消息收到", f"← {from_agent}：{actual_message[:10000]}", ref_str)
     print(f"✅ 消息已发送 → {to_agent}  [rid: {rid}]")
+    _notify_agent_tmux(to_agent, from_agent, actual_message)
 
 # ── 命令：direct ──────────────────────────────────────────────
 
@@ -246,6 +260,7 @@ def cmd_direct(to_agent, from_agent, message):
     print(f"✅ 消息已直发 → {to_agent}  [rid: {rid}]")
     if cc_rid:
         print(f"✅ 抄送已发送 → manager     [rid: {cc_rid}]")
+    _notify_agent_tmux(to_agent, from_agent, message)
 
 # ── 命令：inbox ───────────────────────────────────────────────
 
