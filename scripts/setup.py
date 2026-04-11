@@ -187,6 +187,107 @@ def create_chat_group():
     return chat_id, share_link
 
 
+def init_manager_identity():
+    """为 manager 创建身份文件和目录结构（与 /hire 对其他 agent 做的一样）。
+
+    这是一个关键步骤：manager 不走 /hire 流程，但同样需要 identity.md
+    才能知道如何使用 send 命令给团队成员分发任务。没有 identity.md 的
+    manager 只会在群里喊话，其他 agent 收不到任何指令。
+    """
+    mgr_dir = os.path.join(PROJECT_ROOT, "agents", "manager")
+    identity_file = os.path.join(mgr_dir, "identity.md")
+
+    # 幂等：已存在则跳过
+    if os.path.exists(identity_file):
+        print("👔 Manager 身份文件已存在，跳过")
+        return
+
+    print("👔 创建 Manager 身份文件...")
+
+    # 创建目录结构
+    for sub in ["memory/archive", "workspace", "tasks"]:
+        os.makedirs(os.path.join(mgr_dir, sub), exist_ok=True)
+
+    # 从模板生成 identity.md
+    template_file = os.path.join(PROJECT_ROOT, "templates", "manager.identity.md")
+    if os.path.exists(template_file):
+        with open(template_file) as f:
+            content = f.read()
+    else:
+        # 内置最小 identity（模板文件缺失时的兜底）
+        content = """# 我是：manager（主管）
+
+## 角色
+团队总指挥。分配任务、协调进度、做最终决策。
+
+## 职责
+- 把用户的需求拆分为子任务，分配给合适的团队成员
+- 审查下属的产出，批准或要求修改
+- 回应用户（老板）在飞书群里的消息
+
+## 通讯规范（必须遵守）
+```bash
+# 查看收件箱（启动后第一件事）
+python3 scripts/feishu_msg.py inbox manager
+
+# 给团队成员发任务（重要！这是分配工作的唯一方式）
+python3 scripts/feishu_msg.py send <收件人> manager "<指令>" 高
+
+# 回复群里的用户消息
+python3 scripts/feishu_msg.py say manager "<回复内容>"
+
+# 更新自己状态
+python3 scripts/feishu_msg.py status manager 进行中 "<当前在做什么>"
+```
+
+## 关键规则
+1. **收到用户消息后**，用 `send` 命令分发给对应的团队成员
+2. **不要只在群里喊话** — 其他 agent 看不到群聊，必须用 `send` 发到收件箱
+
+## 工作流
+1. 启动 → 读取本文件 → 查飞书收件箱
+2. 收到用户消息 → 用 `send` 分发任务
+3. 收到团队汇报 → 用 `say` 回复群里
+"""
+
+    # 追加团队成员列表
+    team_section = "\n## 团队成员\n"
+    for name, info in AGENTS.items():
+        if name != "manager":
+            team_section += f"- **{name}**：{info.get('role', '成员')}\n"
+    if team_section.strip() != "## 团队成员":
+        content += team_section
+
+    with open(identity_file, "w") as f:
+        f.write(content)
+
+    # 生成 core_memory.md
+    from datetime import datetime
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    today = datetime.now().strftime("%Y-%m-%d")
+    members = ", ".join(f"{n}({info.get('role','')})"
+                        for n, info in AGENTS.items() if n != "manager")
+    core_memory = f"""# manager 核心记忆
+
+> 最后更新：{now}
+
+## 关键事实
+- 入职时间：{today}
+- 角色：主管，负责协调团队
+- 团队成员：{members}
+
+## 当前状态
+- 团队刚组建，全员待命
+
+## 扩展记忆索引
+- （按需添加）
+"""
+    with open(os.path.join(mgr_dir, "core_memory.md"), "w") as f:
+        f.write(core_memory)
+
+    print("   ✅ Manager identity.md + core_memory.md 已创建")
+
+
 def main():
     # 幂等性检查
     if os.path.exists(CONFIG_FILE):
@@ -222,6 +323,9 @@ def main():
     kanban_table = create_kanban_table(base_token)
     ws_tables = create_workspace_tables(base_token)
     chat_id, share_link = create_chat_group()
+
+    # 为 manager 创建身份文件（关键！没有这个 manager 无法正确分发任务）
+    init_manager_identity()
 
     cfg = {
         "lark_profile": lark_profile,

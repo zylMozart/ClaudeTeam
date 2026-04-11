@@ -124,6 +124,31 @@ This is a Feishu platform issue, not a ClaudeTeam issue, but it affects automate
 
 ---
 
+## Bug 7: `setup.py` does not create Manager identity file — Manager cannot distribute tasks [FIXED]
+
+**Location:** `scripts/setup.py`
+
+**Severity:** Critical
+
+**Description:** The setup flow creates `team.json` with a `manager` entry, then runs `setup.py` and `start-team.sh`. But **nobody creates `agents/manager/identity.md`**. The `/hire` skill creates identity files for other agents (scheduler, coder, etc.), but Manager is the first agent — it's created directly by `setup.py` + `start-team.sh`, never going through `/hire`.
+
+Without `identity.md`, the Manager agent:
+- Does not know its team members
+- Does not know how to use `send` to distribute tasks to agents' inboxes
+- Only uses `say` to post in the group chat, which other agents **cannot see**
+- Result: **the entire team is deaf** — Manager talks in group chat, but no agent receives any task
+
+**Impact:** This is effectively a **total system failure**. The team appears to be running (all tmux windows active), but no work can be distributed because the coordination channel (inbox via `send`) is never used.
+
+**Fix applied:** Added `init_manager_identity()` to `setup.py` that:
+1. Creates `agents/manager/` directory structure
+2. Copies `templates/manager.identity.md` (with fallback to built-in template)
+3. Appends current team member list
+4. Generates `core_memory.md` with team roster
+5. Runs automatically during `setup.py`, before team launch
+
+---
+
 ## Enhancement: Add programmatic scope import via lark-cli
 
 **Description:** Currently the only way to batch-add scopes is through the browser UI. It would be much better if `lark-cli` supported adding scopes programmatically, e.g.:
