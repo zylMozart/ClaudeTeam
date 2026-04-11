@@ -3,6 +3,9 @@
   "scopes": {
     "tenant": [
       "base:app:create",
+      "base:field:create",
+      "base:record:create",
+      "base:table:create",
       "bitable:app",
       "bitable:app:readonly",
       "im:chat",

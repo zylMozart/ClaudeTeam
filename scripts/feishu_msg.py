@@ -49,7 +49,7 @@ def extract_text(v):
 # ── lark-cli 封装 ────────────────────────────────────────────
 
 def _lark_run(args, timeout=30):
-    """执行 lark-cli 命令，返回解析后的 JSON（失败返回 None）。"""
+    """执行 lark-cli 命令，返回 data 层 JSON（失败返回 None）。"""
     r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         print(f"  ⚠️ lark-cli 失败: {r.stderr.strip()[:200]}")
@@ -57,9 +57,10 @@ def _lark_run(args, timeout=30):
     if not r.stdout.strip():
         return {}
     try:
-        return json.loads(r.stdout)
+        full = json.loads(r.stdout)
+        return full.get("data", full)
     except json.JSONDecodeError:
-        return {"_raw": r.stdout.strip()}
+        return None
 
 
 def _lark_im_send(chat_id, content=None, markdown=None, image=None, card=None):

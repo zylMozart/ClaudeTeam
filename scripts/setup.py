@@ -13,15 +13,17 @@ LARK_CLI = ["npx", "@larksuite/cli"]
 
 
 def _lark(args, label="", timeout=30):
-    """执行 lark-cli 命令，返回 JSON 输出。失败时打印错误并返回 None。"""
+    """执行 lark-cli 命令，返回 data 层 JSON。失败时打印错误并返回 None。"""
     r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         print(f"   ⚠️ {label}: {r.stderr.strip()[:200]}")
         return None
     try:
-        return json.loads(r.stdout) if r.stdout.strip() else {}
+        full = json.loads(r.stdout) if r.stdout.strip() else {}
+        # lark-cli 返回 {ok, identity, data: {...}}，提取 data 层
+        return full.get("data", full)
     except json.JSONDecodeError:
-        return {"_raw": r.stdout.strip()}
+        return None
 
 
 def create_bitable():
@@ -29,10 +31,14 @@ def create_bitable():
     print("📊 创建 Bitable...")
     d = _lark(["base", "+base-create", "--name", f"{TMUX_SESSION}-通讯中心", "--as", "bot"],
               label="创建 Bitable")
-    if not d or not d.get("app"):
+    if not d:
         print(f"❌ 创建 Bitable 失败"); sys.exit(1)
-    base_token = d["app"].get("app_token", "")
-    default_table = d["app"].get("default_table_id", "")
+    # lark-cli 返回 data.base.base_token 或 data.app.app_token（版本差异）
+    base = d.get("base", d.get("app", d))
+    base_token = base.get("base_token", base.get("app_token", ""))
+    default_table = base.get("default_table_id", "")
+    if not base_token:
+        print(f"❌ 创建 Bitable 失败: 无法获取 base_token: {d}"); sys.exit(1)
     print(f"   base_token: {base_token}")
     return base_token, default_table
 
@@ -70,9 +76,9 @@ def create_status_table(base_token):
     d = _lark(["base", "+table-create", "--base-token", base_token,
                "--name", "Agent状态", "--fields", fields, "--as", "bot"],
               label="创建状态表")
-    if not d or not d.get("table_id"):
-        print("❌ 创建状态表失败"); sys.exit(1)
-    sta_table = d["table_id"]
+    sta_table = (d or {}).get("table_id", "")
+    if not sta_table:
+        print(f"❌ 创建状态表失败: {d}"); sys.exit(1)
 
     # 写入初始状态
     rows = [[n, info["role"], "待命", "等待启动"] for n, info in AGENTS.items()]
@@ -102,10 +108,10 @@ def create_kanban_table(base_token):
     d = _lark(["base", "+table-create", "--base-token", base_token,
                "--name", "项目看板", "--fields", fields, "--as", "bot"],
               label="创建看板表")
-    if not d or not d.get("table_id"):
+    tid = (d or {}).get("table_id", "")
+    if not tid:
         print("⚠️  创建项目看板表失败（跳过）")
         return ""
-    tid = d["table_id"]
     print(f"   table_id: {tid} ✅\n")
     return tid
 
@@ -125,11 +131,12 @@ def create_workspace_tables(base_token):
                    "--name", f"{agent_name}（{info['role']}）工作空间",
                    "--fields", ws_fields, "--as", "bot"],
                   label=f"创建 {agent_name} 工作空间")
-        if not d or not d.get("table_id"):
+        tid = (d or {}).get("table_id", "")
+        if not tid:
             print(f"   ⚠️ {agent_name}: 创建失败")
             continue
-        ws_tables[agent_name] = d["table_id"]
-        print(f"   {agent_name}: {d['table_id']} ✅")
+        ws_tables[agent_name] = tid
+        print(f"   {agent_name}: {tid} ✅")
         time.sleep(0.3)
     print()
     return ws_tables
@@ -144,10 +151,10 @@ def create_chat_group():
                "--type", "private",
                "--set-bot-manager", "--as", "bot"],
               label="创建群组")
-    if not d or not d.get("chat_id"):
+    chat_id = (d or {}).get("chat_id", "")
+    if not chat_id:
         print("⚠️  群组创建失败（可能缺少 im:chat 权限）")
         return ""
-    chat_id = d["chat_id"]
     print(f"   chat_id: {chat_id} ✅\n")
     return chat_id
 

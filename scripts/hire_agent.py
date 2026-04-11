@@ -31,9 +31,10 @@ def _lark(args, label="", timeout=30):
         print(f"   ⚠️ {label}: {r.stderr.strip()[:200]}")
         return None
     try:
-        return json.loads(r.stdout) if r.stdout.strip() else {}
+        full = json.loads(r.stdout) if r.stdout.strip() else {}
+        return full.get("data", full)
     except json.JSONDecodeError:
-        return {"_raw": r.stdout.strip()}
+        return None
 
 def load_team():
     team_file = os.path.join(PROJECT_ROOT, "team.json")
