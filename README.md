@@ -97,9 +97,9 @@ cd ClaudeTeam
 claude
 ```
 
-就这么简单。初始化会自动生成 `CLAUDE.md`，Claude Code 启动时读取它：
+就这么简单。Claude Code 启动时读取仓库自带的 `CLAUDE.md`，引导你完成：
 
-1. **飞书凭证** —— 在飞书开放平台创建应用，粘贴 App ID 和 App Secret
+1. **飞书凭证** —— 在飞书开放平台创建应用，通过 lark-cli 配置凭证
 2. **设计团队** —— 定义你的团队角色（manager + 任何你需要的角色）
 3. **自动初始化** —— 创建飞书群组、多维表格、Agent 目录
 4. **启动** —— 在 tmux 中启动所有 Agent，开始运行
