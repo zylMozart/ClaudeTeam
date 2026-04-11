@@ -12,21 +12,31 @@
     daemon [--interval N]   — 后台定时同步（默认60秒一次）
 
 依赖:
-  Python 3.6+，requests，runtime_config.json（先运行 setup.py）
+  Python 3.6+, lark-cli, runtime_config.json（先运行 setup.py）
 """
-import sys, os, json, time, requests, atexit, signal
+import sys, os, json, time, subprocess, atexit, signal
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, load_runtime_config, save_runtime_config
-from feishu_api import get_token, h, extract_text
+from config import load_runtime_config, save_runtime_config
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")
+LARK_CLI = ["npx", "@larksuite/cli"]
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
 load_cfg = load_runtime_config
 save_cfg = save_runtime_config
+
+def _lark(args, label="", timeout=30):
+    r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        print(f"   ⚠️ {label}: {r.stderr.strip()[:200]}")
+        return None
+    try:
+        return json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        return {"_raw": r.stdout.strip()}
 
 def load_tasks():
     if not os.path.exists(TASKS_FILE):
@@ -34,10 +44,13 @@ def load_tasks():
     with open(TASKS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
-txt = extract_text  # backward compat alias for existing calls
+def extract_text(v):
+    if isinstance(v, list): return v[0].get("text", "") if v else ""
+    return str(v) if v else ""
+
+txt = extract_text
 
 def to_ms(iso_str):
-    """ISO 8601 字符串 → Unix 毫秒时间戳，解析失败返回 0。"""
     try:
         return int(datetime.fromisoformat(iso_str).timestamp() * 1000)
     except Exception:
@@ -47,20 +60,18 @@ def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i+n]
 
-# ── Bitable 操作 ──────────────────────────────────────────────
+# ── Bitable 操作（lark-cli）──────────────────────────────────
 
-def fetch_all_agent_status(token, cfg):
-    """拉取 Agent 状态表，返回 {agent_name: {状态, 当前任务, 更新时间}} 字典。"""
+def fetch_all_agent_status(cfg):
+    """拉取 Agent 状态表。"""
     bt = cfg["bitable_app_token"]
     st = cfg["sta_table_id"]
-    r = requests.post(
-        f"{BASE}/bitable/v1/apps/{bt}/tables/{st}/records/search",
-        headers=h(token),
-        json={"page_size": 100, "sort": [{"field_name": "更新时间", "desc": True}]}
-    )
+    d = _lark(["base", "+record-list", "--base-token", bt,
+               "--table-id", st, "--limit", "100", "--as", "bot"],
+              label="拉取状态表")
     result = {}
     seen = set()
-    for item in r.json().get("data", {}).get("items", []):
+    for item in (d or {}).get("data", {}).get("items", []):
         f = item.get("fields", {})
         agent = txt(f.get("Agent名称", ""))
         if agent and agent not in seen:
@@ -75,52 +86,35 @@ def fetch_all_agent_status(token, cfg):
             }
     return result
 
-def get_all_kanban_record_ids(token, cfg):
-    """分页获取看板表所有记录 ID。"""
+def get_all_kanban_record_ids(cfg):
+    """获取看板表所有记录 ID。"""
     bt, kt = cfg["bitable_app_token"], cfg["kanban_table_id"]
-    ids = []
-    page_token = None
-    while True:
-        body = {"page_size": 500}
-        if page_token:
-            body["page_token"] = page_token
-        d = requests.post(
-            f"{BASE}/bitable/v1/apps/{bt}/tables/{kt}/records/search",
-            headers=h(token), json=body
-        ).json().get("data", {})
-        ids.extend(item["record_id"] for item in d.get("items", []))
-        if not d.get("has_more"):
-            break
-        page_token = d.get("page_token")
-    return ids
+    d = _lark(["base", "+record-list", "--base-token", bt,
+               "--table-id", kt, "--limit", "500", "--as", "bot"],
+              label="获取看板记录")
+    return [item["record_id"] for item in (d or {}).get("data", {}).get("items", [])]
 
-def delete_all_kanban_records(token, cfg):
-    """全量删除看板表现有记录（全量重建前清空）。"""
-    ids = get_all_kanban_record_ids(token, cfg)
+def delete_all_kanban_records(cfg):
+    """删除看板表所有记录。"""
+    ids = get_all_kanban_record_ids(cfg)
     if not ids:
         return
     bt, kt = cfg["bitable_app_token"], cfg["kanban_table_id"]
-    for batch in chunks(ids, 500):
-        requests.post(
-            f"{BASE}/bitable/v1/apps/{bt}/tables/{kt}/records/batch_delete",
-            headers=h(token), json={"records": batch}
-        )
+    for rid in ids:
+        _lark(["base", "+record-delete", "--base-token", bt,
+               "--table-id", kt, "--record-id", rid, "--yes", "--as", "bot"],
+              label=f"删除记录 {rid[:8]}")
 
-def bitable_batch_create(token, cfg, records):
-    """批量写入看板记录，失败时打印警告。"""
+def bitable_batch_create(cfg, records_json):
+    """批量写入看板记录。"""
     bt, kt = cfg["bitable_app_token"], cfg["kanban_table_id"]
-    r = requests.post(
-        f"{BASE}/bitable/v1/apps/{bt}/tables/{kt}/records/batch_create",
-        headers=h(token), json={"records": records}
-    )
-    if r.json().get("code") != 0:
-        print(f"⚠️  批量写入失败: {r.json()}")
+    _lark(["base", "+record-batch-create", "--base-token", bt,
+           "--table-id", kt, "--json", records_json, "--as", "bot"],
+          label="批量写入看板")
 
 # ── 命令：init ────────────────────────────────────────────────
 
 def cmd_init():
-    """在现有 Bitable 中创建"项目看板"表，将 kanban_table_id 写入 runtime_config.json。"""
-    token = get_token()
     cfg = load_cfg()
 
     if cfg.get("kanban_table_id"):
@@ -128,71 +122,63 @@ def cmd_init():
         return
 
     bt = cfg["bitable_app_token"]
-    r = requests.post(f"{BASE}/bitable/v1/apps/{bt}/tables",
-        headers=h(token), json={"table": {"name": "项目看板", "fields": [
-            {"field_name": "任务ID",        "type": 1},
-            {"field_name": "标题",          "type": 1},
-            {"field_name": "状态",          "type": 3, "property": {"options": [
-                {"name": "待处理", "color": 4}, {"name": "进行中", "color": 1},
-                {"name": "已完成", "color": 2}, {"name": "已取消", "color": 5},
-            ]}},
-            {"field_name": "负责人",        "type": 1},
-            {"field_name": "Agent当前状态", "type": 1},
-            {"field_name": "Agent当前任务", "type": 1},
-            {"field_name": "任务更新时间",  "type": 5},
-            {"field_name": "Agent状态更新", "type": 5},
-        ]}})
-    d = r.json()
-    if d.get("code") != 0:
-        print(f"❌ 创建项目看板表失败: {d}"); sys.exit(1)
+    fields = json.dumps([
+        {"name": "任务ID", "type": "text"},
+        {"name": "标题", "type": "text"},
+        {"name": "状态", "type": "text"},
+        {"name": "负责人", "type": "text"},
+        {"name": "Agent当前状态", "type": "text"},
+        {"name": "Agent当前任务", "type": "text"},
+        {"name": "任务更新时间", "type": "date_time"},
+        {"name": "Agent状态更新", "type": "date_time"},
+    ], ensure_ascii=False)
+    d = _lark(["base", "+table-create", "--base-token", bt,
+               "--name", "项目看板", "--fields", fields, "--as", "bot"],
+              label="创建看板表")
+    if not d or not d.get("table_id"):
+        print("❌ 创建项目看板表失败"); sys.exit(1)
 
-    table_id = d["data"]["table_id"]
-    cfg["kanban_table_id"] = table_id
+    cfg["kanban_table_id"] = d["table_id"]
     save_cfg(cfg)
-    print(f"✅ 项目看板表已创建: {table_id}")
-    print(f"   配置已更新: runtime_config.json → kanban_table_id")
+    print(f"✅ 项目看板表已创建: {d['table_id']}")
 
 # ── 命令：sync ────────────────────────────────────────────────
 
-def do_sync(token, cfg):
-    """全量重建看板表：读取本地任务 + Agent 状态 → 清空旧数据 → 写入新快照。"""
+def do_sync(cfg):
     tasks = load_tasks().get("tasks", [])
-    agent_status = fetch_all_agent_status(token, cfg)
-    delete_all_kanban_records(token, cfg)
+    agent_status = fetch_all_agent_status(cfg)
+    delete_all_kanban_records(cfg)
 
-    records = []
+    if not tasks:
+        print("  ─ 无任务记录")
+        return
+
+    field_names = ["任务ID", "标题", "状态", "负责人", "Agent当前状态", "Agent当前任务"]
+    rows = []
     for task in tasks:
         assignee = task["assignee"]
         ast = agent_status.get(assignee, {})
-        record = {"fields": {
-            "任务ID":        task["task_id"],
-            "标题":          task["title"],
-            "状态":          task["status"],
-            "负责人":        assignee,
-            "Agent当前状态": ast.get("状态", "未知"),
-            "Agent当前任务": ast.get("当前任务", ""),
-        }}
-        # 日期字段仅在有值时写入，避免显示为1970年
-        t_task = to_ms(task.get("updated_at", ""))
-        if t_task:
-            record["fields"]["任务更新时间"] = t_task
-        t_agent = ast.get("更新时间", 0)
-        if t_agent:
-            record["fields"]["Agent状态更新"] = t_agent
-        records.append(record)
+        rows.append([
+            task["task_id"],
+            task["title"],
+            task["status"],
+            assignee,
+            ast.get("状态", "未知"),
+            ast.get("当前任务", ""),
+        ])
 
-    for batch in chunks(records, 500):
-        bitable_batch_create(token, cfg, batch)
+    for batch in chunks(rows, 500):
+        payload = json.dumps({"fields": field_names, "rows": batch}, ensure_ascii=False)
+        bitable_batch_create(cfg, payload)
 
-    print(f"✅ 看板已同步: {len(records)} 条任务")
+    print(f"✅ 看板已同步: {len(rows)} 条任务")
 
 def cmd_sync():
-    token = get_token()
     cfg = load_cfg()
     if not cfg.get("kanban_table_id"):
         print("❌ 未找到 kanban_table_id，请先运行: python3 scripts/kanban_sync.py init")
         sys.exit(1)
-    do_sync(token, cfg)
+    do_sync(cfg)
 
 # ── 命令：daemon ──────────────────────────────────────────────
 
@@ -229,10 +215,9 @@ def cmd_daemon(interval=60):
     print(f"🔄 看板同步守护进程启动（每 {interval} 秒同步一次）")
     while True:
         try:
-            token = get_token()
             cfg = load_cfg()
             if cfg.get("kanban_table_id"):
-                do_sync(token, cfg)
+                do_sync(cfg)
             else:
                 print("⚠️  kanban_table_id 未配置，跳过本次同步")
         except Exception as e:

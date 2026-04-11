@@ -13,15 +13,26 @@
     start-tmux <agent_name>     — 创建 tmux 窗口，启动 Claude，发送初始化消息
 
 依赖:
-  Python 3.6+, requests, config.py, tmux_utils.py
+  Python 3.6+, lark-cli, config.py, tmux_utils.py
 """
-import sys, os, json, time, re, subprocess, requests
+import sys, os, json, time, re, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, PROJECT_ROOT, load_runtime_config, save_runtime_config
-from feishu_api import get_token, h
+from config import PROJECT_ROOT, load_runtime_config, save_runtime_config
+
+LARK_CLI = ["npx", "@larksuite/cli"]
 
 # ── 基础工具 ──────────────────────────────────────────────────
+
+def _lark(args, label="", timeout=30):
+    r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        print(f"   ⚠️ {label}: {r.stderr.strip()[:200]}")
+        return None
+    try:
+        return json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        return {"_raw": r.stdout.strip()}
 
 def load_team():
     team_file = os.path.join(PROJECT_ROOT, "team.json")
@@ -60,34 +71,27 @@ def cmd_setup_feishu(agent_name):
 
     role = agent_info.get("role", agent_name)
     bt = cfg["bitable_app_token"]
-    token = get_token()
 
-    # 检查是否已有工作空间表
     ws_tables = cfg.get("workspace_tables", {})
     if agent_name in ws_tables:
         print(f"⚠️  {agent_name} 的工作空间表已存在: {ws_tables[agent_name]}，跳过创建")
         return
 
-    # 创建工作空间表（复用 setup.py 的表结构）
-    r = requests.post(f"{BASE}/bitable/v1/apps/{bt}/tables",
-                      headers=h(token),
-                      json={"table": {"name": f"{agent_name}（{role}）工作空间",
-                          "fields": [
-                              {"field_name": "类型", "type": 3, "property": {"options": [
-                                  {"name": "状态更新", "color": 1}, {"name": "任务日志", "color": 2},
-                                  {"name": "消息发出", "color": 3}, {"name": "消息收到", "color": 4},
-                                  {"name": "产出记录", "color": 0}, {"name": "阻塞上报", "color": 5},
-                              ]}},
-                              {"field_name": "内容",     "type": 1},
-                              {"field_name": "时间",     "type": 5},
-                              {"field_name": "关联对象", "type": 1},
-                          ]}})
-    d = r.json()
-    if d.get("code") != 0:
-        print(f"❌ 创建工作空间表失败: {d.get('msg', d)}")
+    fields = json.dumps([
+        {"name": "类型", "type": "text"},
+        {"name": "内容", "type": "text"},
+        {"name": "时间", "type": "date_time"},
+        {"name": "关联对象", "type": "text"},
+    ], ensure_ascii=False)
+    d = _lark(["base", "+table-create", "--base-token", bt,
+               "--name", f"{agent_name}（{role}）工作空间",
+               "--fields", fields, "--as", "bot"],
+              label="创建工作空间表")
+    if not d or not d.get("table_id"):
+        print(f"❌ 创建工作空间表失败")
         sys.exit(1)
 
-    tid = d["data"]["table_id"]
+    tid = d["table_id"]
     ws_tables[agent_name] = tid
     cfg["workspace_tables"] = ws_tables
     save_cfg(cfg)
@@ -96,14 +100,13 @@ def cmd_setup_feishu(agent_name):
     # 在状态表中插入初始状态行
     st = cfg.get("sta_table_id")
     if st:
-        requests.post(f"{BASE}/bitable/v1/apps/{bt}/tables/{st}/records",
-                      headers=h(token),
-                      json={"fields": {
-                          "Agent名称": agent_name,
-                          "状态": "待命",
-                          "当前任务": "刚入职，等待初始化",
-                          "更新时间": int(time.time() * 1000),
-                      }})
+        payload = json.dumps({
+            "fields": ["Agent名称", "状态", "当前任务"],
+            "rows": [[agent_name, "待命", "刚入职，等待初始化"]]
+        }, ensure_ascii=False)
+        _lark(["base", "+record-batch-create", "--base-token", bt,
+               "--table-id", st, "--json", payload, "--as", "bot"],
+              label="写入初始状态")
         print(f"✅ 状态表已添加 {agent_name} 初始记录")
 
 # ── 命令：start-tmux ─────────────────────────────────────────
@@ -115,7 +118,6 @@ def cmd_start_tmux(agent_name):
     team = load_team()
     session = team.get("session", "ClaudeTeam")
 
-    # 检查 tmux session 是否存在
     r = subprocess.run(["tmux", "has-session", "-t", session],
                        capture_output=True, timeout=5)
     if r.returncode != 0:
@@ -123,26 +125,22 @@ def cmd_start_tmux(agent_name):
         print(f"   请先运行: bash scripts/start-team.sh")
         return
 
-    # 检查窗口是否已存在
     r = subprocess.run(["tmux", "has-session", "-t", f"{session}:{agent_name}"],
                        capture_output=True, timeout=5)
     if r.returncode == 0:
         print(f"⚠️  tmux 窗口 {agent_name} 已存在，跳过创建")
         return
 
-    # 创建新窗口
     subprocess.run(["tmux", "new-window", "-t", session, "-n", agent_name,
                     "-c", PROJECT_ROOT], capture_output=True)
     print(f"✅ tmux 窗口 {agent_name} 已创建")
 
-    # 启动 Claude
     subprocess.run(["tmux", "send-keys", "-t", f"{session}:{agent_name}",
                     f"claude --dangerously-skip-permissions --name {agent_name}", "Enter"],
                    capture_output=True)
     print(f"⏳ 等待 Claude 启动...")
     time.sleep(3)
 
-    # 发送初始化消息
     from tmux_utils import inject_when_idle
     init_msg = (
         f"你是团队的 {agent_name}。\n\n"

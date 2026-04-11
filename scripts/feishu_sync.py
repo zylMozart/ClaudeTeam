@@ -4,7 +4,8 @@
 
 功能描述:
   扫描本地 workspace/ 产出文件 + agents/ 角色和记忆文件，增量同步到飞书 Drive 云文档。
-  内容以单个 Markdown 代码块存储，文件变化检测用 sha256 hash，映射关系存 sync_manifest.json。
+  使用 lark-cli docs 命令直传 Markdown，无需自研解析器。
+  文件变化检测用 sha256 hash，映射关系存 sync_manifest.json。
 
 同步范围:
   agents/*/workspace/**/*.md  workspace/shared/**/*.md
@@ -20,16 +21,13 @@
     daemon [--interval N]        — 后台守护（默认30秒检查一次）
 
 依赖:
-  Python 3.6+，requests，runtime_config.json（先运行 setup.py）
+  Python 3.6+, lark-cli (npx @larksuite/cli), runtime_config.json（先运行 setup.py）
 """
-import sys, os, re, json, time, glob, hashlib, requests, atexit, signal
+import sys, os, json, time, glob, hashlib, subprocess, atexit, signal
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, load_runtime_config, save_runtime_config
-from feishu_api import get_token, h, api_request
-from feishu_blocks import (parse_markdown_to_blocks, make_text_run, make_text_block,
-                           make_code_block, parse_inline, resolve_language)
+from config import load_runtime_config, save_runtime_config
 
 ROOT          = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST_FILE = os.path.join(os.path.dirname(__file__), "sync_manifest.json")
@@ -40,6 +38,8 @@ SYNC_PATTERNS = [
     "agents/*/identity.md",
     "agents/*/core_memory.md",
 ]
+
+LARK_CLI = ["npx", "@larksuite/cli"]
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
@@ -75,106 +75,51 @@ def file_hash(abs_path):
     with open(abs_path, "rb") as f:
         return "sha256:" + hashlib.sha256(f.read()).hexdigest()[:16]
 
-# ── 飞书 Drive 文件夹 ─────────────────────────────────────────
+# ── lark-cli 文档操作 ────────────────────────────────────────
 
-def create_folder(token, name):
+def lark_create_folder(name):
     """在飞书 Drive 根目录创建文件夹，返回 folder_token。"""
-    r = api_request("POST", f"{BASE}/drive/v1/files/create_folder", token,
-                    json={"name": name, "folder_token": ""})
-    d = r.json()
-    if d.get("code") != 0:
-        print(f"❌ 创建文件夹失败: {d}"); sys.exit(1)
-    return d["data"]["token"]
+    r = subprocess.run(
+        LARK_CLI + ["drive", "files", "create_folder",
+                    "--name", name, "--folder_token", "", "--as", "bot"],
+        capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        print(f"❌ 创建文件夹失败: {r.stderr}")
+        sys.exit(1)
+    d = json.loads(r.stdout)
+    return d.get("data", {}).get("token", "")
 
-# ── 飞书 Docx 文档操作 ────────────────────────────────────────
+def lark_create_doc(folder_token, title, markdown_path):
+    """用 lark-cli 创建飞书文档（直传 Markdown 文件），返回 doc URL。"""
+    r = subprocess.run(
+        LARK_CLI + ["docs", "+create",
+                    "--folder-token", folder_token,
+                    "--title", title,
+                    "--markdown", f"@{markdown_path}",
+                    "--as", "bot"],
+        capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError(f"创建文档失败: {r.stderr.strip()}")
+    d = json.loads(r.stdout)
+    return d.get("document_id", d.get("url", ""))
 
-def _chunks(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
-def ensure_doc(token, folder_token, title):
-    """创建空飞书 docx 文档，返回 doc_id。"""
-    r = api_request("POST", f"{BASE}/docx/v1/documents", token,
-                    json={"title": title, "folder_token": folder_token})
-    d = r.json()
-    if d.get("code") != 0:
-        raise RuntimeError(f"创建文档失败: {d}")
-    return d["data"]["document"]["document_id"]
-
-def clear_doc_children(token, doc_id):
-    """删除 doc 页面 block 下的所有子 block。"""
-    r = api_request("GET",
-                    f"{BASE}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                    token, params={"page_size": 200})
-    items = r.json().get("data", {}).get("items", [])
-    if not items:
-        return
-    r2 = api_request("DELETE",
-                     f"{BASE}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                     token,
-                     params={"start_index": 0, "end_index": len(items)})
-    if r2.status_code >= 300:
-        raise RuntimeError(f"清空文档内容失败: HTTP {r2.status_code} {r2.text[:100]}")
-
-def _json(resp):
-    """解析响应 JSON，失败时抛出含原始响应的 RuntimeError。"""
-    try:
-        return resp.json()
-    except ValueError as e:
-        raise RuntimeError(f"API 响应非 JSON (HTTP {resp.status_code}): {resp.text[:200]}") from e
-
-def upload_children(token, doc_id, parent_block_id, blocks):
-    """向指定父 block 批量追加子 block，每批最多 50 个。用 POST（创建），非 PATCH（重排序）。"""
-    for batch in _chunks(blocks, 50):
-        r = api_request("POST",
-                        f"{BASE}/docx/v1/documents/{doc_id}/blocks/{parent_block_id}/children",
-                        token,
-                        json={"children": batch, "index": -1})
-        d = _json(r)
-        if d.get("code") != 0:
-            raise RuntimeError(f"上传 block 失败: {d}")
-
-def get_table_cell_ids(token, doc_id, table_block_id, R, C):
-    """获取表格自动生成的 cell block IDs，返回 R×C 二维列表。"""
-    r = api_request("GET",
-                    f"{BASE}/docx/v1/documents/{doc_id}/blocks/{table_block_id}/children",
-                    token, params={"page_size": R * C + 10})
-    items = r.json().get("data", {}).get("items", [])
-    block_ids = [item["block_id"] for item in items]
-    return [block_ids[r_idx * C:(r_idx + 1) * C] for r_idx in range(R)]
-
-def upload_table(token, doc_id, table_entry):
-    """两阶段上传表格 block。"""
-    R = table_entry["block"]["table"]["property"]["row_size"]
-    C = table_entry["block"]["table"]["property"]["column_size"]
-    cells = table_entry["cells"]
-
-    # 阶段1：创建 Table block，获取 table_block_id（POST 创建，非 PATCH 重排序）
-    r = api_request("POST",
-                    f"{BASE}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                    token,
-                    json={"children": [table_entry["block"]], "index": -1})
-    d = _json(r)
-    if d.get("code") != 0:
-        raise RuntimeError(f"创建 Table block 失败: {d}")
-    table_block_id = d["data"]["children"][0]["block_id"]
-
-    # 阶段2：获取 cell IDs 并写入内容
-    cell_ids = get_table_cell_ids(token, doc_id, table_block_id, R, C)
-    for r_idx in range(R):
-        for c_idx in range(C):
-            if r_idx >= len(cell_ids) or c_idx >= len(cell_ids[r_idx]):
-                continue
-            cell_id = cell_ids[r_idx][c_idx]
-            cell_text = cells[r_idx][c_idx] if c_idx < len(cells[r_idx]) else ""
-            upload_children(token, doc_id, cell_id,
-                            [make_text_block(2, [make_text_run(cell_text)])])
+def lark_update_doc(doc_url, markdown_path):
+    """用 lark-cli 覆盖更新飞书文档内容。"""
+    r = subprocess.run(
+        LARK_CLI + ["docs", "+update",
+                    "--doc", doc_url,
+                    "--mode", "overwrite",
+                    "--markdown", f"@{markdown_path}",
+                    "--as", "bot"],
+        capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError(f"更新文档失败: {r.stderr.strip()}")
 
 # ── 单文件同步逻辑 ────────────────────────────────────────────
 
-def sync_one_file(token, rel_path, manifest, verbose=True):
+def sync_one_file(rel_path, manifest, verbose=True):
     """
-    同步单个文件到飞书 docx（v2：逐 block 上传，支持标题/列表/代码块/表格）。
+    同步单个文件到飞书文档（使用 lark-cli docs --markdown）。
     - 文件不存在时标记 deleted=true，不删飞书侧文档。
     - 内容未变化时跳过。
     """
@@ -198,31 +143,15 @@ def sync_one_file(token, rel_path, manifest, verbose=True):
             print(f"  ─ 未变化，跳过: {rel_path}")
         return
 
-    with open(abs_path, encoding="utf-8") as f:
-        content = f.read()
     folder_token = manifest["folder_token"]
     doc_title = rel_path.replace("/", "_").replace(".md", "")
 
     try:
         if not entry.get("doc_token"):
-            doc_id = ensure_doc(token, folder_token, doc_title)
+            doc_id = lark_create_doc(folder_token, doc_title, abs_path)
         else:
             doc_id = entry["doc_token"]
-            clear_doc_children(token, doc_id)
-
-        blocks = parse_markdown_to_blocks(content)
-
-        plain_batch = []
-        for block in blocks:
-            if block.get("type") == "table":
-                if plain_batch:
-                    upload_children(token, doc_id, doc_id, plain_batch)
-                    plain_batch = []
-                upload_table(token, doc_id, block)
-            else:
-                plain_batch.append(block)
-        if plain_batch:
-            upload_children(token, doc_id, doc_id, plain_batch)
+            lark_update_doc(doc_id, abs_path)
 
         manifest["files"][rel_path] = {
             "doc_token":   doc_id,
@@ -238,7 +167,6 @@ def sync_one_file(token, rel_path, manifest, verbose=True):
 # ── 命令：init ────────────────────────────────────────────────
 
 def cmd_init(folder_name="Agent团队工作空间"):
-    token = get_token()
     cfg = load_cfg()
     manifest = load_manifest()
 
@@ -246,7 +174,7 @@ def cmd_init(folder_name="Agent团队工作空间"):
         print(f"⚠️  同步文件夹已存在: {cfg['sync_folder_token']}，跳过创建")
         return
 
-    folder_token = create_folder(token, folder_name)
+    folder_token = lark_create_folder(folder_name)
     cfg["sync_folder_token"] = folder_token
     save_cfg(cfg)
 
@@ -261,7 +189,6 @@ def cmd_init(folder_name="Agent团队工作空间"):
 # ── 命令：sync ────────────────────────────────────────────────
 
 def cmd_sync():
-    token = get_token()
     manifest = load_manifest()
     if not manifest["folder_token"]:
         print("❌ 未配置 folder_token，请先运行: python3 scripts/feishu_sync.py init")
@@ -270,18 +197,17 @@ def cmd_sync():
     files = scan_files()
     print(f"🔍 扫描到 {len(files)} 个待检查文件")
     for rel_path in files:
-        sync_one_file(token, rel_path, manifest, verbose=True)
+        sync_one_file(rel_path, manifest, verbose=True)
     print("✅ 全量同步完成")
 
 # ── 命令：sync-file ───────────────────────────────────────────
 
 def cmd_sync_file(rel_path):
-    token = get_token()
     manifest = load_manifest()
     if not manifest["folder_token"]:
         print("❌ 未配置 folder_token，请先运行: python3 scripts/feishu_sync.py init")
         sys.exit(1)
-    sync_one_file(token, rel_path, manifest, verbose=True)
+    sync_one_file(rel_path, manifest, verbose=True)
 
 # ── 命令：status ──────────────────────────────────────────────
 
@@ -314,7 +240,6 @@ def cmd_status():
 
         print(f"  {rel_path:<50} {state:<10} {last}")
 
-    # 显示 manifest 中有记录但不在当前扫描结果里的文件（已删除）
     extra = set(synced.keys()) - set(files)
     for rel_path in sorted(extra):
         entry = synced[rel_path]
@@ -363,7 +288,6 @@ def cmd_daemon(interval=30):
     print(f"🔄 文件同步守护进程启动（每 {interval} 秒检查一次）")
     while True:
         try:
-            token = get_token()
             manifest = load_manifest()
             if not manifest["folder_token"]:
                 print("⚠️  folder_token 未配置，跳过本次同步")
@@ -376,7 +300,7 @@ def cmd_daemon(interval=30):
                         continue
                     entry = manifest["files"].get(rel_path, {})
                     if entry.get("last_hash") != file_hash(abs_path):
-                        sync_one_file(token, rel_path, manifest, verbose=True)
+                        sync_one_file(rel_path, manifest, verbose=True)
                         changed += 1
                 if changed:
                     print(f"[{time.strftime('%H:%M:%S')}] 同步 {changed} 个变化文件")

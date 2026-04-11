@@ -3,168 +3,150 @@
 一键初始化：创建飞书群组、Bitable、工作空间表，保存配置
 运行：python3 scripts/setup.py
 """
-import sys, os, json, time, requests
+import sys, os, json, time, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import BASE, AGENTS, CONFIG_FILE, TMUX_SESSION, save_runtime_config
-from feishu_api import get_token, h, now_ms
+from config import AGENTS, CONFIG_FILE, TMUX_SESSION, save_runtime_config
+
+LARK_CLI = ["npx", "@larksuite/cli"]
 
 
-def _api(method, url, token, label="API", **kwargs):
-    """发送飞书 API 请求，失败时打印警告。返回响应 dict。"""
-    r = requests.request(method, url, headers=h(token), **kwargs)
-    d = r.json()
-    if d.get("code") != 0 and d.get("code") is not None:
-        print(f"   ⚠️ {label}: {d.get('msg', d)}")
-    return d
+def _lark(args, label="", timeout=30):
+    """执行 lark-cli 命令，返回 JSON 输出。失败时打印错误并返回 None。"""
+    r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        print(f"   ⚠️ {label}: {r.stderr.strip()[:200]}")
+        return None
+    try:
+        return json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        return {"_raw": r.stdout.strip()}
 
 
-def create_bitable(token):
-    """创建 Bitable 应用，返回 (app_token, default_table_id, url)。"""
+def create_bitable():
+    """创建 Bitable，返回 (base_token, default_table_id)。"""
     print("📊 创建 Bitable...")
-    d = _api("POST", f"{BASE}/bitable/v1/apps", token,
-             json={"name": f"{TMUX_SESSION}-通讯中心"})
-    if d.get("code") != 0:
-        print(f"❌ 创建 Bitable 失败: {d}")
-        sys.exit(1)
-    app_token = d["data"]["app"]["app_token"]
-    default_table = d["data"]["app"]["default_table_id"]
-    url = d["data"]["app"]["url"]
-    print(f"   app_token: {app_token}")
-    print(f"   URL: {url}\n")
-    return app_token, default_table, url
+    d = _lark(["base", "+base-create", "--name", f"{TMUX_SESSION}-通讯中心", "--as", "bot"],
+              label="创建 Bitable")
+    if not d or not d.get("app"):
+        print(f"❌ 创建 Bitable 失败"); sys.exit(1)
+    base_token = d["app"].get("app_token", "")
+    default_table = d["app"].get("default_table_id", "")
+    print(f"   base_token: {base_token}")
+    return base_token, default_table
 
 
-def configure_inbox_table(token, bitable_token, table_id):
-    """配置消息收件箱表（重命名默认表字段 + 添加新字段）。"""
+def configure_inbox_table(base_token, table_id):
+    """配置消息收件箱表字段。"""
     print("📬 配置消息收件箱表...")
-    _api("PATCH", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}", token,
-         label="重命名收件箱表", json={"name": "消息收件箱"})
-
-    d = _api("GET", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields", token,
-             label="获取字段列表")
-    fields = d.get("data", {}).get("items", [])
-    field_map = {"文本": ("消息内容", 1), "单选": ("优先级", 3), "日期": ("时间", 5)}
-    for f_ in fields:
-        fid, fname = f_["field_id"], f_["field_name"]
-        if fname in field_map:
-            new_name, ftype = field_map[fname]
-            body = {"field_name": new_name, "type": ftype}
-            if fname == "单选":
-                body["property"] = {"options": [
-                    {"name": "高", "color": 0}, {"name": "中", "color": 1}, {"name": "低", "color": 2}]}
-            _api("PUT", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields/{fid}",
-                 token, label=f"重命名字段 {fname}→{new_name}", json=body)
-        elif fname == "附件":
-            _api("DELETE", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields/{fid}",
-                 token, label="删除附件字段")
-
-    for field_def in [
-        {"field_name": "收件人", "type": 1},
-        {"field_name": "发件人", "type": 1},
-        {"field_name": "已读",   "type": 7},
+    # 添加额外字段（默认表已有基础字段，直接添加缺失的）
+    for field in [
+        {"name": "消息内容", "type": "text"},
+        {"name": "收件人", "type": "text"},
+        {"name": "发件人", "type": "text"},
+        {"name": "优先级", "type": "text"},
+        {"name": "已读", "type": "checkbox"},
+        {"name": "时间", "type": "date_time"},
     ]:
-        _api("POST", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{table_id}/fields",
-             token, label=f"添加字段 {field_def['field_name']}", json=field_def)
+        _lark(["base", "+field-create", "--base-token", base_token,
+               "--table-id", table_id,
+               "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
+              label=f"添加字段 {field['name']}")
     print(f"   table_id: {table_id} ✅\n")
 
 
-def create_status_table(token, bitable_token):
-    """创建 Agent 状态表，写入初始状态行，返回 table_id。"""
+def create_status_table(base_token):
+    """创建 Agent 状态表，返回 table_id。"""
     print("📋 创建 Agent 状态表...")
-    d = _api("POST", f"{BASE}/bitable/v1/apps/{bitable_token}/tables", token,
-             json={"table": {"name": "Agent状态", "fields": [
-                 {"field_name": "Agent名称", "type": 1},
-                 {"field_name": "角色",       "type": 1},
-                 {"field_name": "状态",       "type": 3, "property": {"options": [
-                     {"name": "进行中", "color": 1}, {"name": "已完成", "color": 2},
-                     {"name": "阻塞",   "color": 0}, {"name": "待命",   "color": 4},
-                 ]}},
-                 {"field_name": "当前任务",   "type": 1},
-                 {"field_name": "阻塞原因",   "type": 1},
-                 {"field_name": "更新时间",   "type": 5},
-             ]}})
-    if d.get("code") != 0:
-        print(f"❌ 创建状态表失败: {d}")
-        sys.exit(1)
-    sta_table = d["data"]["table_id"]
+    fields = json.dumps([
+        {"name": "Agent名称", "type": "text"},
+        {"name": "角色", "type": "text"},
+        {"name": "状态", "type": "text"},
+        {"name": "当前任务", "type": "text"},
+        {"name": "阻塞原因", "type": "text"},
+        {"name": "更新时间", "type": "date_time"},
+    ], ensure_ascii=False)
+    d = _lark(["base", "+table-create", "--base-token", base_token,
+               "--name", "Agent状态", "--fields", fields, "--as", "bot"],
+              label="创建状态表")
+    if not d or not d.get("table_id"):
+        print("❌ 创建状态表失败"); sys.exit(1)
+    sta_table = d["table_id"]
 
-    records = [{"fields": {"Agent名称": n, "角色": info["role"], "状态": "待命",
-                            "当前任务": "等待启动", "更新时间": now_ms()}}
-               for n, info in AGENTS.items()]
-    _api("POST", f"{BASE}/bitable/v1/apps/{bitable_token}/tables/{sta_table}/records/batch_create",
-         token, label="写入初始状态", json={"records": records})
+    # 写入初始状态
+    rows = [[n, info["role"], "待命", "等待启动"] for n, info in AGENTS.items()]
+    if rows:
+        payload = json.dumps({"fields": ["Agent名称", "角色", "状态", "当前任务"],
+                              "rows": rows}, ensure_ascii=False)
+        _lark(["base", "+record-batch-create", "--base-token", base_token,
+               "--table-id", sta_table, "--json", payload, "--as", "bot"],
+              label="写入初始状态")
     print(f"   table_id: {sta_table} ✅\n")
     return sta_table
 
 
-def create_kanban_table(token, bitable_token):
-    """创建项目看板表，返回 table_id（失败返回空字符串）。"""
+def create_kanban_table(base_token):
+    """创建项目看板表，返回 table_id。"""
     print("📊 创建项目看板表...")
-    d = _api("POST", f"{BASE}/bitable/v1/apps/{bitable_token}/tables", token,
-             json={"table": {"name": "项目看板", "fields": [
-                 {"field_name": "任务ID",        "type": 1},
-                 {"field_name": "标题",          "type": 1},
-                 {"field_name": "状态",          "type": 3, "property": {"options": [
-                     {"name": "待处理", "color": 4}, {"name": "进行中", "color": 1},
-                     {"name": "已完成", "color": 2}, {"name": "已取消", "color": 5},
-                 ]}},
-                 {"field_name": "负责人",        "type": 1},
-                 {"field_name": "Agent当前状态", "type": 1},
-                 {"field_name": "Agent当前任务", "type": 1},
-                 {"field_name": "任务更新时间",  "type": 5},
-                 {"field_name": "Agent状态更新", "type": 5},
-             ]}})
-    if d.get("code") != 0:
-        print(f"⚠️  创建项目看板表失败（跳过）: {d.get('msg')}")
+    fields = json.dumps([
+        {"name": "任务ID", "type": "text"},
+        {"name": "标题", "type": "text"},
+        {"name": "状态", "type": "text"},
+        {"name": "负责人", "type": "text"},
+        {"name": "Agent当前状态", "type": "text"},
+        {"name": "Agent当前任务", "type": "text"},
+        {"name": "任务更新时间", "type": "date_time"},
+        {"name": "Agent状态更新", "type": "date_time"},
+    ], ensure_ascii=False)
+    d = _lark(["base", "+table-create", "--base-token", base_token,
+               "--name", "项目看板", "--fields", fields, "--as", "bot"],
+              label="创建看板表")
+    if not d or not d.get("table_id"):
+        print("⚠️  创建项目看板表失败（跳过）")
         return ""
-    tid = d["data"]["table_id"]
+    tid = d["table_id"]
     print(f"   table_id: {tid} ✅\n")
     return tid
 
 
-def create_workspace_tables(token, bitable_token):
+def create_workspace_tables(base_token):
     """为每个 Agent 创建工作空间表，返回 {agent_name: table_id}。"""
     print("🗂  创建工作空间表...")
     ws_tables = {}
+    ws_fields = json.dumps([
+        {"name": "类型", "type": "text"},
+        {"name": "内容", "type": "text"},
+        {"name": "时间", "type": "date_time"},
+        {"name": "关联对象", "type": "text"},
+    ], ensure_ascii=False)
     for agent_name, info in AGENTS.items():
-        d = _api("POST", f"{BASE}/bitable/v1/apps/{bitable_token}/tables", token,
-                 json={"table": {"name": f"{agent_name}（{info['role']}）工作空间",
-                     "fields": [
-                         {"field_name": "类型", "type": 3, "property": {"options": [
-                             {"name": "状态更新", "color": 1}, {"name": "任务日志", "color": 2},
-                             {"name": "消息发出", "color": 3}, {"name": "消息收到", "color": 4},
-                             {"name": "产出记录", "color": 0}, {"name": "阻塞上报", "color": 5},
-                         ]}},
-                         {"field_name": "内容",     "type": 1},
-                         {"field_name": "时间",     "type": 5},
-                         {"field_name": "关联对象", "type": 1},
-                     ]}})
-        if d.get("code") != 0:
-            print(f"   ⚠️ {agent_name}: 创建失败 — {d.get('msg')}")
+        d = _lark(["base", "+table-create", "--base-token", base_token,
+                   "--name", f"{agent_name}（{info['role']}）工作空间",
+                   "--fields", ws_fields, "--as", "bot"],
+                  label=f"创建 {agent_name} 工作空间")
+        if not d or not d.get("table_id"):
+            print(f"   ⚠️ {agent_name}: 创建失败")
             continue
-        tid = d["data"]["table_id"]
-        ws_tables[agent_name] = tid
-        print(f"   {agent_name}: {tid} ✅")
+        ws_tables[agent_name] = d["table_id"]
+        print(f"   {agent_name}: {d['table_id']} ✅")
         time.sleep(0.3)
     print()
     return ws_tables
 
 
-def create_chat_group(token):
-    """创建飞书群组，返回 chat_id（失败返回空字符串）。"""
+def create_chat_group():
+    """创建飞书群组，返回 chat_id。"""
     print("💬 创建飞书群组...")
-    d = _api("POST", f"{BASE}/im/v1/chats", token, json={
-        "name": f"🤖 {TMUX_SESSION} 协作团队",
-        "description": "ClaudeTeam 多智能体协作团队",
-        "chat_mode": "group",
-        "chat_type": "private",
-    })
-    if d.get("code") != 0:
-        print(f"⚠️  群组创建失败（可能缺少 im:chat 权限）: {d.get('msg')}")
-        print(f"   请先在飞书开放平台添加 im:chat 权限后重新运行")
+    d = _lark(["im", "+chat-create",
+               "--name", f"🤖 {TMUX_SESSION} 协作团队",
+               "--description", "ClaudeTeam 多智能体协作团队",
+               "--type", "private",
+               "--set-bot-manager", "--as", "bot"],
+              label="创建群组")
+    if not d or not d.get("chat_id"):
+        print("⚠️  群组创建失败（可能缺少 im:chat 权限）")
         return ""
-    chat_id = d["data"]["chat_id"]
+    chat_id = d["chat_id"]
     print(f"   chat_id: {chat_id} ✅\n")
     return chat_id
 
@@ -184,18 +166,15 @@ def main():
         print("❌ team.json 未配置或为空，请先创建团队配置。")
         sys.exit(1)
 
-    token = get_token()
-    print(f"✅ Token 获取成功\n")
-
-    bitable_token, default_table, bitable_url = create_bitable(token)
-    configure_inbox_table(token, bitable_token, default_table)
-    sta_table = create_status_table(token, bitable_token)
-    kanban_table = create_kanban_table(token, bitable_token)
-    ws_tables = create_workspace_tables(token, bitable_token)
-    chat_id = create_chat_group(token)
+    base_token, default_table = create_bitable()
+    configure_inbox_table(base_token, default_table)
+    sta_table = create_status_table(base_token)
+    kanban_table = create_kanban_table(base_token)
+    ws_tables = create_workspace_tables(base_token)
+    chat_id = create_chat_group()
 
     cfg = {
-        "bitable_app_token": bitable_token,
+        "bitable_app_token": base_token,
         "msg_table_id": default_table,
         "sta_table_id": sta_table,
         "kanban_table_id": kanban_table,
@@ -204,12 +183,6 @@ def main():
     }
     save_runtime_config(cfg)
     print(f"✅ 配置已保存到 {CONFIG_FILE}")
-    print()
-    print("=" * 50)
-    print("📊 Bitable:")
-    print(f"   {bitable_url}")
-    if chat_id:
-        print(f"💬 飞书群组 chat_id: {chat_id}")
     print("=" * 50)
 
 if __name__ == "__main__":

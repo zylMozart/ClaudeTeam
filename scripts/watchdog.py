@@ -20,12 +20,14 @@ CHECK_INTERVAL = 60  # 秒
 
 PROCS = [
     {
-        "name":  "feishu_router.py",
+        "name":  "router (lark-cli event | router)",
         "match": "feishu_router.py",
-        "cmd":   ["python3", "scripts/feishu_router.py"],
+        "cmd":   ["bash", "-c",
+                  "npx @larksuite/cli event +subscribe "
+                  "--event-types im.message.receive_v1 "
+                  "--compact --quiet --force "
+                  "| python3 scripts/feishu_router.py --stdin"],
         "pid_file": os.path.join(os.path.dirname(__file__), ".router.pid"),
-        "health_file": os.path.join(os.path.dirname(__file__), ".router_seen_ids.json"),
-        "health_stale_secs": 300,  # 5 分钟无更新视为异常
         "max_retries": 3,
         "retry_count": 0,
     },
