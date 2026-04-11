@@ -89,11 +89,16 @@ def cmd_setup_feishu(agent_name):
                "--name", f"{agent_name}（{role}）工作空间",
                "--fields", fields, "--as", "bot"],
               label="创建工作空间表")
-    if not d or not d.get("table_id"):
-        print(f"❌ 创建工作空间表失败")
+    # +table-create 返回 data.table.id
+    tid = ""
+    if d:
+        if isinstance(d.get("table"), dict):
+            tid = d["table"].get("id", d["table"].get("table_id", ""))
+        else:
+            tid = d.get("table_id", "")
+    if not tid:
+        print(f"❌ 创建工作空间表失败: {d}")
         sys.exit(1)
-
-    tid = d["table_id"]
     ws_tables[agent_name] = tid
     cfg["workspace_tables"] = ws_tables
     save_cfg(cfg)

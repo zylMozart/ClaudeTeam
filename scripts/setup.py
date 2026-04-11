@@ -20,10 +20,20 @@ def _lark(args, label="", timeout=30):
         return None
     try:
         full = json.loads(r.stdout) if r.stdout.strip() else {}
-        # lark-cli 返回 {ok, identity, data: {...}}，提取 data 层
         return full.get("data", full)
     except json.JSONDecodeError:
         return None
+
+
+def _extract_table_id(d):
+    """从 +table-create 响应中提取 table_id（兼容多种路径）。"""
+    if not d:
+        return ""
+    # 路径 1: d["table"]["id"]（lark-cli 实际格式）
+    if isinstance(d.get("table"), dict):
+        return d["table"].get("id", d["table"].get("table_id", ""))
+    # 路径 2: d["table_id"]（直接字段）
+    return d.get("table_id", "")
 
 
 def create_bitable():
@@ -55,7 +65,7 @@ def create_inbox_table(base_token):
     d = _lark(["base", "+table-create", "--base-token", base_token,
                "--name", "消息收件箱", "--fields", fields, "--as", "bot"],
               label="创建收件箱表")
-    msg_table = (d or {}).get("table_id", "")
+    msg_table = _extract_table_id(d)
     if not msg_table:
         print(f"❌ 创建收件箱表失败: {d}"); sys.exit(1)
     print(f"   table_id: {msg_table} ✅\n")
@@ -76,7 +86,7 @@ def create_status_table(base_token):
     d = _lark(["base", "+table-create", "--base-token", base_token,
                "--name", "Agent状态", "--fields", fields, "--as", "bot"],
               label="创建状态表")
-    sta_table = (d or {}).get("table_id", "")
+    sta_table = _extract_table_id(d)
     if not sta_table:
         print(f"❌ 创建状态表失败: {d}"); sys.exit(1)
 
@@ -108,7 +118,7 @@ def create_kanban_table(base_token):
     d = _lark(["base", "+table-create", "--base-token", base_token,
                "--name", "项目看板", "--fields", fields, "--as", "bot"],
               label="创建看板表")
-    tid = (d or {}).get("table_id", "")
+    tid = _extract_table_id(d)
     if not tid:
         print("⚠️  创建项目看板表失败（跳过）")
         return ""
@@ -131,7 +141,7 @@ def create_workspace_tables(base_token):
                    "--name", f"{agent_name}（{info['role']}）工作空间",
                    "--fields", ws_fields, "--as", "bot"],
                   label=f"创建 {agent_name} 工作空间")
-        tid = (d or {}).get("table_id", "")
+        tid = _extract_table_id(d)
         if not tid:
             print(f"   ⚠️ {agent_name}: 创建失败")
             continue
@@ -175,6 +185,7 @@ def main():
         sys.exit(1)
 
     base_token = create_bitable()
+    time.sleep(2)  # 等待 Bitable 初始化完成，避免后续建表报 OpenAPIAddField limited
     msg_table = create_inbox_table(base_token)
     sta_table = create_status_table(base_token)
     kanban_table = create_kanban_table(base_token)

@@ -136,12 +136,19 @@ def cmd_init():
     d = _lark(["base", "+table-create", "--base-token", bt,
                "--name", "项目看板", "--fields", fields, "--as", "bot"],
               label="创建看板表")
-    if not d or not d.get("table_id"):
-        print("❌ 创建项目看板表失败"); sys.exit(1)
+    # +table-create 返回 data.table.id
+    tid = ""
+    if d:
+        if isinstance(d.get("table"), dict):
+            tid = d["table"].get("id", d["table"].get("table_id", ""))
+        else:
+            tid = d.get("table_id", "")
+    if not tid:
+        print(f"❌ 创建项目看板表失败: {d}"); sys.exit(1)
 
-    cfg["kanban_table_id"] = d["table_id"]
+    cfg["kanban_table_id"] = tid
     save_cfg(cfg)
-    print(f"✅ 项目看板表已创建: {d['table_id']}")
+    print(f"✅ 项目看板表已创建: {tid}")
 
 # ── 命令：sync ────────────────────────────────────────────────
 
