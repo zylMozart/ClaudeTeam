@@ -20,7 +20,7 @@ import stdlib_module
 import third_party_module
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE  # 本地导入
+from config import AGENTS, TMUX_SESSION, PROJECT_ROOT  # 本地导入
 
 # ── 章节标题 ──────────────────────────────────────────────────
 ```
@@ -40,7 +40,7 @@ from config import APP_ID, APP_SECRET, BASE  # 本地导入
 | 文件名 | `snake_case.py` | `feishu_msg.py`, `token_cache.py` |
 | 函数 | `snake_case` | `get_token()`, `send_message()` |
 | 变量 | `snake_case` | `agent_name`, `chat_id` |
-| 常量 | `UPPER_SNAKE_CASE` | `BASE`, `APP_ID`, `ROUTER_POLL_INTERVAL` |
+| 常量 | `UPPER_SNAKE_CASE` | `TMUX_SESSION`, `PROJECT_ROOT`, `LARK_CLI` |
 | 类 | `PascalCase` | `TokenCache`（尽量少用类，本项目以函数式为主） |
 | 私有/内部 | 前缀 `_` | `_load_env()`, `_cfg` |
 
@@ -56,48 +56,51 @@ from config import APP_ID, APP_SECRET, BASE  # 本地导入
 所有配置通过 `scripts/config.py` 统一入口：
 
 ```python
-from config import APP_ID, APP_SECRET, BASE, AGENTS, CONFIG_FILE, TMUX_SESSION, PROJECT_ROOT
+from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, CONFIG_FILE
+from config import load_runtime_config, save_runtime_config
 ```
 
 **禁止：**
-- 在脚本中硬编码飞书 App ID、Secret 或 API 地址
-- 直接读取 `.env` 文件（用 `config.py` 的 `_load_env()`）
+- 在脚本中硬编码飞书凭据（lark-cli 统一管理认证，`lark-cli config init`）
 - 直接读取 `team.json`（用 `config.py` 导出的 `AGENTS`、`TMUX_SESSION`）
 
-**运行时配置**（`runtime_config.json`）通过各脚本内的 `cfg()` 懒加载函数访问。
+**运行时配置**（`runtime_config.json`）通过 `load_runtime_config()` / `save_runtime_config()` 访问。
 
 ---
 
 ## 4. 飞书 API 调用规范
 
-### Token 获取
+### lark-cli 调用
+
+所有飞书 API 操作通过 `lark-cli` （`@larksuite/cli`）执行，不直接使用 `requests`：
 
 ```python
-from token_cache import get_token_cached
-token = get_token_cached(APP_ID, APP_SECRET, BASE)
+LARK_CLI = ["npx", "@larksuite/cli"]
+
+def _lark(args, label="", timeout=30):
+    r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        print(f"   ⚠️ {label}: {r.stderr.strip()[:200]}")
+        return None
+    return json.loads(r.stdout) if r.stdout.strip() else {}
 ```
 
-不要自行实现 token 获取逻辑，统一使用 `token_cache.py` 的缓存机制。
+认证由 lark-cli 自动管理（`lark-cli config init` 一次性配置），无需手动获取 token。
 
-### 请求头构造
+### 常用命令
 
-```python
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+```bash
+# 发群消息
+lark-cli im +messages-send --chat-id oc_xxx --markdown "内容" --as bot
+# Bitable 写入
+lark-cli base +record-batch-create --base-token xxx --table-id xxx --json '...' --as bot
+# Bitable 查询
+lark-cli base +record-search --base-token xxx --table-id xxx --json '...' --as bot
 ```
-
-每个与飞书交互的脚本定义局部 `h()` 函数，保持一致。
 
 ### 错误处理
 
-```python
-r = requests.post(url, headers=h(token), json=body)
-if r.status_code != 200 or r.json().get("code") != 0:
-    print(f"❌ API 调用失败: {r.status_code} - {r.json().get('msg', 'unknown')}")
-    return None
-```
-
-- 检查 HTTP 状态码 + 飞书业务码（`code == 0` 为成功）
+- 检查 `subprocess` 返回码 + 解析 JSON 输出
 - 失败时打印错误但不轻易 `sys.exit()`（让调用者决定是否中断）
 
 ---
@@ -165,7 +168,7 @@ print(f"  📥 消息已入队 {agent_name}")        # 子步骤（缩进2空格
 内部调用 → 信任，不加冗余 try/except
 ```
 
-- 飞书 API 调用：捕获 `requests` 异常 + 检查返回码
+- lark-cli 调用：检查 `subprocess` 返回码 + JSON 解析
 - 文件读写：`os.path.exists()` 预检查，或 `try/except FileNotFoundError`
 - JSON 解析：`try/except (json.JSONDecodeError, KeyError)`
 - 内部函数调用：不加 try/except，让异常自然冒泡
@@ -247,9 +250,9 @@ cd "$PROJECT_ROOT"
 ```
 scripts/          ← 运行时基础设施（所有用户共享）
   config.py       ← 配置入口（唯一）
-  token_cache.py  ← Token 管理（唯一）
-  feishu_msg.py   ← 消息总线
-  feishu_router.py← 消息路由守护进程
+  feishu_msg.py   ← 消息总线（lark-cli 封装层）
+  feishu_router.py← 消息路由（lark-cli WebSocket 事件流）
+  msg_queue.py    ← 消息待投递队列
   watchdog.py     ← 进程监控
   ...
 templates/        ← Agent 身份模板
@@ -259,7 +262,7 @@ docs/             ← 项目文档
 **新增脚本规则：**
 - 放入 `scripts/` 目录
 - 通过 `config.py` 获取配置
-- 通过 `token_cache.py` 获取 Token
+- 飞书 API 操作通过 `lark-cli` 命令执行（`subprocess.run`）
 - 若为守护进程，在 `watchdog.py` 中注册监控
 - 更新 `docs/` 中的架构说明
 
@@ -271,7 +274,7 @@ docs/             ← 项目文档
 
 - [ ] 无硬编码的密钥、Token、API 地址
 - [ ] 导入顺序正确（stdlib → third-party → local）
-- [ ] 飞书 API 调用有错误处理
+- [ ] lark-cli 调用有错误处理
 - [ ] 守护进程有 PID 锁
 - [ ] tmux 消息注入用 `inject_when_idle()`，无循环 Enter
 - [ ] 输出格式与现有脚本一致（Emoji + 缩进）
