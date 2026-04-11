@@ -53,9 +53,9 @@ for agent in "${AGENTS[@]:1}"; do
   sleep 2
 done
 
-# window: router
+# window: router (lark-cli event stream → router)
 tmux new-window -t "$SESSION" -n "router" -c "$ROOT"
-tmux send-keys -t "$SESSION:router" "python3 scripts/feishu_router.py" Enter
+tmux send-keys -t "$SESSION:router" "npx @larksuite/cli event +subscribe --event-types im.message.receive_v1 --compact --quiet --force | python3 scripts/feishu_router.py --stdin" Enter
 
 # window: kanban (看板同步守护进程)
 tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"
