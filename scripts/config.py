@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-飞书配置中心 — ClaudeTeam 项目
+配置中心 — ClaudeTeam 项目
 
 Agent 团队定义从项目根目录 team.json 读取。
-敏感值从 .env 文件读取，参见 .env.example。
+lark-cli 管理飞书认证，不再需要 .env 中的飞书凭据。
 """
 import sys as _sys, os as _os, json as _json
 
@@ -11,8 +11,10 @@ import sys as _sys, os as _os, json as _json
 PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 CONFIG_FILE  = _os.path.join(PROJECT_ROOT, "scripts", "runtime_config.json")
 
+# ── 飞书凭据（仅供尚未迁移到 lark-cli 的旧脚本使用）──────────────
+
 def _load_env():
-    """从项目根目录的 .env 加载环境变量（优先用 python-dotenv，否则手动解析）。"""
+    """从 .env 加载环境变量（过渡期保留，lark-cli 迁移完成后删除）。"""
     _env_path = _os.path.join(PROJECT_ROOT, ".env")
     try:
         from dotenv import load_dotenv
@@ -28,19 +30,13 @@ def _load_env():
 
 _load_env()
 
-def _require_env(key):
-    val = _os.environ.get(key, "")
-    if not val:
-        print(f"❌ 环境变量 {key} 未设置，请检查 .env 文件或环境变量", file=_sys.stderr)
-        _sys.exit(1)
-    return val
-
-# Feishu App
-APP_ID     = _require_env("FEISHU_APP_ID")
-APP_SECRET = _require_env("FEISHU_APP_SECRET")
+# 过渡期保留：尚未迁移的脚本（router/kanban/hire/setup）仍需这些值
+APP_ID     = _os.environ.get("FEISHU_APP_ID", "")
+APP_SECRET = _os.environ.get("FEISHU_APP_SECRET", "")
 BASE       = _os.environ.get("FEISHU_BASE", "https://open.feishu.cn/open-apis")
 
-# Agent 团队定义（从 team.json 读取）
+# ── Agent 团队定义（从 team.json 读取）─────────────────────────
+
 def _load_team():
     _team_file = _os.path.join(PROJECT_ROOT, "team.json")
     if not _os.path.exists(_team_file):
