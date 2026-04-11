@@ -296,55 +296,76 @@ Wait for the user to confirm completion.
 
 ## Phase 2: Design Your Team
 
-Ask the user what kind of team they want. Present options:
+### Step 1: Understand the project
 
-> **What kind of AI team do you want?**
+Ask the user to describe their project:
+
+> **Tell me about your project.** What are you building?
+> I'll analyze what you need and suggest the right team.
+
+### Step 2: Propose a team
+
+Based on the user's description, analyze what roles are needed. Consider:
+- Frontend work? → coder
+- Backend/API work? → backend or coder
+- System design needed? → architect
+- Testing needed? → tester
+- Documentation/content? → writer
+- Research needed? → researcher
+- Deployment/infra? → devops
+- Platform-specific needs? → specialist roles
+
+Propose a team. Example:
+
+> Based on your project, I recommend:
 >
-> **A — Minimal (3):** manager + coder + tester
-> **B — Standard (5):** manager + architect + coder + tester + writer
-> **C — Custom:** Tell me the roles you need.
+> | Role | Responsibility |
+> |------|---------------|
+> | 🎯 manager (me) | Coordinate, review, report to you |
+> | 🏗️ architect | System design, tech decisions |
+> | 💻 coder | Implementation |
+> | 🧪 tester | Quality assurance |
 >
-> What should we name this team?
+> Should I start building this team? You can also add or remove roles.
 
-Every team must have a `manager`. Generate `team.json`:
+### Step 3: Get confirmation
 
+**⚠️ MANDATORY: Wait for explicit user confirmation before proceeding.**
+Do NOT create any agents without the user saying "yes" / "ok" / "go ahead" or similar.
+
+The user may:
+- **Approve as-is** → proceed
+- **Modify** (add/remove roles) → adjust proposal, show updated list, ask for confirmation again
+- **Say "just manager for now"** → minimal path (skip /hire, only manager)
+
+### Step 4: Build the team
+
+After confirmation, ask the user for a team name, then:
+
+1. Create `team.json` with only `manager`:
 ```json
-{
-  "session": "<team-name>",
-  "agents": {
-    "manager": {"role": "主管", "emoji": "🎯", "color": "blue"},
-    "coder": {"role": "工程师", "emoji": "💻", "color": "green"}
-  }
-}
+{"session": "<team-name>", "agents": {"manager": {"role": "主管", "emoji": "🎯", "color": "blue"}}}
 ```
 
-Then create agent directories with identity files from `templates/`.
+2. Run `python3 scripts/setup.py` to initialize Feishu resources
 
----
+3. Run `bash scripts/start-team.sh` to start tmux (starts manager + router + watchdog)
 
-## Phase 3: Initialize Feishu Resources
-
-```bash
-python3 scripts/setup.py
+4. For each additional role the user confirmed, execute `/hire`:
+```
+/hire architect 系统架构师，负责技术方案设计
+/hire coder 软件工程师，负责代码实现
+/hire tester 测试工程师，负责质量保障
 ```
 
-Creates: Feishu group chat, Bitable tables (inbox, status, kanban, workspace per agent), saves IDs to `scripts/runtime_config.json`.
+5. Once all agents are hired and initialized, enter Phase 5.
 
----
+### Minimal Path
 
-## Phase 4: Launch
-
-```bash
-bash scripts/start-team.sh
-```
-
-Starts: tmux session with all agents, message router (lark-cli WebSocket), kanban sync, watchdog.
-
-Tell the user:
-
-> Your team is running!
-> - **Feishu group**: Send messages to talk to your agents
-> - **tmux**: `tmux attach -t <session>` to view agent windows
+If the user says "just manager" or "no team yet":
+1. Create team.json with only manager
+2. Run setup.py + start-team.sh
+3. Tell the user: "Team is running with just me (manager). Use `/hire` anytime to add teammates."
 
 ---
 
