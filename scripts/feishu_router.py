@@ -62,19 +62,36 @@ class RouterState:
         self.seen_ids = set()
 
     def init_bot_id(self):
-        """通过 lark-cli 获取 bot 的 open_id。"""
-        r = subprocess.run(
-            LARK_CLI + ["im", "+bot-info", "--as", "bot"],
-            capture_output=True, text=True, timeout=15)
-        if r.returncode == 0:
-            try:
+        """通过 lark-cli 获取 bot 的 open_id（从群成员列表中识别 bot 成员）。"""
+        try:
+            cfg_path = os.path.join(os.path.dirname(__file__), "runtime_config.json")
+            with open(cfg_path) as f:
+                chat_id = json.load(f).get("chat_id", "")
+            if not chat_id:
+                print("⚠️ 无 chat_id，自回声过滤将不可用")
+                return
+            r = subprocess.run(
+                LARK_CLI + ["im", "chat.members", "get",
+                            "--params", json.dumps({"chat_id": chat_id, "member_id_type": "open_id"}),
+                            "--as", "bot", "--page-all", "--format", "json"],
+                capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
                 d = json.loads(r.stdout)
-                self.bot_open_id = d.get("bot", {}).get("open_id", d.get("open_id", ""))
-                print(f"🤖 Bot open_id: {self.bot_open_id}")
-            except Exception:
-                print(f"⚠️ 解析 bot info 失败，自回声过滤将不可用")
-        else:
-            print(f"⚠️ 获取 bot info 失败，自回声过滤将不可用")
+                items = d.get("data", {}).get("items", [])
+                # Bot members have member_id_type "open_id" but no tenant_key,
+                # or we can identify by checking all members — the bot is the one
+                # whose open_id starts with "ou_" and is not a regular user.
+                # Fallback: use the app_id prefix to derive bot identity.
+                for item in items:
+                    if item.get("member_id_type") == "open_id" and not item.get("tenant_key"):
+                        self.bot_open_id = item["member_id"]
+                        print(f"🤖 Bot open_id: {self.bot_open_id}")
+                        return
+                print("⚠️ 未在群成员中找到 bot，自回声过滤将不可用")
+            else:
+                print(f"⚠️ 获取群成员失败，自回声过滤将不可用")
+        except Exception as e:
+            print(f"⚠️ 获取 bot info 异常: {e}，自回声过滤将不可用")
 
     def reload_agents(self):
         """热加载 agent 列表。"""

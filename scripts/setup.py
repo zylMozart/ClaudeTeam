@@ -172,8 +172,19 @@ def create_chat_group():
     if not chat_id:
         print("⚠️  群组创建失败（可能缺少 im:chat 权限）")
         return ""
-    print(f"   chat_id: {chat_id} ✅\n")
-    return chat_id
+    print(f"   chat_id: {chat_id} ✅")
+    # 生成永久邀请链接
+    link_data = _lark(["im", "chats", "link",
+                        "--params", json.dumps({"chat_id": chat_id}),
+                        "--data", '{"validity_period":"permanently"}',
+                        "--as", "bot"], label="生成邀请链接")
+    share_link = (link_data or {}).get("share_link", "")
+    if share_link:
+        print(f"   邀请链接: {share_link}")
+    else:
+        print("   ⚠️ 邀请链接生成失败，可稍后手动生成")
+    print()
+    return chat_id, share_link
 
 
 def main():
@@ -197,7 +208,7 @@ def main():
     sta_table = create_status_table(base_token)
     kanban_table = create_kanban_table(base_token)
     ws_tables = create_workspace_tables(base_token)
-    chat_id = create_chat_group()
+    chat_id, share_link = create_chat_group()
 
     cfg = {
         "bitable_app_token": base_token,
@@ -206,9 +217,12 @@ def main():
         "kanban_table_id": kanban_table,
         "workspace_tables": ws_tables,
         "chat_id": chat_id,
+        "share_link": share_link,
     }
     save_runtime_config(cfg)
     print(f"✅ 配置已保存到 {CONFIG_FILE}")
+    if share_link:
+        print(f"\n📎 飞书群聊邀请链接（发给用户）:\n   {share_link}")
     print("=" * 50)
 
 if __name__ == "__main__":

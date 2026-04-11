@@ -171,7 +171,7 @@ You are the setup assistant for ClaudeTeam. Run the status checks below, follow 
 ### Check 1: Is lark-cli configured?
 
 ```bash
-npx @larksuite/cli im +bot-info --as bot 2>/dev/null && echo "CONFIGURED" || echo "NOT CONFIGURED"
+npx @larksuite/cli im +chat-search --query "test" --as bot 2>/dev/null | grep -q '"ok": true' && echo "CONFIGURED" || echo "NOT CONFIGURED"
 ```
 
 ### Check 2: Does `team.json` exist?
@@ -199,98 +199,55 @@ python3 -c "import json; print(json.load(open('team.json'))['session'])" 2>/dev/
 
 ## Phase 1: Configure Feishu App
 
-Ask the user which setup mode they prefer:
+`lark-cli config init --new` handles everything: app creation, permissions, event subscription, and publishing — all in one command.
 
-> **How would you like to set up the Feishu app?**
->
-> **Option A (Recommended):** I'll open the browser and guide you step by step. You just click a few buttons and paste the credentials here.
->
-> **Option B (Manual):** I'll give you all the steps at once and you do them yourself.
-
-### Option A: Guided Setup (Recommended)
-
-#### Step 1: Create the App
-
-Open the browser:
-
-```bash
-open "https://open.feishu.cn/app" 2>/dev/null || xdg-open "https://open.feishu.cn/app" 2>/dev/null || echo "Please open: https://open.feishu.cn/app"
-```
-
-Tell the user:
-
-> I've opened the Feishu Developer Console. Please:
-> 1. Click **"Create Custom App"** (创建企业自建应用)
-> 2. Name it **"ClaudeTeam"** (or anything you like)
-> 3. Copy the **App ID** and **App Secret** and paste them here.
-
-Wait for credentials.
-
-#### Step 2: Configure lark-cli
+### Step 1: Run config init
 
 ```bash
 npx @larksuite/cli config init --new
 ```
 
-Then verify:
+This opens a browser page. Tell the user:
+
+> A browser window has opened. Please:
+> 1. **Scan the QR code** with Feishu to log in
+> 2. Choose **"Create"** (to make a new app) or **"Use Existing App"** (if you already have one)
+> 3. Click **"Confirm"** — that's it!
+
+Wait for the CLI to print `OK: 应用配置成功!` — this means the app is created, permissions and events are configured, and the app is published.
+
+### Step 2: Add remaining permissions
+
+`config init` adds basic scopes, but ClaudeTeam needs more (Bitable, chat management, etc.). Batch-import them:
+
+Open the app's Permissions page:
 
 ```bash
-npx @larksuite/cli im +bot-info --as bot
+# Get the App ID from lark-cli config
+APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
+open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || xdg-open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || echo "Please open: https://open.feishu.cn/app/${APP_ID}/auth"
 ```
 
-#### Step 3: Add Permissions
+Tell the user:
 
-Open the permissions page:
+> I've opened the Permissions page. Please:
+> 1. Click **"Batch import/export scopes"**
+> 2. Select all text in the editor, delete it
+> 3. Paste the JSON I'll give you, then click **"Next, Review New Scopes"** → **"Add"**
+
+The JSON to paste is the `scopes` object from `config/feishu_scopes.json` (without the `description` field):
 
 ```bash
-open "https://open.feishu.cn/app" 2>/dev/null || xdg-open "https://open.feishu.cn/app" 2>/dev/null
+python3 -c "import json; d=json.load(open('config/feishu_scopes.json')); print(json.dumps({'scopes': d['scopes']}, indent=2))"
 ```
 
-Tell the user to open their app settings → **Permissions & Scopes**, and add:
-
-- `bitable:app` — Bitable read/write
-- `base:app:create` — Create Bitable apps
-- `base:table:create` — Create tables
-- `base:field:create` — Create fields
-- `base:record:create` — Create records
-- `im:chat` — Chat management
-- `im:message` — Send & receive messages
-- `im:message:send_as_bot` — Send as bot
-- `im:message:receive_as_bot` — Receive message events
-- `im:resource` — Upload & download files
-
-#### Step 4: Event Subscription
-
-Tell the user to go to **Event Subscription** in app settings:
-
-1. Change method to **"Long connection"** (长连接)
-2. Add event: **im.message.receive_v1**
-3. Save
-
-#### Step 5: Publish
-
-Tell the user to go to **Version Management**, create a version, and publish.
-
-#### Step 6: Verify
+### Step 3: Verify
 
 ```bash
-npx @larksuite/cli im +bot-info --as bot
+npx @larksuite/cli im +chat-search --query "test" --as bot
 ```
 
-If successful, proceed to Phase 2.
-
-### Option B: Manual Setup
-
-Print all steps at once:
-
-1. Visit https://open.feishu.cn → Create Custom App → Copy App ID and Secret
-2. Run `npx @larksuite/cli config init --new`
-3. Add permissions: bitable:app, base:app:create, base:table:create, base:field:create, base:record:create, im:chat, im:message, im:message:send_as_bot, im:message:receive_as_bot, im:resource
-4. Event subscription: Long connection + im.message.receive_v1
-5. Publish the app
-6. Verify: `npx @larksuite/cli im +bot-info --as bot`
-
-Wait for the user to confirm completion.
+If it returns `{"ok": true, ...}`, you're good. Proceed to Phase 2.
 
 ---
 
@@ -358,14 +315,34 @@ After confirmation, ask the user for a team name, then:
 /hire tester 测试工程师，负责质量保障
 ```
 
-5. Once all agents are hired and initialized, enter Phase 5.
+5. **Generate and send the Feishu group chat invite link to the user.** This is the final deliverable — without it the user cannot interact with the team.
+
+```bash
+# Get chat_id from runtime config
+CHAT_ID=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json'))['chat_id'])")
+
+# Generate a permanent share link
+npx @larksuite/cli im chats link \
+  --params "{\"chat_id\":\"${CHAT_ID}\"}" \
+  --data '{"validity_period":"permanently"}' \
+  --as bot --format json
+```
+
+Extract the `share_link` from the response and send it to the user. Tell them:
+
+> Here is your team's Feishu group chat link. Click to join, then you can send messages to control your AI team.
+
+**⚠️ MANDATORY: Do NOT skip this step. The invite link is the primary way the user interacts with their team.**
+
+6. Once all agents are hired and the link is delivered, enter Phase 5.
 
 ### Minimal Path
 
 If the user says "just manager" or "no team yet":
 1. Create team.json with only manager
 2. Run setup.py + start-team.sh
-3. Tell the user: "Team is running with just me (manager). Use `/hire` anytime to add teammates."
+3. Generate and send the group chat invite link to the user
+4. Tell the user: "Team is running with just me (manager). Use `/hire` anytime to add teammates."
 
 ---
 
