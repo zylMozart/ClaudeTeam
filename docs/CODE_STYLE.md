@@ -37,8 +37,8 @@ from config import AGENTS, TMUX_SESSION, PROJECT_ROOT  # 本地导入
 
 | 类型 | 规范 | 示例 |
 |------|------|------|
-| 文件名 | `snake_case.py` | `feishu_msg.py`, `token_cache.py` |
-| 函数 | `snake_case` | `get_token()`, `send_message()` |
+| 文件名 | `snake_case.py` | `feishu_msg.py`, `msg_queue.py` |
+| 函数 | `snake_case` | `load_cfg()`, `send_message()` |
 | 变量 | `snake_case` | `agent_name`, `chat_id` |
 | 常量 | `UPPER_SNAKE_CASE` | `TMUX_SESSION`, `PROJECT_ROOT`, `LARK_CLI` |
 | 类 | `PascalCase` | `TokenCache`（尽量少用类，本项目以函数式为主） |

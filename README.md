@@ -228,8 +228,6 @@ python3 scripts/feishu_msg.py log <名字> 任务日志 "<做了什么>"
 ClaudeTeam/
 ├── README.md                  # 本文件（中文文档）
 ├── LICENSE                    # MIT 许可证
-├── .env.example               # 凭证模板
-├── requirements.txt           # Python 依赖
 │
 ├── docs/                      # 文档
 │   ├── POLICY.md              # 团队通讯规范
@@ -261,7 +259,7 @@ ClaudeTeam/
     └── fire/SKILL.md           # /fire 命令
 ```
 
-**运行时生成（已 gitignore）：** `.env`、`team.json`、`CLAUDE.md`、`agents/`、`workspace/`、`scripts/runtime_config.json`
+**运行时生成（已 gitignore）：** `team.json`、`CLAUDE.md`、`agents/`、`workspace/`、`scripts/runtime_config.json`
 
 ---
 

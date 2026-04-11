@@ -4,10 +4,10 @@ Watchdog Daemon — 监控并自动重启关键守护进程
 运行：python3 scripts/watchdog.py
 
 监控对象:
-  feishu_router.py — 消息路由（核心依赖）
-  kanban_sync.py   — 看板同步守护进程
+  router (lark-cli event | feishu_router.py) — 消息路由（核心依赖）
+  kanban_sync.py — 看板同步守护进程
 
-检测方式: pgrep -f <脚本名>，60秒轮询一次
+检测方式: PID 锁文件 / pgrep，60秒检查一次
 重启方式: subprocess.Popen start_new_session=True
 通知方式: 子进程调用 feishu_msg.py send
 """

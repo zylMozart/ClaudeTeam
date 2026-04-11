@@ -136,7 +136,7 @@ Before contributing, understand the key components:
 - `scripts/` contains runtime infrastructure — changes here affect all users
 - `templates/` contains identity templates — changes here affect new agents
 - `CLAUDE.md` is the entry point for Claude Code — keep it clear and machine-readable
-- Runtime data (`agents/`, `team.json`, `.env`) is never committed
+- Runtime data (`agents/`, `team.json`) is never committed
 
 ---
 
@@ -164,7 +164,7 @@ If you're adding a new script to `scripts/`:
 
 1. Follow existing patterns in the codebase
 2. Use `config.py` for configuration access
-3. Use `token_cache.py` for Feishu API authentication
+3. Use `lark-cli` (via subprocess) for Feishu API operations
 4. Add the script to the project structure section in both README files
 5. If it's a daemon process, add monitoring support in `watchdog.py`
 
