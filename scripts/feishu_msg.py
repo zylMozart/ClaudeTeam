@@ -251,20 +251,38 @@ def cmd_direct(to_agent, from_agent, message):
 
 # ── 命令：inbox ───────────────────────────────────────────────
 
-def cmd_inbox(agent_name):
-    d = _lark_base_search(BT(), MT(), {
-        "filter": {"conjunction": "and", "conditions": [
-            {"field_name": "收件人", "operator": "is", "value": [agent_name]},
-            {"field_name": "已读",   "operator": "is", "value": ["false"]},
-        ]},
-        "sort": [{"field_name": "时间", "desc": False}]
+def _search_records(base_token, table_id, keyword, search_fields):
+    """用 +record-search 搜索记录，返回 [{record_id, fields}, ...]。"""
+    d = _lark_base_search(base_token, table_id, {
+        "keyword": keyword,
+        "search_fields": search_fields
     })
-    records = (d or {}).get("items", [])
-    if not records:
+    if not d:
+        return []
+    # +record-search 返回 {data: [[row...]], fields: [...], record_id_list: [...]}
+    rows = d.get("data", [])
+    field_names = d.get("fields", [])
+    rid_list = d.get("record_id_list", [])
+    results = []
+    for i, row in enumerate(rows):
+        fields = {}
+        for j, val in enumerate(row):
+            if j < len(field_names):
+                fields[field_names[j]] = val
+        rid = rid_list[i] if i < len(rid_list) else ""
+        results.append({"record_id": rid, "fields": fields})
+    return results
+
+
+def cmd_inbox(agent_name):
+    records = _search_records(BT(), MT(), agent_name, ["收件人"])
+    # 本地过滤未读消息
+    unread = [r for r in records if not r["fields"].get("已读")]
+    if not unread:
         print(f"📭 {agent_name} 暂无未读消息")
         return
-    print(f"📬 {agent_name} 有 {len(records)} 条未读消息:\n")
-    for rec in records:
+    print(f"📬 {agent_name} 有 {len(unread)} 条未读消息:\n")
+    for rec in unread:
         f = rec["fields"]
         rid = rec["record_id"]
         t = f.get("时间", 0)
@@ -289,12 +307,7 @@ def cmd_read(record_id):
 
 def cmd_status(agent_name, status, task, blocker=""):
     # 先搜索是否已有记录
-    d = _lark_base_search(BT(), ST(), {
-        "filter": {"conjunction": "and", "conditions": [
-            {"field_name": "Agent名称", "operator": "is", "value": [agent_name]}
-        ]}
-    })
-    records = (d or {}).get("items", [])
+    records = _search_records(BT(), ST(), agent_name, ["Agent名称"])
     fields = {"Agent名称": agent_name, "状态": status, "当前任务": task,
               "阻塞原因": blocker, "更新时间": now_ms()}
     if records:

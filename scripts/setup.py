@@ -167,7 +167,7 @@ def create_chat_group():
                "--description", "ClaudeTeam 多智能体协作团队",
                "--type", "private",
                "--set-bot-manager", "--as", "bot"],
-              label="创建群组")
+              label="创建群组", timeout=60)
     chat_id = (d or {}).get("chat_id", "")
     if not chat_id:
         print("⚠️  群组创建失败（可能缺少 im:chat 权限）")
