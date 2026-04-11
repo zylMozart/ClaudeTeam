@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 飞书配置中心 — ClaudeTeam 项目
 
@@ -7,9 +8,8 @@ Agent 团队定义从项目根目录 team.json 读取。
 import sys as _sys, os as _os, json as _json
 
 # 项目根目录
-import os
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_FILE  = os.path.join(PROJECT_ROOT, "scripts", "runtime_config.json")
+PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+CONFIG_FILE  = _os.path.join(PROJECT_ROOT, "scripts", "runtime_config.json")
 
 def _load_env():
     """从项目根目录的 .env 加载环境变量（优先用 python-dotenv，否则手动解析）。"""
@@ -58,3 +58,26 @@ TMUX_SESSION = _TEAM.get("session", "ClaudeTeam")
 
 # Router 轮询间隔（秒）
 ROUTER_POLL_INTERVAL = 3   # 每 3 秒轮询群消息
+
+# ── runtime_config.json 统一访问 ────────────────────────────────
+
+_runtime_cfg = None
+
+def load_runtime_config():
+    """加载 runtime_config.json（带内存缓存）。"""
+    global _runtime_cfg
+    if _runtime_cfg is None:
+        if _os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE) as _f:
+                _runtime_cfg = _json.load(_f)
+        else:
+            print("❌ 未找到 runtime_config.json，请先运行 python3 scripts/setup.py")
+            _sys.exit(1)
+    return _runtime_cfg
+
+def save_runtime_config(cfg):
+    """保存 runtime_config.json 并刷新内存缓存。"""
+    global _runtime_cfg
+    _runtime_cfg = cfg
+    with open(CONFIG_FILE, "w") as _f:
+        _json.dump(cfg, _f, indent=2, ensure_ascii=False)

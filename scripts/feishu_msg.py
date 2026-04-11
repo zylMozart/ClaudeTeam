@@ -19,22 +19,14 @@
 import sys, os, json, time, requests
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, AGENTS, CONFIG_FILE, PROJECT_ROOT
+from config import BASE, AGENTS, PROJECT_ROOT, load_runtime_config
+from feishu_api import get_token, h, now_ms, extract_text
 
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
 
-_cfg = None
 def cfg():
-    global _cfg
-    if _cfg is None:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE) as f:
-                _cfg = json.load(f)
-        else:
-            print("❌ 未找到 runtime_config.json，请先运行 python3 scripts/setup.py")
-            sys.exit(1)
-    return _cfg
+    return load_runtime_config()
 
 def BT():  return cfg()["bitable_app_token"]
 def MT():  return cfg()["msg_table_id"]
@@ -43,21 +35,6 @@ def WS(a): return cfg()["workspace_tables"].get(a, "")
 def CHAT(): return cfg().get("chat_id", "")
 
 # ── 基础工具 ──────────────────────────────────────────────────
-
-from token_cache import get_token_cached
-
-def get_token():
-    return get_token_cached(APP_ID, APP_SECRET, BASE)
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-def now_ms():
-    return int(time.time() * 1000)
-
-def txt(v):
-    if isinstance(v, list): return v[0].get("text", "") if v else ""
-    return str(v) if v else ""
 
 # ── 消息卡片构建 ──────────────────────────────────────────────
 
@@ -285,9 +262,9 @@ def cmd_inbox(agent_name):
         rid = rec["record_id"]
         t = f.get("时间", 0)
         ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
-        frm = txt(f.get("发件人", "?"))
-        pri = txt(f.get("优先级", "?"))
-        content = txt(f.get("消息内容", ""))
+        frm = extract_text(f.get("发件人", "?"))
+        pri = extract_text(f.get("优先级", "?"))
+        content = extract_text(f.get("消息内容", ""))
         print(f"── [{ts}] 来自 {frm} [优先级:{pri}]")
         print(f"   {content}")
         print(f"   标记已读: python3 scripts/feishu_msg.py read {rid}")
@@ -356,9 +333,9 @@ def cmd_workspace(agent_name):
         f = rec["fields"]
         t = f.get("时间", 0)
         ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
-        lt = txt(f.get("类型", "?"))
-        c  = txt(f.get("内容", ""))
-        ref = txt(f.get("关联对象", ""))
+        lt = extract_text(f.get("类型", "?"))
+        c  = extract_text(f.get("内容", ""))
+        ref = extract_text(f.get("关联对象", ""))
         print(f"  [{ts}] {lt:8} {c[:10000]}")
         if ref: print(f"           → {ref}")
     bt = BT()

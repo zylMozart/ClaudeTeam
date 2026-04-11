@@ -18,17 +18,10 @@
 import sys, os, json, time, re, subprocess, requests
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, CONFIG_FILE, PROJECT_ROOT
+from config import BASE, PROJECT_ROOT, load_runtime_config, save_runtime_config
+from feishu_api import get_token, h
 
 # ── 基础工具 ──────────────────────────────────────────────────
-
-def get_token():
-    r = requests.post(f"{BASE}/auth/v3/app_access_token/internal",
-                      json={"app_id": APP_ID, "app_secret": APP_SECRET})
-    return r.json()["app_access_token"]
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 def load_team():
     team_file = os.path.join(PROJECT_ROOT, "team.json")
@@ -36,15 +29,13 @@ def load_team():
         return json.load(f)
 
 def load_cfg():
-    if not os.path.exists(CONFIG_FILE):
+    try:
+        return load_runtime_config()
+    except SystemExit:
         print("❌ 未找到 runtime_config.json，跳过飞书操作")
         return None
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
 
-def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+save_cfg = save_runtime_config
 
 def validate_name(name):
     if not re.match(r'^[a-z0-9_-]+$', name):
@@ -146,7 +137,7 @@ def cmd_start_tmux(agent_name):
 
     # 启动 Claude
     subprocess.run(["tmux", "send-keys", "-t", f"{session}:{agent_name}",
-                    "claude --dangerously-skip-permissions", "Enter"],
+                    f"claude --dangerously-skip-permissions --name {agent_name}", "Enter"],
                    capture_output=True)
     print(f"⏳ 等待 Claude 启动...")
     time.sleep(3)

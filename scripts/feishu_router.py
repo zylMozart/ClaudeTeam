@@ -3,227 +3,139 @@
 Router Daemon — 轮询飞书群组消息，解析 @mention，路由到对应 tmux 窗口
 运行：python3 scripts/feishu_router.py
 """
-import sys, os, json, time, re, subprocess, requests, threading, atexit, signal
+import sys, os, json, time, re, subprocess, requests, atexit, signal
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, AGENTS, TMUX_SESSION, ROUTER_POLL_INTERVAL, CONFIG_FILE, PROJECT_ROOT
+from config import BASE, AGENTS, TMUX_SESSION, ROUTER_POLL_INTERVAL, PROJECT_ROOT, load_runtime_config
 from tmux_utils import inject_when_idle, is_agent_idle
+from feishu_api import get_token, h
+from token_cache import invalidate as _invalidate_token
+from msg_parser import parse_message
+from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
 
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", "images")
 
-from token_cache import get_token_cached, invalidate as _invalidate_token
+# ── 消息模板常量 ──────────────────────────────────────────────
 
-def get_token():
-    return get_token_cached(APP_ID, APP_SECRET, BASE)
+TPL_AGENT_NOTIFY = (
+    "【Router】你有来自 {sender} 的新消息。\n"
+    "执行: python3 scripts/feishu_msg.py inbox {agent}\n"
+    "消息预览: {preview}"
+)
 
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+TPL_USER_MSG_SHORT = (
+    "【群聊消息】用户在群里对你说:\n{content}\n\n"
+    "请直接处理，然后用以下命令回复群里:\n"
+    "python3 scripts/feishu_msg.py say {agent} \"<你的回复>\""
+)
 
-BOT_OPEN_ID = ""
+TPL_USER_MSG_LONG = (
+    "【群聊消息】用户在群里发了消息（较长，已保存到文件）。\n"
+    "请先读取文件: {file_path}\n"
+    "预览: {preview}\n\n"
+    "处理完成后用以下命令回复群里:\n"
+    "python3 scripts/feishu_msg.py say {agent} \"<你的回复>\""
+)
 
-def get_bot_open_id():
-    """启动时调用 /bot/v3/info 获取 bot 自身的 open_id"""
-    global BOT_OPEN_ID
-    token = get_token()
-    r = requests.get(f"{BASE}/bot/v3/info", headers=h(token))
-    if r.status_code == 200:
-        data = r.json().get("bot", {})
-        BOT_OPEN_ID = data.get("open_id", "")
-        print(f"🤖 Bot open_id: {BOT_OPEN_ID}")
-    else:
-        print(f"⚠️ 获取 bot info 失败: HTTP {r.status_code}, 自回声过滤将不可用")
+TPL_IMAGE_RICH_TEXT = (
+    "【群聊消息】用户在群里发送了图片/富文本消息:\n{content}\n\n"
+    "你可以使用 Read 工具读取图片。处理完成后用以下命令回复群里:\n"
+    "python3 scripts/feishu_msg.py say manager \"<你的回复>\""
+)
 
-def load_cfg():
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
+TPL_IMAGE_DOWNLOADED = (
+    "【Router 补充】之前的图片已下载完成。\n"
+    "本地路径: {path}\n"
+    "你可以使用 Read 工具查看图片。"
+)
 
-# ── 已处理消息 ID（防重复）────────────────────────────────────
+TPL_COMBINED_MSGS = (
+    "【群聊消息】用户连续发了 {count} 条消息:\n\n"
+    "{messages}"
+    "请逐条处理，然后用以下命令回复群里:\n"
+    "python3 scripts/feishu_msg.py say {agent} \"<你的回复>\""
+)
 
-SEEN_IDS_FILE = os.path.join(os.path.dirname(__file__), ".router_seen_ids.json")
+load_cfg = load_runtime_config
 
-def load_seen():
-    if os.path.exists(SEEN_IDS_FILE):
-        with open(SEEN_IDS_FILE) as f:
-            return set(json.load(f))
-    return set()
+# ── Router 状态管理 ──────────────────────────────────────────
 
-def save_seen(ids):
-    # 只保留最近 500 条，防止文件无限增长
-    lst = list(ids)[-500:]
-    with open(SEEN_IDS_FILE, "w") as f:
-        json.dump(lst, f)
+_SEEN_IDS_FILE = os.path.join(os.path.dirname(__file__), ".router_seen_ids.json")
+_TEAM_FILE = os.path.join(PROJECT_ROOT, "team.json")
 
-# ── Agent 列表热加载（基于 team.json mtime）─────────────────────
 
-_team_file = os.path.join(PROJECT_ROOT, "team.json")
-_team_mtime = 0
-_agent_names = []
+class RouterState:
+    """封装 Router 的全局可变状态，避免裸全局变量。"""
 
-def reload_agents():
-    """检查 team.json 变更，热加载 agent 列表"""
-    global _team_mtime, _agent_names
-    try:
-        mt = os.path.getmtime(_team_file)
-        if mt != _team_mtime:
-            with open(_team_file) as f:
-                data = json.load(f)
-            _agent_names = list(data.get("agents", {}).keys())
-            _team_mtime = mt
-            print(f"🔄 Agent 列表已刷新: {', '.join(_agent_names)}")
-    except Exception as e:
-        print(f"⚠️ reload_agents 失败: {e}")
-    return _agent_names
+    def __init__(self):
+        self.bot_open_id = ""
+        self._team_mtime = 0
+        self._agent_names = []
+        self.seen_ids = set()
 
-# ── 解析消息中的 @agent 指令 ─────────────────────────────────
-
-def parse_targets(text):
-    """从消息文本中提取被 @mention 的 agent 名称列表"""
-    found = []
-    for name in reload_agents():
-        if f"@{name}" in text:
-            found.append(name)
-    return found
-
-def parse_sender(text):
-    """从消息格式 【agent · role】 中提取发件人"""
-    m = re.search(r"【(\w[\w-]*)[\s·]", text)
-    if m:
-        name = m.group(1)
-        if name in reload_agents():
-            return name
-    return None
-
-# ── 消息待投递队列（方案 A）─────────────────────────────────────
-
-PENDING_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", ".pending_msgs")
-_queue_lock = threading.Lock()  # 保护队列文件读写（回调线程 + 主线程）
-
-def queue_message(agent_name, msg_text, msg_id, is_user_msg=False):
-    """将消息加入待投递队列（线程安全）"""
-    with _queue_lock:
-        os.makedirs(PENDING_DIR, exist_ok=True)
-        queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
-
-        queue = []
-        if os.path.exists(queue_file):
-            with open(queue_file) as f:
-                queue = json.load(f)
-
-        # 去重：同一 msg_id 不重复入队
-        if any(m["msg_id"] == msg_id for m in queue):
-            return
-
-        queue.append({
-            "msg_id": msg_id,
-            "text": msg_text,
-            "is_user_msg": is_user_msg,
-            "queued_at": time.time(),
-            "attempts": 0,
-            "last_attempt": 0,
-        })
-
-        _save_queue_unlocked(agent_name, queue)
-
-def _save_queue_unlocked(agent_name, queue):
-    """保存队列，清理超过 10 分钟的过期消息（调用方需持有 _queue_lock）"""
-    now = time.time()
-
-    # 检查并记录即将过期的消息
-    expired = [m for m in queue if now - m["queued_at"] >= 600]
-    for m in expired:
-        wait_secs = int(now - m["queued_at"])
-        msg_id_short = m.get("msg_id", "?")[:8]
-        if m.get("is_user_msg"):
-            print(f"  ⚠️ [{agent_name}] 用户消息过期丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s")
+    def init_bot_id(self):
+        """启动时调用 /bot/v3/info 获取 bot 自身的 open_id。"""
+        token = get_token()
+        r = requests.get(f"{BASE}/bot/v3/info", headers=h(token))
+        if r.status_code == 200:
+            data = r.json().get("bot", {})
+            self.bot_open_id = data.get("open_id", "")
+            print(f"🤖 Bot open_id: {self.bot_open_id}")
         else:
-            print(f"  🗑️ [{agent_name}] 队列消息过期丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s")
+            print(f"⚠️ 获取 bot info 失败: HTTP {r.status_code}, 自回声过滤将不可用")
 
-    queue = [m for m in queue if now - m["queued_at"] < 600]
+    def load_seen(self):
+        """从文件加载已处理消息 ID。"""
+        if os.path.exists(_SEEN_IDS_FILE):
+            with open(_SEEN_IDS_FILE) as f:
+                self.seen_ids = set(json.load(f))
+        return self.seen_ids
 
-    os.makedirs(PENDING_DIR, exist_ok=True)
-    queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
-    with open(queue_file, "w") as f:
-        json.dump(queue, f, ensure_ascii=False)
+    def save_seen(self):
+        """持久化已处理消息 ID（保留最近 500 条）。"""
+        lst = list(self.seen_ids)[-500:]
+        with open(_SEEN_IDS_FILE, "w") as f:
+            json.dump(lst, f)
 
-def try_deliver_pending(agent_name):
-    """尝试投递队列中的待处理消息（线程安全）"""
-    with _queue_lock:
-        queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
-        if not os.path.exists(queue_file):
-            return
+    def reload_agents(self):
+        """检查 team.json 变更，热加载 agent 列表。"""
+        try:
+            mt = os.path.getmtime(_TEAM_FILE)
+            if mt != self._team_mtime:
+                with open(_TEAM_FILE) as f:
+                    data = json.load(f)
+                self._agent_names = list(data.get("agents", {}).keys())
+                self._team_mtime = mt
+                print(f"🔄 Agent 列表已刷新: {', '.join(self._agent_names)}")
+        except Exception as e:
+            print(f"⚠️ reload_agents 失败: {e}")
+        return self._agent_names
 
-        with open(queue_file) as f:
-            queue = json.load(f)
+    def is_bot_message(self, sender_id):
+        """检查消息是否来自 bot 自身。"""
+        return bool(self.bot_open_id and sender_id == self.bot_open_id)
 
-        if not queue:
-            return
+    def parse_targets(self, text):
+        """从消息文本中提取被 @mention 的 agent 名称列表。"""
+        found = []
+        for name in self.reload_agents():
+            if f"@{name}" in text:
+                found.append(name)
+        return found
 
-        # 检查 agent 是否空闲
-        if not is_agent_idle(TMUX_SESSION, agent_name):
-            # 不空闲：检查是否需要紧急升级（用户消息等待超过 30 秒）
-            oldest_user_msg = next(
-                (m for m in queue if m["is_user_msg"]), None
-            )
-            if oldest_user_msg:
-                wait_time = time.time() - oldest_user_msg["queued_at"]
-                if wait_time > 30 and oldest_user_msg["attempts"] < 3:
-                    urgent_prompt = (
-                        f"⚠️【紧急】你有 {len(queue)} 条未处理消息"
-                        f"（用户消息等待 {int(wait_time)} 秒）。\n"
-                        f"请尽快处理当前任务后执行: "
-                        f"python3 scripts/feishu_msg.py inbox {agent_name}"
-                    )
-                    inject_when_idle(TMUX_SESSION, agent_name, urgent_prompt,
-                                    wait_secs=2, force_after_wait=True)
-                    oldest_user_msg["attempts"] += 1
-                    oldest_user_msg["last_attempt"] = time.time()
-                    _save_queue_unlocked(agent_name, queue)
-            return
+    def parse_sender(self, text):
+        """从消息格式 【agent · role】 中提取发件人。"""
+        m = re.search(r"【(\w[\w-]*)[\s·]", text)
+        if m:
+            name = m.group(1)
+            if name in self.reload_agents():
+                return name
+        return None
 
-        # 空闲：投递队列中最早的消息
-        msg = queue[0]
-        ok = inject_when_idle(TMUX_SESSION, agent_name, msg["text"],
-                              wait_secs=2, force_after_wait=False)
-        if ok:
-            queue.pop(0)
-            print(f"  ✅ 待投递消息已送达 {agent_name} (msg_id: {msg['msg_id'][:8]})")
-        else:
-            msg["attempts"] += 1
-            msg["last_attempt"] = time.time()
 
-        _save_queue_unlocked(agent_name, queue)
-
-# ── Manager 未读提醒（方案 D）───────────────────────────────────
-
-_last_unread_check = 0
-UNREAD_CHECK_INTERVAL = 30  # 秒
-
-def check_manager_unread():
-    """检查 manager 是否有积压的未读用户消息"""
-    global _last_unread_check
-    now = time.time()
-    if now - _last_unread_check < UNREAD_CHECK_INTERVAL:
-        return
-    _last_unread_check = now
-
-    queue_file = os.path.join(PENDING_DIR, "manager.json")
-    if not os.path.exists(queue_file):
-        return
-
-    with open(queue_file) as f:
-        queue = json.load(f)
-
-    user_msgs = [m for m in queue if m["is_user_msg"]]
-    if not user_msgs:
-        return
-
-    oldest_wait = now - min(m["queued_at"] for m in user_msgs)
-    if oldest_wait > 60:
-        if is_agent_idle(TMUX_SESSION, "manager"):
-            try_deliver_pending("manager")
-        else:
-            print(f"  ⚠️ Manager 有 {len(user_msgs)} 条用户消息积压 {int(oldest_wait)}s")
+# 模块级单例
+_state = RouterState()
 
 # ── 触发 tmux 窗口 ────────────────────────────────────────────
 
@@ -232,11 +144,9 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
     """向 agent 投递消息：先尝试直接投递，忙碌则入队"""
     # 构建 prompt
     if sender_agent:
-        prompt = (
-            f"【Router】你有来自 {sender_agent} 的新消息。\n"
-            f"执行: python3 scripts/feishu_msg.py inbox {agent_name}\n"
-            f"消息预览: {message_preview[:500]}"
-        )
+        prompt = TPL_AGENT_NOTIFY.format(
+            sender=sender_agent, agent=agent_name,
+            preview=message_preview[:500])
     else:
         content = full_text or message_preview
         if len(content) > 400:
@@ -245,30 +155,16 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
             os.makedirs(os.path.dirname(msg_file), exist_ok=True)
             with open(msg_file, "w", encoding="utf-8") as f:
                 f.write(content)
-            prompt = (
-                f"【群聊消息】用户在群里发了消息（较长，已保存到文件）。\n"
-                f"请先读取文件: {msg_file}\n"
-                f"预览: {content[:200]}\n\n"
-                f"处理完成后用以下命令回复群里:\n"
-                f"python3 scripts/feishu_msg.py say {agent_name} \"<你的回复>\""
-            )
+            prompt = TPL_USER_MSG_LONG.format(
+                file_path=msg_file, preview=content[:200], agent=agent_name)
         else:
-            prompt = (
-                f"【群聊消息】用户在群里对你说:\n{content}\n\n"
-                f"请直接处理，然后用以下命令回复群里:\n"
-                f"python3 scripts/feishu_msg.py say {agent_name} \"<你的回复>\""
-            )
+            prompt = TPL_USER_MSG_SHORT.format(
+                content=content, agent=agent_name)
 
     is_user_msg = (sender_agent is None)
 
     # 检查该 agent 的待投递队列是否有积压消息
-    has_pending = False
-    with _queue_lock:
-        queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
-        if os.path.exists(queue_file):
-            with open(queue_file) as f:
-                pending = json.load(f)
-            has_pending = len(pending) > 0
+    has_pending = has_pending_messages(agent_name)
 
     # 仅当队列为空且 agent 空闲时，才可以直接投递（保证 FIFO）
     if not has_pending and is_agent_idle(TMUX_SESSION, agent_name):
@@ -279,9 +175,9 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
             return
 
     # 队列有积压 或 agent 忙碌 → 入队等待（保证 FIFO 顺序）
-    queue_message(agent_name, prompt, msg_id, is_user_msg=is_user_msg)
+    enqueue_message(agent_name, prompt, msg_id, is_user_msg=is_user_msg)
     if has_pending:
-        print(f"  📥 消息已入队 {agent_name}（队列有 {len(pending)} 条积压，保证 FIFO）")
+        print(f"  📥 消息已入队 {agent_name}（队列有积压，保证 FIFO）")
     else:
         print(f"  📥 消息已入队 {agent_name}（agent 忙碌，等待投递）")
 
@@ -321,12 +217,8 @@ def _on_image_downloaded(future, agent_name, msg_id):
     try:
         local_path = future.result()
         if local_path:
-            notify = (
-                f"【Router 补充】之前的图片已下载完成。\n"
-                f"本地路径: {local_path}\n"
-                f"你可以使用 Read 工具查看图片。"
-            )
-            queue_message(agent_name, notify, f"{msg_id}_img", is_user_msg=True)
+            notify = TPL_IMAGE_DOWNLOADED.format(path=local_path)
+            enqueue_message(agent_name, notify, f"{msg_id}_img", is_user_msg=True)
     except Exception as e:
         print(f"  ⚠️ 图片下载回调异常: {e}")
 
@@ -397,20 +289,20 @@ signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 def main():
     print("🚀 Router Daemon 启动")
     acquire_pid_lock()
-    get_bot_open_id()
+    _state.init_bot_id()
     cfg = load_cfg()
     chat_id = cfg.get("chat_id", "")
     if not chat_id:
         print("❌ chat_id 未配置，请先运行 setup.py")
         sys.exit(1)
 
-    seen = load_seen()
-    # 从当前时间开始，只处理新消息
+    _state.load_seen()
     since_ts = int(time.time() * 1000)
+    last_unread_check = 0
 
     print(f"💬 监听群组: {chat_id}")
     print(f"🔄 轮询间隔: {ROUTER_POLL_INTERVAL}s")
-    print(f"👥 Agent 列表: {', '.join(reload_agents())}")
+    print(f"👥 Agent 列表: {', '.join(_state.reload_agents())}")
     print("=" * 50)
 
     while True:
@@ -425,13 +317,13 @@ def main():
 
             for msg in msgs:
                 msg_id  = msg.get("message_id", "")
-                if msg_id in seen:
+                if msg_id in _state.seen_ids:
                     continue
-                seen.add(msg_id)
+                _state.seen_ids.add(msg_id)
 
                 # 过滤 bot 自己发的消息（防止自回声）
                 msg_sender_id = msg.get("sender", {}).get("id", "")
-                if BOT_OPEN_ID and msg_sender_id == BOT_OPEN_ID:
+                if _state.is_bot_message(msg_sender_id):
                     print(f"  ⏭️  跳过 bot 自己的消息: {msg_id}")
                     continue
 
@@ -440,104 +332,34 @@ def main():
                 if create_ts * 1000 > since_ts:
                     since_ts = int(time.time() * 1000)
 
-                # 解析消息内容（按 msg_type 分支处理）
-                msg_type    = msg.get("msg_type", "text")
-                content_raw = msg.get("body", {}).get("content", "{}")
+                # 解析消息内容
+                parsed = parse_message(msg)
+                if parsed["skipped"]:
+                    print(f"  ⏭️  跳过不支持的消息类型: {parsed['msg_type']}")
+                    continue
+                text = parsed["text"]
+                msg_type = parsed["msg_type"]
                 create_time = msg.get("create_time", str(int(time.time())))
 
-                if msg_type == "image":
-                    # 方案 C：图片异步下载，先投递占位通知
-                    content_obj = json.loads(content_raw) if content_raw else {}
-                    image_key   = content_obj.get("image_key", "")
-                    text = f"[图片消息] image_key: {image_key}（下载中...）"
-                    # 异步下载（目标 agent 在路由阶段确定后再绑定回调）
+                # 方案 C：图片异步下载
+                for image_key in parsed["image_keys"]:
                     _img_futures.append({
                         "future": _download_pool.submit(
                             download_image, token, msg_id, image_key, create_time),
                         "msg_id": msg_id,
                     })
 
-                elif msg_type == "text":
-                    try:
-                        content_obj = json.loads(content_raw)
-                        text = content_obj.get("text", "")
-                    except Exception:
-                        text = content_raw
-
-                elif msg_type == "post":
-                    try:
-                        content_obj = json.loads(content_raw) if content_raw else {}
-                    except Exception:
-                        content_obj = {}
-                    # 递归提取所有文本，不逐个解析标签
-                    def _extract_text(obj):
-                        parts = []
-                        if isinstance(obj, dict):
-                            if obj.get("tag") == "img":
-                                image_key = obj.get("image_key", "")
-                                if image_key:
-                                    _img_futures.append({
-                                        "future": _download_pool.submit(
-                                            download_image, token, msg_id,
-                                            image_key, create_time),
-                                        "msg_id": msg_id,
-                                    })
-                            elif "text" in obj:
-                                parts.append(obj["text"])
-                            for v in obj.values():
-                                if isinstance(v, (dict, list)):
-                                    parts.extend(_extract_text(v))
-                        elif isinstance(obj, list):
-                            for item in obj:
-                                parts.extend(_extract_text(item))
-                        return parts
-                    text_parts = _extract_text(content_obj)
-                    text = " ".join(t for t in text_parts if t).strip()
-                    if not text and not _img_futures:
-                        text = "[富文本消息，无法解析内容]"
-
-                elif msg_type == "interactive":
-                    # 消息卡片：飞书 API 返回的 body.content 是简化格式
-                    # 格式: {"title":"emoji agent · role","elements":[[{"tag":"text","text":"内容"}]]}
-                    try:
-                        card = json.loads(content_raw) if content_raw else {}
-                        # title 是扁平字符串（非嵌套的 header.title.content）
-                        header_text = card.get("title", "")
-                        if not header_text:
-                            header_text = card.get("header", {}).get("title", {}).get("content", "")
-                        # elements 是双层数组 [[{tag,text},...],...]
-                        body_parts = []
-                        for row in card.get("elements", []):
-                            if isinstance(row, list):
-                                for elem in row:
-                                    if isinstance(elem, dict):
-                                        body_parts.append(elem.get("text", "") or elem.get("content", ""))
-                            elif isinstance(row, dict):
-                                body_parts.append(row.get("content", "") or row.get("text", ""))
-                        body_text = "\n".join(p for p in body_parts if p)
-                        text = f"{header_text}\n{body_text}" if header_text else body_text
-                    except Exception:
-                        text = content_raw
-
-                else:
-                    print(f"  ⏭️  跳过不支持的消息类型: {msg_type}")
-                    continue
-
                 sender_id = msg.get("sender", {}).get("id", "")
                 print(f"[{time.strftime('%H:%M:%S')}] 新消息: {text[:10000]}")
 
-                sender_agent = parse_sender(text)
-                targets = parse_targets(text)
+                sender_agent = _state.parse_sender(text)
+                targets = _state.parse_targets(text)
 
                 # 图片/富文本消息生成更具体的 full_text 提示
                 if msg_type in ("image", "post") and not sender_agent:
                     has_images = "图片路径:" in text or "image_key:" in text
                     if has_images:
-                        full_text_override = (
-                            f"【群聊消息】用户在群里发送了图片/富文本消息:\n{text}\n\n"
-                            f"你可以使用 Read 工具读取图片。处理完成后用以下命令回复群里:\n"
-                            f"python3 scripts/feishu_msg.py say manager \"<你的回复>\""
-                        )
+                        full_text_override = TPL_IMAGE_RICH_TEXT.format(content=text)
                     else:
                         full_text_override = text
                 else:
@@ -579,25 +401,22 @@ def main():
                                msg_id=user_msgs[0]["msg_id"],
                                full_text=user_msgs[0]["full_text"])
                 else:
-                    combined = f"【群聊消息】用户连续发了 {len(user_msgs)} 条消息:\n\n"
+                    msg_parts = ""
                     for i, um in enumerate(user_msgs, 1):
                         content = um["full_text"] or um["text"]
-                        combined += f"--- 第 {i} 条 ---\n{content}\n\n"
-                    combined += (
-                        f"请逐条处理，然后用以下命令回复群里:\n"
-                        f"python3 scripts/feishu_msg.py say {agent_name} "
-                        f"\"<你的回复>\""
-                    )
+                        msg_parts += f"--- 第 {i} 条 ---\n{content}\n\n"
+                    combined = TPL_COMBINED_MSGS.format(
+                        count=len(user_msgs), messages=msg_parts, agent=agent_name)
                     wake_agent(agent_name, combined,
                                msg_id=user_msgs[0]["msg_id"],
                                full_text=combined)
 
-            save_seen(seen)
+            _state.save_seen()
 
             # 方案 A + D：每轮尝试投递所有 agent 的待处理消息
-            for agent_name in reload_agents():
-                try_deliver_pending(agent_name)
-            check_manager_unread()
+            for agent_name in _state.reload_agents():
+                dequeue_pending(agent_name)
+            last_unread_check = check_manager_unread(last_unread_check)
 
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️  Router 异常: {e}")

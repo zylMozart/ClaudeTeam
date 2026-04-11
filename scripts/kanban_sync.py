@@ -14,34 +14,19 @@
 依赖:
   Python 3.6+，requests，runtime_config.json（先运行 setup.py）
 """
-import sys, os, json, time, requests
+import sys, os, json, time, requests, atexit, signal
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, CONFIG_FILE
+from config import BASE, load_runtime_config, save_runtime_config
+from feishu_api import get_token, h, extract_text
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
-from token_cache import get_token_cached
-
-def get_token():
-    return get_token_cached(APP_ID, APP_SECRET, BASE)
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-def load_cfg():
-    if not os.path.exists(CONFIG_FILE):
-        print("❌ 未找到 runtime_config.json，请先运行 python3 scripts/setup.py")
-        sys.exit(1)
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
-
-def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+load_cfg = load_runtime_config
+save_cfg = save_runtime_config
 
 def load_tasks():
     if not os.path.exists(TASKS_FILE):
@@ -49,9 +34,7 @@ def load_tasks():
     with open(TASKS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
-def txt(v):
-    if isinstance(v, list): return v[0].get("text", "") if v else ""
-    return str(v) if v else ""
+txt = extract_text  # backward compat alias for existing calls
 
 def to_ms(iso_str):
     """ISO 8601 字符串 → Unix 毫秒时间戳，解析失败返回 0。"""
@@ -213,7 +196,36 @@ def cmd_sync():
 
 # ── 命令：daemon ──────────────────────────────────────────────
 
+_PID_FILE = os.path.join(os.path.dirname(__file__), ".kanban_sync.pid")
+
+def _acquire_pid_lock():
+    if os.path.exists(_PID_FILE):
+        try:
+            with open(_PID_FILE) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)
+            print(f"❌ kanban_sync daemon 已在运行 (PID {old_pid})")
+            sys.exit(1)
+        except (ValueError, OSError):
+            pass
+    with open(_PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(_cleanup_pid)
+
+def _cleanup_pid():
+    try:
+        if os.path.exists(_PID_FILE):
+            with open(_PID_FILE) as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(_PID_FILE)
+    except Exception:
+        pass
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
 def cmd_daemon(interval=60):
+    _acquire_pid_lock()
     print(f"🔄 看板同步守护进程启动（每 {interval} 秒同步一次）")
     while True:
         try:
