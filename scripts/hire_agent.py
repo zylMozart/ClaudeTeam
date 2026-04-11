@@ -13,7 +13,8 @@
     start-tmux <agent_name>     — 创建 tmux 窗口，启动 Claude，发送初始化消息
 
 依赖:
-  Python 3.6+, lark-cli, config.py, tmux_utils.py
+  Python 3.6+, lark-cli (base 命令), config.py, tmux_utils.py
+  底层通过 lark-cli 执行飞书 API 操作。
 """
 import sys, os, json, time, re, subprocess
 

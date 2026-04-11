@@ -14,6 +14,7 @@
 
 依赖:
   Python 3.6+, config.py
+  注: 本脚本仅做本地操作（tmux/文件归档/配置清理），不直接调用飞书 API。
 """
 import sys, os, json, time, re, shutil, subprocess
 from datetime import datetime

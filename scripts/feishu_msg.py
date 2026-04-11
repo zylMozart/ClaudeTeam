@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-飞书通讯脚本 — ClaudeTeam
+飞书通讯脚本 — ClaudeTeam（lark-cli 封装层）
+
+底层通过 lark-cli (@larksuite/cli) 执行所有飞书 API 操作，
+本脚本作为 agent 的统一 CLI 入口，保持接口稳定。
 
 用法:
   python3 scripts/feishu_msg.py send <收件人> <发件人> "<消息>" [优先级]
-  python3 scripts/feishu_msg.py direct <收件人> <发件人> "<消息>"  # 直连，manager 自动抄送
-  python3 scripts/feishu_msg.py say <发件人> ["<消息>"] [--image <路径>]  # 发群消息/图片
+  python3 scripts/feishu_msg.py direct <收件人> <发件人> "<消息>"
+  python3 scripts/feishu_msg.py say <发件人> ["<消息>"] [--image <路径>]
   python3 scripts/feishu_msg.py inbox <agent名称>
   python3 scripts/feishu_msg.py read <record_id>
   python3 scripts/feishu_msg.py status <agent> <状态> "<任务>" ["<阻塞原因>"]
   python3 scripts/feishu_msg.py log <agent> <类型> "<内容>" ["<关联对象>"]
   python3 scripts/feishu_msg.py workspace <agent>
 
+依赖: lark-cli (npm install -g @larksuite/cli)
 优先级: 高 | 中（默认）| 低
 状态:   进行中 | 已完成 | 阻塞 | 待命
 类型:   状态更新 | 任务日志 | 消息发出 | 消息收到 | 产出记录 | 阻塞上报

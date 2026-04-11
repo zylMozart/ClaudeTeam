@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 一键初始化：创建飞书群组、Bitable、工作空间表，保存配置
+底层通过 lark-cli 执行飞书 API 操作（im/base 命令）。
 运行：python3 scripts/setup.py
 """
 import sys, os, json, time, subprocess
