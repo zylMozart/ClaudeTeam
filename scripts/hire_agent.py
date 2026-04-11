@@ -79,17 +79,16 @@ def cmd_setup_feishu(agent_name):
         print(f"⚠️  {agent_name} 的工作空间表已存在: {ws_tables[agent_name]}，跳过创建")
         return
 
-    fields = json.dumps([
+    # 先建空表，再逐个添加字段（规避 AddField 限流）
+    ws_fields = [
         {"name": "类型", "type": "text"},
         {"name": "内容", "type": "text"},
         {"name": "时间", "type": "date_time"},
         {"name": "关联对象", "type": "text"},
-    ], ensure_ascii=False)
+    ]
     d = _lark(["base", "+table-create", "--base-token", bt,
-               "--name", f"{agent_name}（{role}）工作空间",
-               "--fields", fields, "--as", "bot"],
+               "--name", f"{agent_name}（{role}）工作空间", "--as", "bot"],
               label="创建工作空间表")
-    # +table-create 返回 data.table.id
     tid = ""
     if d:
         if isinstance(d.get("table"), dict):
@@ -99,6 +98,12 @@ def cmd_setup_feishu(agent_name):
     if not tid:
         print(f"❌ 创建工作空间表失败: {d}")
         sys.exit(1)
+    for field in ws_fields:
+        time.sleep(1)
+        _lark(["base", "+field-create", "--base-token", bt,
+               "--table-id", tid,
+               "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
+              label=f"添加字段 {field['name']}")
     ws_tables[agent_name] = tid
     cfg["workspace_tables"] = ws_tables
     save_cfg(cfg)

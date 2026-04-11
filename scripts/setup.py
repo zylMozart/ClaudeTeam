@@ -29,11 +29,26 @@ def _extract_table_id(d):
     """从 +table-create 响应中提取 table_id（兼容多种路径）。"""
     if not d:
         return ""
-    # 路径 1: d["table"]["id"]（lark-cli 实际格式）
     if isinstance(d.get("table"), dict):
         return d["table"].get("id", d["table"].get("table_id", ""))
-    # 路径 2: d["table_id"]（直接字段）
     return d.get("table_id", "")
+
+
+def _create_table_with_fields(base_token, table_name, fields, label=""):
+    """先建空表，再逐个添加字段（每个间隔 1 秒，规避 AddField 限流）。返回 table_id。"""
+    d = _lark(["base", "+table-create", "--base-token", base_token,
+               "--name", table_name, "--as", "bot"],
+              label=label or f"创建表 {table_name}")
+    tid = _extract_table_id(d)
+    if not tid:
+        return ""
+    for field in fields:
+        time.sleep(1)
+        _lark(["base", "+field-create", "--base-token", base_token,
+               "--table-id", tid,
+               "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
+              label=f"添加字段 {field['name']}")
+    return tid
 
 
 def create_bitable():
@@ -51,74 +66,75 @@ def create_bitable():
     return base_token
 
 
+INBOX_FIELDS = [
+    {"name": "消息内容", "type": "text"},
+    {"name": "收件人", "type": "text"},
+    {"name": "发件人", "type": "text"},
+    {"name": "优先级", "type": "text"},
+    {"name": "已读", "type": "checkbox"},
+    {"name": "时间", "type": "date_time"},
+]
+
+STATUS_FIELDS = [
+    {"name": "Agent名称", "type": "text"},
+    {"name": "角色", "type": "text"},
+    {"name": "状态", "type": "text"},
+    {"name": "当前任务", "type": "text"},
+    {"name": "阻塞原因", "type": "text"},
+    {"name": "更新时间", "type": "date_time"},
+]
+
+KANBAN_FIELDS = [
+    {"name": "任务ID", "type": "text"},
+    {"name": "标题", "type": "text"},
+    {"name": "状态", "type": "text"},
+    {"name": "负责人", "type": "text"},
+    {"name": "Agent当前状态", "type": "text"},
+    {"name": "Agent当前任务", "type": "text"},
+    {"name": "任务更新时间", "type": "date_time"},
+    {"name": "Agent状态更新", "type": "date_time"},
+]
+
+WORKSPACE_FIELDS = [
+    {"name": "类型", "type": "text"},
+    {"name": "内容", "type": "text"},
+    {"name": "时间", "type": "date_time"},
+    {"name": "关联对象", "type": "text"},
+]
+
+
 def create_inbox_table(base_token):
     """创建消息收件箱表，返回 table_id。"""
     print("📬 创建消息收件箱表...")
-    fields = json.dumps([
-        {"name": "消息内容", "type": "text"},
-        {"name": "收件人", "type": "text"},
-        {"name": "发件人", "type": "text"},
-        {"name": "优先级", "type": "text"},
-        {"name": "已读", "type": "checkbox"},
-        {"name": "时间", "type": "date_time"},
-    ], ensure_ascii=False)
-    d = _lark(["base", "+table-create", "--base-token", base_token,
-               "--name", "消息收件箱", "--fields", fields, "--as", "bot"],
-              label="创建收件箱表")
-    msg_table = _extract_table_id(d)
-    if not msg_table:
-        print(f"❌ 创建收件箱表失败: {d}"); sys.exit(1)
-    print(f"   table_id: {msg_table} ✅\n")
-    return msg_table
+    tid = _create_table_with_fields(base_token, "消息收件箱", INBOX_FIELDS, "创建收件箱表")
+    if not tid:
+        print("❌ 创建收件箱表失败"); sys.exit(1)
+    print(f"   table_id: {tid} ✅\n")
+    return tid
 
 
 def create_status_table(base_token):
     """创建 Agent 状态表，返回 table_id。"""
     print("📋 创建 Agent 状态表...")
-    fields = json.dumps([
-        {"name": "Agent名称", "type": "text"},
-        {"name": "角色", "type": "text"},
-        {"name": "状态", "type": "text"},
-        {"name": "当前任务", "type": "text"},
-        {"name": "阻塞原因", "type": "text"},
-        {"name": "更新时间", "type": "date_time"},
-    ], ensure_ascii=False)
-    d = _lark(["base", "+table-create", "--base-token", base_token,
-               "--name", "Agent状态", "--fields", fields, "--as", "bot"],
-              label="创建状态表")
-    sta_table = _extract_table_id(d)
-    if not sta_table:
-        print(f"❌ 创建状态表失败: {d}"); sys.exit(1)
+    tid = _create_table_with_fields(base_token, "Agent状态", STATUS_FIELDS, "创建状态表")
+    if not tid:
+        print("❌ 创建状态表失败"); sys.exit(1)
 
-    # 写入初始状态
     rows = [[n, info["role"], "待命", "等待启动"] for n, info in AGENTS.items()]
     if rows:
         payload = json.dumps({"fields": ["Agent名称", "角色", "状态", "当前任务"],
                               "rows": rows}, ensure_ascii=False)
         _lark(["base", "+record-batch-create", "--base-token", base_token,
-               "--table-id", sta_table, "--json", payload, "--as", "bot"],
+               "--table-id", tid, "--json", payload, "--as", "bot"],
               label="写入初始状态")
-    print(f"   table_id: {sta_table} ✅\n")
-    return sta_table
+    print(f"   table_id: {tid} ✅\n")
+    return tid
 
 
 def create_kanban_table(base_token):
     """创建项目看板表，返回 table_id。"""
     print("📊 创建项目看板表...")
-    fields = json.dumps([
-        {"name": "任务ID", "type": "text"},
-        {"name": "标题", "type": "text"},
-        {"name": "状态", "type": "text"},
-        {"name": "负责人", "type": "text"},
-        {"name": "Agent当前状态", "type": "text"},
-        {"name": "Agent当前任务", "type": "text"},
-        {"name": "任务更新时间", "type": "date_time"},
-        {"name": "Agent状态更新", "type": "date_time"},
-    ], ensure_ascii=False)
-    d = _lark(["base", "+table-create", "--base-token", base_token,
-               "--name", "项目看板", "--fields", fields, "--as", "bot"],
-              label="创建看板表")
-    tid = _extract_table_id(d)
+    tid = _create_table_with_fields(base_token, "项目看板", KANBAN_FIELDS, "创建看板表")
     if not tid:
         print("⚠️  创建项目看板表失败（跳过）")
         return ""
@@ -130,24 +146,15 @@ def create_workspace_tables(base_token):
     """为每个 Agent 创建工作空间表，返回 {agent_name: table_id}。"""
     print("🗂  创建工作空间表...")
     ws_tables = {}
-    ws_fields = json.dumps([
-        {"name": "类型", "type": "text"},
-        {"name": "内容", "type": "text"},
-        {"name": "时间", "type": "date_time"},
-        {"name": "关联对象", "type": "text"},
-    ], ensure_ascii=False)
     for agent_name, info in AGENTS.items():
-        d = _lark(["base", "+table-create", "--base-token", base_token,
-                   "--name", f"{agent_name}（{info['role']}）工作空间",
-                   "--fields", ws_fields, "--as", "bot"],
-                  label=f"创建 {agent_name} 工作空间")
-        tid = _extract_table_id(d)
+        tid = _create_table_with_fields(
+            base_token, f"{agent_name}（{info['role']}）工作空间",
+            WORKSPACE_FIELDS, f"创建 {agent_name} 工作空间")
         if not tid:
             print(f"   ⚠️ {agent_name}: 创建失败")
             continue
         ws_tables[agent_name] = tid
         print(f"   {agent_name}: {tid} ✅")
-        time.sleep(0.3)
     print()
     return ws_tables
 
