@@ -18,10 +18,9 @@ import sys, os, json, time, subprocess, atexit, signal
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import load_runtime_config, save_runtime_config
+from config import load_runtime_config, save_runtime_config, LARK_CLI
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")
-LARK_CLI = ["npx", "@larksuite/cli"]
 
 # ── 基础工具 ──────────────────────────────────────────────────
 

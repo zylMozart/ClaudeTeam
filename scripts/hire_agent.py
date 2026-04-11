@@ -19,9 +19,7 @@
 import sys, os, json, time, re, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import PROJECT_ROOT, load_runtime_config, save_runtime_config
-
-LARK_CLI = ["npx", "@larksuite/cli"]
+from config import PROJECT_ROOT, load_runtime_config, save_runtime_config, LARK_CLI
 
 # ── 基础工具 ──────────────────────────────────────────────────
 

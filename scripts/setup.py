@@ -7,9 +7,9 @@
 import sys, os, json, time, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, CONFIG_FILE, TMUX_SESSION, save_runtime_config
+from config import AGENTS, CONFIG_FILE, TMUX_SESSION, save_runtime_config, get_lark_cli
 
-LARK_CLI = ["npx", "@larksuite/cli"]
+LARK_CLI = get_lark_cli()  # 自动带 --profile（如已初始化）
 
 
 def _lark(args, label="", timeout=30):
@@ -202,6 +202,19 @@ def main():
         print("❌ team.json 未配置或为空，请先创建团队配置。")
         sys.exit(1)
 
+    # 检测当前 lark-cli profile 并保存，确保多项目隔离
+    lark_profile = None
+    try:
+        r = subprocess.run(LARK_CLI + ["config", "show", "--format", "json"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            cfg_data = json.loads(r.stdout)
+            lark_profile = cfg_data.get("profile") or cfg_data.get("appId", "")
+            if lark_profile:
+                print(f"🔑 lark-cli profile: {lark_profile}")
+    except Exception:
+        pass
+
     base_token = create_bitable()
     time.sleep(2)  # 等待 Bitable 初始化完成，避免后续建表报 OpenAPIAddField limited
     msg_table = create_inbox_table(base_token)
@@ -211,6 +224,7 @@ def main():
     chat_id, share_link = create_chat_group()
 
     cfg = {
+        "lark_profile": lark_profile,
         "bitable_app_token": base_token,
         "msg_table_id": msg_table,
         "sta_table_id": sta_table,

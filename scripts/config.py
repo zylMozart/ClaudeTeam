@@ -4,8 +4,9 @@
 
 Agent 团队定义从项目根目录 team.json 读取。
 飞书认证由 lark-cli 管理（lark-cli config init）。
+每个项目使用独立的 lark-cli profile，避免多项目部署冲突。
 """
-import sys as _sys, os as _os, json as _json
+import sys as _sys, os as _os, json as _json, subprocess as _subprocess
 
 # 项目根目录
 PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
@@ -50,3 +51,27 @@ def save_runtime_config(cfg):
     _runtime_cfg = cfg
     with open(CONFIG_FILE, "w") as _f:
         _json.dump(cfg, _f, indent=2, ensure_ascii=False)
+
+
+# ── lark-cli profile 隔离 ──────────────────────────────────────
+
+def _detect_lark_profile():
+    """从 runtime_config.json 读取 lark_profile；未初始化时返回 None。"""
+    if _os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE) as _f:
+                return _json.load(_f).get("lark_profile")
+        except Exception:
+            pass
+    return None
+
+
+def get_lark_cli(profile=None):
+    """返回带 --profile 的 lark-cli 命令前缀列表。"""
+    p = profile or _detect_lark_profile()
+    base = ["npx", "@larksuite/cli"]
+    return base + ["--profile", p] if p else base
+
+
+# 全局常量：其他脚本 from config import LARK_CLI 即可使用
+LARK_CLI = get_lark_cli()

@@ -14,18 +14,23 @@ Watchdog Daemon — 监控并自动重启关键守护进程
 import sys, os, time, subprocess, atexit, signal
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import PROJECT_ROOT
+from config import PROJECT_ROOT, LARK_CLI
 
 CHECK_INTERVAL = 60  # 秒
+
+# 构建带 profile 的 lark-cli event 命令
+_lark_event_cmd = " ".join(LARK_CLI) + (
+    " event +subscribe "
+    "--event-types im.message.receive_v1 "
+    "--compact --quiet --force"
+)
 
 PROCS = [
     {
         "name":  "router (lark-cli event | router)",
         "match": "feishu_router.py",
         "cmd":   ["bash", "-c",
-                  "npx @larksuite/cli event +subscribe "
-                  "--event-types im.message.receive_v1 "
-                  "--compact --quiet --force "
+                  f"{_lark_event_cmd} "
                   "| python3 scripts/feishu_router.py --stdin"],
         "pid_file": os.path.join(os.path.dirname(__file__), ".router.pid"),
         "max_retries": 3,

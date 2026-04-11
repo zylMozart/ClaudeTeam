@@ -27,7 +27,7 @@ import sys, os, json, time, glob, hashlib, subprocess, atexit, signal
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import load_runtime_config, save_runtime_config
+from config import load_runtime_config, save_runtime_config, LARK_CLI
 
 ROOT          = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST_FILE = os.path.join(os.path.dirname(__file__), "sync_manifest.json")
@@ -38,8 +38,6 @@ SYNC_PATTERNS = [
     "agents/*/identity.md",
     "agents/*/core_memory.md",
 ]
-
-LARK_CLI = ["npx", "@larksuite/cli"]
 
 # ── 基础工具 ──────────────────────────────────────────────────
 

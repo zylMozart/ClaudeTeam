@@ -12,12 +12,11 @@ Router Daemon — 从 lark-cli event 事件流读取消息，路由到 tmux 窗�
 import sys, os, json, time, re, subprocess, atexit, signal, threading
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config
+from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
 from tmux_utils import inject_when_idle, is_agent_idle
 from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
 
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", "images")
-LARK_CLI = ["npx", "@larksuite/cli"]
 
 # ── 消息模板常量 ──────────────────────────────────────────────
 

@@ -54,8 +54,14 @@ for agent in "${AGENTS[@]:1}"; do
 done
 
 # window: router (lark-cli event stream → router)
+# 从 runtime_config.json 读取 lark_profile，确保多项目隔离
+LARK_PROFILE=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json')).get('lark_profile',''))" 2>/dev/null)
+PROFILE_FLAG=""
+if [ -n "$LARK_PROFILE" ]; then
+  PROFILE_FLAG="--profile $LARK_PROFILE"
+fi
 tmux new-window -t "$SESSION" -n "router" -c "$ROOT"
-tmux send-keys -t "$SESSION:router" "npx @larksuite/cli event +subscribe --event-types im.message.receive_v1 --compact --quiet --force | python3 scripts/feishu_router.py --stdin" Enter
+tmux send-keys -t "$SESSION:router" "npx @larksuite/cli $PROFILE_FLAG event +subscribe --event-types im.message.receive_v1 --compact --quiet --force | python3 scripts/feishu_router.py --stdin" Enter
 
 # window: kanban (看板同步守护进程)
 tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"
