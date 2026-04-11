@@ -41,7 +41,7 @@ ClaudeTeam turns Claude Code into a multi-agent system. Each agent runs in its o
 ```
 You (Feishu group chat)
   ↕
-Router (polls Feishu, delivers messages)
+Router (real-time WebSocket events from Feishu)
   ↕
 ┌──────────┬──────────┬──────────┐
 │ Manager  │ Agent A  │ Agent B  │  ← tmux windows, each running Claude Code
@@ -57,7 +57,7 @@ You talk to the team in a Feishu group. The manager distributes work. Agents exe
 
 ## Features
 
-- **One-command setup** — Clone, run `setup.py`, CLAUDE.md is auto-generated for Claude Code
+- **One-command setup** — Clone, run `setup.py`, Claude Code auto-guides configuration
 - **Real-time collaboration** — Agents communicate through Feishu group chat with colored message cards
 - **Autonomous agents** — Each agent has its own identity, memory, workspace, and task queue
 - **Team management** — `/hire` and `/fire` slash commands to add or remove agents on the fly
@@ -74,8 +74,10 @@ You talk to the team in a Feishu group. The manager distributes work. Agents exe
 | --------------- | ---------- | ---------------------------------------- |
 | macOS or Linux  | —          | —                                        |
 | Python          | 3.8+       | `python3 --version`                      |
+| Node.js         | 18+        | `node --version`                         |
 | tmux            | any        | `tmux -V`                                |
 | Claude Code CLI | latest     | `claude --version`                       |
+| lark-cli        | latest     | `npx @larksuite/cli --version`           |
 | Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
 
 
@@ -110,11 +112,11 @@ The whole process takes about 5 minutes, most of which is creating the Feishu ap
 
 Click to expand manual setup steps
 
-### 1. Configure Feishu Credentials
+### 1. Configure Feishu App
 
 ```bash
-cp .env.example .env
-# Edit .env with your Feishu App ID and App Secret
+# Use lark-cli to configure Feishu app credentials (interactive)
+npx @larksuite/cli config init
 ```
 
 **Getting Feishu credentials:**
@@ -122,14 +124,13 @@ cp .env.example .env
 1. Visit [Feishu Open Platform](https://open.feishu.cn) → Developer Console
 2. Create a Custom App (企业自建应用)
 3. Copy App ID and App Secret from Credentials page
-4. Add required permissions:
+4. Add required permissions (see `config/feishu_scopes.json`):
   - `bitable:app` (Bitable full access)
   - `im:chat` (Chat management)
   - `im:message` (Send & receive messages)
+  - `im:message:receive_as_bot` (Receive message events)
   - `im:resource` (Upload & download files)
-5. (Optional) For document sync features, also add:
-  - `docx:document` (Document read/write)
-  - `drive:drive` (Drive file management)
+5. Event subscription: enable "Long connection" mode, add `im.message.receive_v1`
 6. Publish the app
 
 ### 2. Define Your Team
@@ -148,7 +149,7 @@ Create `team.json` in the project root. Every team must include a `manager`; add
 ### 3. Install Dependencies and Initialize
 
 ```bash
-pip install -r requirements.txt
+npm install -g @larksuite/cli    # lark-cli (Feishu API operations)
 python3 scripts/setup.py
 ```
 
@@ -229,8 +230,6 @@ Use `/hire` and `/fire` to add or remove agents at any time. See `templates/` fo
 ClaudeTeam/
 ├── README.md                  # Chinese documentation (main)
 ├── LICENSE                    # MIT
-├── .env.example               # Credential template
-├── requirements.txt           # Python dependencies
 │
 ├── docs/                      # Documentation
 │   ├── POLICY.md              # Team communication rules
@@ -239,20 +238,19 @@ ClaudeTeam/
 │
 ├── scripts/                   # Runtime scripts
 │   ├── config.py              # Configuration loader
-│   ├── setup.py               # One-time initialization
+│   ├── setup.py               # One-time initialization (lark-cli)
 │   ├── start-team.sh          # Team launcher
-│   ├── feishu_msg.py          # Message bus
-│   ├── feishu_router.py       # Message router daemon
+│   ├── feishu_msg.py          # Message bus (lark-cli wrapper)
+│   ├── feishu_router.py       # Message router (lark-cli WebSocket events)
+│   ├── msg_queue.py           # Message delivery queue
 │   ├── tmux_utils.py          # tmux utilities
-│   ├── token_cache.py         # Feishu token management
 │   ├── hire_agent.py          # Agent creation helper
 │   ├── fire_agent.py          # Agent removal helper
 │   ├── watchdog.py            # Process monitor
 │   ├── memory_manager.py      # Agent memory management
-│   ├── kanban_sync.py         # Kanban board sync
+│   ├── kanban_sync.py         # Kanban board sync (lark-cli)
 │   ├── task_tracker.py        # Task tracking system
-│   ├── feishu_sync.py         # File sync to Feishu Docs (optional)
-│   └── upload_folded_doc.py   # Markdown to Feishu Docs (optional)
+│   └── feishu_sync.py         # File sync to Feishu Docs (lark-cli, optional)
 │
 ├── templates/                 # Identity templates
 │   ├── manager.identity.md    # Manager role template
@@ -263,7 +261,7 @@ ClaudeTeam/
     └── fire/SKILL.md           # /fire command
 ```
 
-**Runtime-generated (gitignored):** `.env`, `team.json`, `CLAUDE.md`, `agents/`, `workspace/`, `scripts/runtime_config.json`
+**Runtime-generated (gitignored):** `team.json`, `CLAUDE.md`, `agents/`, `workspace/`, `scripts/runtime_config.json`
 
 ---
 
@@ -272,7 +270,7 @@ ClaudeTeam/
 ### Message Flow
 
 1. **User** posts in Feishu group chat
-2. **Router** (`feishu_router.py`) polls the group every 3 seconds, detects new messages
+2. **Router** (`feishu_router.py`) receives events in real-time via lark-cli WebSocket
 3. Router parses @mentions and injects the message into the target agent's tmux window
 4. **Agent** (Claude Code) processes the message, executes tasks
 5. Agent uses `feishu_msg.py` to respond — message appears in Feishu group + Bitable
@@ -280,13 +278,14 @@ ClaudeTeam/
 ### Infrastructure
 
 
-| Component   | Script             | Purpose                                        |
-| ----------- | ------------------ | ---------------------------------------------- |
-| Message Bus | `feishu_msg.py`    | Send/receive messages, update status, log work |
-| Router      | `feishu_router.py` | Poll Feishu group → deliver to agents via tmux |
-| Watchdog    | `watchdog.py`      | Monitor processes, auto-restart on failure     |
-| Kanban      | `kanban_sync.py`   | Sync task status to Feishu Bitable             |
-| Token Cache | `token_cache.py`   | Cache Feishu API tokens (1.5h TTL)             |
+| Component     | Script             | Purpose                                              |
+| ------------- | ------------------ | ---------------------------------------------------- |
+| Message Bus   | `feishu_msg.py`    | Send/receive messages, update status, log work (lark-cli) |
+| Router        | `feishu_router.py` | lark-cli WebSocket events → deliver to agents via tmux    |
+| Message Queue | `msg_queue.py`     | FIFO queue for pending message delivery              |
+| Watchdog      | `watchdog.py`      | Monitor processes, auto-restart on failure            |
+| Kanban        | `kanban_sync.py`   | Sync task status to Feishu Bitable (lark-cli)        |
+| lark-cli      | `@larksuite/cli`   | Feishu API operations (auth, messaging, bitable)     |
 
 
 ### Agent Lifecycle
@@ -323,7 +322,7 @@ A: The watchdog monitors all agent processes and auto-restarts them. You'll see 
 A: Yes. Detach from tmux (`Ctrl+B, d`) — agents keep running in the background. To fully stop: `tmux kill-session -t <session-name>`. To resume: `bash scripts/start-team.sh`.
 
 **Q: How much does it cost?**
-A: ClaudeTeam itself is free and open source. Costs come from Claude API usage (each agent makes API calls) and Feishu (free tier is sufficient for most teams).
+A: ClaudeTeam itself is free and open source. Costs come from Claude API usage (each agent makes API calls). Feishu free tier is sufficient for most teams, and lark-cli is free.
 
 ---
 
