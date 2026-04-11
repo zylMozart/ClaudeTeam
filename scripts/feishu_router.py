@@ -9,8 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.dirname(__file__))
 from config import BASE, AGENTS, TMUX_SESSION, ROUTER_POLL_INTERVAL, PROJECT_ROOT, load_runtime_config
 from tmux_utils import inject_when_idle, is_agent_idle
-from feishu_api import get_token, h
-from token_cache import invalidate as _invalidate_token
+from feishu_api import get_token, h, invalidate_token as _invalidate_token
 from msg_parser import parse_message
 from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
 
