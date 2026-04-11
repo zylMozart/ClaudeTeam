@@ -1,2 +1,2 @@
-requests>=2.28.0
-python-dotenv>=1.0.0
+# lark-cli handles all Feishu API calls (npm install -g @larksuite/cli)
+# No Python HTTP dependencies needed
