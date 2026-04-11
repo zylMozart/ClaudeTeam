@@ -1,5 +1,5 @@
 {
-  "description": "飞书应用所需权限列表 — 初始化时导入或供用户参考",
+  "description": "飞书应用所需权限列表 — tenant scopes 在开发者控制台批量导入，user scopes 通过 auth login 授权",
   "scopes": {
     "tenant": [
       "base:app:create",
@@ -8,6 +8,8 @@
       "base:table:create",
       "bitable:app",
       "bitable:app:readonly",
+      "calendar:calendar:read",
+      "calendar:calendar.event:read",
       "im:chat",
       "im:chat.announcement:read",
       "im:chat.announcement:write_only",
@@ -50,9 +52,26 @@
       "im:message:send_multi_depts",
       "im:message:send_multi_users",
       "im:message:update",
-      "im:resource"
+      "im:resource",
+      "task:task:read",
+      "task:task:write"
     ],
     "user": [
+      "calendar:calendar:read",
+      "calendar:calendar.event:read",
+      "calendar:calendar.event:create",
+      "calendar:calendar.event:update",
+      "calendar:calendar.event:delete",
+      "calendar:calendar.free_busy:read",
+      "contact:user.base:readonly",
+      "contact:user:search",
+      "docs:document.content:read",
+      "docx:document:create",
+      "docx:document:readonly",
+      "docx:document:write_only",
+      "drive:drive.metadata:readonly",
+      "drive:file:download",
+      "drive:file:upload",
       "im:chat",
       "im:chat.announcement:read",
       "im:chat.announcement:write_only",
@@ -84,7 +103,14 @@
       "im:message.urgent.status:write",
       "im:message:readonly",
       "im:message:recall",
-      "im:message:update"
+      "im:message:update",
+      "search:docs:read",
+      "sheets:spreadsheet:read",
+      "sheets:spreadsheet:create",
+      "task:task:read",
+      "task:task:write",
+      "task:tasklist:read",
+      "task:tasklist:write"
     ]
   }
 }

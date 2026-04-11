@@ -241,7 +241,21 @@ The JSON to paste is the `scopes` object from `config/feishu_scopes.json` (witho
 python3 -c "import json; d=json.load(open('config/feishu_scopes.json')); print(json.dumps({'scopes': d['scopes']}, indent=2))"
 ```
 
-### Step 3: Verify
+### Step 3: User login (enables calendar, docs, tasks, contacts)
+
+`config init` only sets up bot identity. Many features (calendar, docs, task queries, contact search) require user identity. Run:
+
+```bash
+npx @larksuite/cli auth login --domain all
+```
+
+This opens a browser page. Tell the user:
+
+> Please scan the QR code to authorize user access. This enables your agents to manage your calendar, create documents, and query tasks.
+
+Wait for `OK: 登录成功!`.
+
+### Step 4: Verify
 
 ```bash
 npx @larksuite/cli im +chat-search --query "test" --as bot
