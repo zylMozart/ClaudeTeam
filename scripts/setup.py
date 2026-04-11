@@ -27,39 +27,39 @@ def _lark(args, label="", timeout=30):
 
 
 def create_bitable():
-    """创建 Bitable，返回 (base_token, default_table_id)。"""
+    """创建 Bitable，返回 base_token。"""
     print("📊 创建 Bitable...")
     d = _lark(["base", "+base-create", "--name", f"{TMUX_SESSION}-通讯中心", "--as", "bot"],
               label="创建 Bitable")
     if not d:
         print(f"❌ 创建 Bitable 失败"); sys.exit(1)
-    # lark-cli 返回 data.base.base_token 或 data.app.app_token（版本差异）
     base = d.get("base", d.get("app", d))
     base_token = base.get("base_token", base.get("app_token", ""))
-    default_table = base.get("default_table_id", "")
     if not base_token:
         print(f"❌ 创建 Bitable 失败: 无法获取 base_token: {d}"); sys.exit(1)
     print(f"   base_token: {base_token}")
-    return base_token, default_table
+    return base_token
 
 
-def configure_inbox_table(base_token, table_id):
-    """配置消息收件箱表字段。"""
-    print("📬 配置消息收件箱表...")
-    # 添加额外字段（默认表已有基础字段，直接添加缺失的）
-    for field in [
+def create_inbox_table(base_token):
+    """创建消息收件箱表，返回 table_id。"""
+    print("📬 创建消息收件箱表...")
+    fields = json.dumps([
         {"name": "消息内容", "type": "text"},
         {"name": "收件人", "type": "text"},
         {"name": "发件人", "type": "text"},
         {"name": "优先级", "type": "text"},
         {"name": "已读", "type": "checkbox"},
         {"name": "时间", "type": "date_time"},
-    ]:
-        _lark(["base", "+field-create", "--base-token", base_token,
-               "--table-id", table_id,
-               "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
-              label=f"添加字段 {field['name']}")
-    print(f"   table_id: {table_id} ✅\n")
+    ], ensure_ascii=False)
+    d = _lark(["base", "+table-create", "--base-token", base_token,
+               "--name", "消息收件箱", "--fields", fields, "--as", "bot"],
+              label="创建收件箱表")
+    msg_table = (d or {}).get("table_id", "")
+    if not msg_table:
+        print(f"❌ 创建收件箱表失败: {d}"); sys.exit(1)
+    print(f"   table_id: {msg_table} ✅\n")
+    return msg_table
 
 
 def create_status_table(base_token):
@@ -174,8 +174,8 @@ def main():
         print("❌ team.json 未配置或为空，请先创建团队配置。")
         sys.exit(1)
 
-    base_token, default_table = create_bitable()
-    configure_inbox_table(base_token, default_table)
+    base_token = create_bitable()
+    msg_table = create_inbox_table(base_token)
     sta_table = create_status_table(base_token)
     kanban_table = create_kanban_table(base_token)
     ws_tables = create_workspace_tables(base_token)
@@ -183,7 +183,7 @@ def main():
 
     cfg = {
         "bitable_app_token": base_token,
-        "msg_table_id": default_table,
+        "msg_table_id": msg_table,
         "sta_table_id": sta_table,
         "kanban_table_id": kanban_table,
         "workspace_tables": ws_tables,
