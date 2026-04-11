@@ -2,6 +2,7 @@
   "description": "飞书应用所需权限列表 — 初始化时导入或供用户参考",
   "scopes": {
     "tenant": [
+      "base:app:create",
       "bitable:app",
       "bitable:app:readonly",
       "im:chat",

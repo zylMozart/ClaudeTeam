@@ -125,7 +125,8 @@ npx @larksuite/cli config init
 2. Create a Custom App (企业自建应用)
 3. Copy App ID and App Secret from Credentials page
 4. Add required permissions (see `config/feishu_scopes.json`):
-  - `bitable:app` (Bitable full access)
+  - `bitable:app` (Bitable read/write)
+  - `base:app:create` (Create Bitable apps)
   - `im:chat` (Chat management)
   - `im:message` (Send & receive messages)
   - `im:message:receive_as_bot` (Receive message events)

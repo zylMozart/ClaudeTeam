@@ -125,7 +125,8 @@ npx @larksuite/cli config init
 2. 创建企业自建应用
 3. 在「凭证与基础信息」页面复制 App ID 和 App Secret
 4. 添加权限（完整列表见 `config/feishu_scopes.json`）：
-  - `bitable:app`（多维表格）
+  - `bitable:app`（多维表格读写）
+  - `base:app:create`（创建多维表格应用）
   - `im:chat`（群组管理）
   - `im:message`（消息收发）
   - `im:message:receive_as_bot`（接收消息事件）
