@@ -33,6 +33,14 @@ PROCS = [
                   f"{_lark_event_cmd} "
                   "| python3 scripts/feishu_router.py --stdin"],
         "pid_file": os.path.join(os.path.dirname(__file__), ".router.pid"),
+        # 事件心跳文件:router 每处理一条事件就 utime 一次。1800s 没更新
+        # = WebSocket 静默死亡(Docker+云 NAT conntrack 过期场景),触发重启。
+        # router 启动时会从 cursor 文件补抓断联期间错过的群聊消息,所以
+        # 这次重启对用户是透明的,不会丢消息。
+        # 调优提示:如果群聊整天安静,误重启代价很低(catchup 会兜底);如果
+        # 群聊很活跃,这个门槛几乎永远不会被触发。
+        "health_file": os.path.join(os.path.dirname(__file__), ".router.heartbeat"),
+        "health_stale_secs": 1800,
         "max_retries": 3,
         "retry_count": 0,
     },
@@ -67,6 +75,53 @@ def is_running(match_str):
     return r.returncode == 0
 
 def restart_process(proc):
+    # 心跳超时触发的"重启"实际上进程可能还活着(比如 router 的 WebSocket
+    # 悄悄死了但 python 进程还在 stdin 上阻塞等事件)。必须先把旧的杀干净,
+    # 否则新进程在 acquire_pid_lock() 时会看到旧 PID 还活着,直接 sys.exit(1),
+    # 导致 watchdog 每次 health 检查都 restart 一次但都拉不起新的。
+    pid_file = proc.get("pid_file")
+    if pid_file and os.path.exists(pid_file):
+        try:
+            with open(pid_file) as f:
+                old_pid = int(f.read().strip())
+            # 先尝试 SIGTERM 给它清理的机会,不行再 SIGKILL。对 bash pipeline
+            # 里的 lark-cli 也要一起干掉,否则管道左侧会孤儿,产生新旧两套
+            # lark-cli event 订阅争抢同一个 WebSocket。
+            os.kill(old_pid, signal.SIGTERM)
+            time.sleep(1)
+            try:
+                os.kill(old_pid, 0)
+                os.kill(old_pid, signal.SIGKILL)  # 还活着,强杀
+            except OSError:
+                pass
+            log(f"   🔪 杀掉旧 {proc['name']} (pid {old_pid})")
+        except (ValueError, OSError, FileNotFoundError):
+            pass
+        # 清理残留的 pid 文件,防止新 router 启动后 acquire_pid_lock 误判
+        try:
+            os.remove(pid_file)
+        except OSError:
+            pass
+    # 同时清理孤儿的 lark-cli event 订阅子进程(router pipeline 左半部分)。
+    # 它们不在 pid_file 里,但和 router 是同一 bash -c 的兄弟。不依赖 pkill
+    # (容器 base 镜像未必有),直接扫 /proc 干掉匹配的 cmdline。
+    import glob as _glob
+    my_pid = os.getpid()
+    for proc_dir in _glob.glob("/proc/[0-9]*"):
+        try:
+            with open(f"{proc_dir}/cmdline", "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "lark-cli" in cmdline and "event" in cmdline and "+subscribe" in cmdline:
+            try:
+                pid = int(os.path.basename(proc_dir))
+                if pid != my_pid:
+                    os.kill(pid, signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
+    time.sleep(0.5)
+
     subprocess.Popen(
         proc["cmd"],
         cwd=PROJECT_ROOT,
