@@ -22,7 +22,7 @@ CHECK_INTERVAL = 60  # 秒
 _lark_event_cmd = " ".join(LARK_CLI) + (
     " event +subscribe "
     "--event-types im.message.receive_v1 "
-    "--compact --quiet --force"
+    "--compact --quiet --force --as bot"
 )
 
 PROCS = [

@@ -1,5 +1,4 @@
 {
-  "description": "飞书应用所需权限列表 — tenant scopes 在开发者控制台批量导入，user scopes 通过 auth login 授权",
   "scopes": {
     "tenant": [
       "base:app:create",

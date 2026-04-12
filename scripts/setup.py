@@ -7,7 +7,7 @@
 import sys, os, json, time, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, CONFIG_FILE, TMUX_SESSION, save_runtime_config, get_lark_cli
+from config import AGENTS, CONFIG_FILE, TMUX_SESSION, PROJECT_ROOT, save_runtime_config, get_lark_cli
 
 LARK_CLI = get_lark_cli()  # 自动带 --profile（如已初始化）
 

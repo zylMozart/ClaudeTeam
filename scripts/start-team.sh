@@ -34,6 +34,17 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   exit 1
 fi
 
+# 清理上一轮残留的 router 孤儿进程。
+# tmux kill-session 只杀 shell 前台进程,管道里的 npx/node/python 会被 reparent 到 init,
+# 新 session 启动时会和这些老订阅一起抢事件,导致部分消息丢失(Bug 13)。
+ORPHAN_COUNT=$(pgrep -f "event +subscribe --event-types im.message.receive_v1" | wc -l)
+if [ "$ORPHAN_COUNT" -gt 0 ]; then
+  echo "🧹 清理 $ORPHAN_COUNT 个 router 孤儿进程..."
+  pkill -f "event +subscribe --event-types im.message.receive_v1" 2>/dev/null || true
+  pkill -f "feishu_router.py" 2>/dev/null || true
+  sleep 1
+fi
+
 echo "🚀 启动 Agent 团队..."
 echo "   tmux session: ${SESSION}"
 echo "   Agents: ${AGENTS[*]}"
@@ -43,13 +54,13 @@ echo ""
 
 # window 0: 第一个 agent
 tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$ROOT"
-tmux send-keys -t "$SESSION:${AGENTS[0]}" "claude --dangerously-skip-permissions --name ${AGENTS[0]}" Enter
+tmux send-keys -t "$SESSION:${AGENTS[0]}" "IS_SANDBOX=1 claude --dangerously-skip-permissions --name ${AGENTS[0]}" Enter
 sleep 2
 
 # 其他 Agent 窗口
 for agent in "${AGENTS[@]:1}"; do
   tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
-  tmux send-keys -t "$SESSION:$agent" "claude --dangerously-skip-permissions --name $agent" Enter
+  tmux send-keys -t "$SESSION:$agent" "IS_SANDBOX=1 claude --dangerously-skip-permissions --name $agent" Enter
   sleep 2
 done
 
@@ -61,7 +72,7 @@ if [ -n "$LARK_PROFILE" ]; then
   PROFILE_FLAG="--profile $LARK_PROFILE"
 fi
 tmux new-window -t "$SESSION" -n "router" -c "$ROOT"
-tmux send-keys -t "$SESSION:router" "npx @larksuite/cli $PROFILE_FLAG event +subscribe --event-types im.message.receive_v1 --compact --quiet --force | python3 scripts/feishu_router.py --stdin" Enter
+tmux send-keys -t "$SESSION:router" "npx @larksuite/cli $PROFILE_FLAG event +subscribe --event-types im.message.receive_v1 --compact --quiet --force --as bot | python3 scripts/feishu_router.py --stdin" Enter
 
 # window: kanban (看板同步守护进程)
 tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"
@@ -72,6 +83,46 @@ tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
 tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
 sleep 2
+
+# ── 验证每个 Agent 窗口里 Claude 真的起来了 (Bug 11 防御) ─────
+# 如果窗口里只剩 bash,后续 init 消息会被当成 shell 命令跑,看起来"启动了"
+# 实际全员死亡。所以先 probe 每个窗口,没进 Claude UI 的直接 abort。
+FAILED_AGENTS=()
+for agent in "${AGENTS[@]}"; do
+  PANE=$(tmux capture-pane -t "$SESSION:$agent" -p -S -60 2>/dev/null)
+  if echo "$PANE" | grep -q "bypass permissions on\|? for shortcuts"; then
+    :
+  else
+    FAILED_AGENTS+=("$agent")
+  fi
+done
+
+if [ ${#FAILED_AGENTS[@]} -gt 0 ]; then
+  echo ""
+  echo "❌ 以下 agent 的 Claude UI 未能启动: ${FAILED_AGENTS[*]}"
+  # 从第一个失败的 agent 抓诊断信息
+  DIAG_AGENT="${FAILED_AGENTS[0]}"
+  DIAG_PANE=$(tmux capture-pane -t "$SESSION:$DIAG_AGENT" -p -S -30 2>/dev/null)
+  echo "   窗口最后几行内容 ($DIAG_AGENT):"
+  echo "$DIAG_PANE" | tail -6 | sed 's/^/     | /'
+  if echo "$DIAG_PANE" | grep -q "root/sudo privileges"; then
+    echo ""
+    echo "   ↳ 根因: Claude Code 拒绝以 root 启动 --dangerously-skip-permissions。"
+    echo "     本脚本已在命令前加了 IS_SANDBOX=1,如果仍失败检查:"
+    echo "     1) shell 是否有 alias/function 拦截了环境变量传递"
+    echo "     2) Claude Code 版本是否太老,不识别 IS_SANDBOX"
+  elif echo "$DIAG_PANE" | grep -q "command not found\|No such file"; then
+    echo ""
+    echo "   ↳ 根因: PATH 里没找到 claude。在当前 shell 跑 'which claude' 确认。"
+  else
+    echo ""
+    echo "   ↳ 未识别的启动失败。tmux attach -t $SESSION:$DIAG_AGENT 手动查看。"
+  fi
+  echo ""
+  echo "⚠️  中止:不向死掉的 agent 窗口发送 init 消息,以免污染 bash 历史。"
+  echo "   修好启动问题后,tmux kill-session -t $SESSION && bash scripts/start-team.sh"
+  exit 1
+fi
 
 # ── 发送初始化消息给每个 Agent ───────────────────────────────
 
@@ -86,7 +137,9 @@ for agent in "${AGENTS[@]}"; do
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
   tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
-  sleep 1
+  # 每个 agent init 会同时调用 feishu_msg.py status → Bitable record-batch-create
+  # 撞到飞书限流。错峰 2.5s 避免 Bug 15 的并发写入失败。
+  sleep 2.5
 done
 
 echo ""

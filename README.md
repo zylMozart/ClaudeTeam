@@ -195,6 +195,41 @@ python3 -c "import json; print(json.load(open('team.json'))['session'])" 2>/dev/
 | CONFIGURED | EXISTS | NOT RUNNING | Go to **Phase 4** |
 | CONFIGURED | EXISTS | RUNNING | Go to **Phase 5** |
 
+### Handling user-provided credentials
+
+If the user hands over an App ID / App Secret at the start of the conversation, **do not silently trust whatever lark-cli already has configured**. Run this check first:
+
+```bash
+npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1
+```
+
+Compare the returned `appId` with the user's:
+
+- **Match** → keep the existing config, proceed with the status check above.
+- **Different** → ask the user explicitly which App has permissions + publishing completed:
+  > I see lark-cli is currently configured with `<existing>`, but you provided `<new>`. Which one has the scopes batch-imported and published? If I switch to the new one and it's a freshly-created empty App, `auth login` will fail with "no permission".
+
+  Only after the user confirms should you `config remove` + `config init --app-id ... --app-secret-stdin`.
+
+This avoids a wasted round-trip where the agent switches to an empty App and the user has to re-hand the original credentials.
+
+**⚠️ Critical — `config init --app-id ... --app-secret-stdin` does NOT configure event subscriptions.** It only writes credentials. If the App was created manually (not via `config init --new`), it likely has no events subscribed on the server side — meaning router will connect, `--as bot` will succeed, but `im.message.receive_v1` events will never arrive. After setting credentials, always probe the event stream:
+
+```bash
+# 5-second probe: send a test message as user, count events received
+timeout 8 bash -c '
+  npx @larksuite/cli event +subscribe --event-types im.message.receive_v1 --as bot 2>/dev/null > /tmp/evt_probe.out &
+  EVT_PID=$!
+  sleep 2
+  npx @larksuite/cli im +messages-send --chat-id <EXISTING_CHAT_ID> --text "probe" --as user > /dev/null 2>&1
+  sleep 5
+  kill $EVT_PID 2>/dev/null
+  wc -l < /tmp/evt_probe.out
+'
+```
+
+If the line count is 0, the App is missing event subscriptions. Run `config init --new` and have the user pick **"使用已有应用"** + the existing App ID to push event subs to the server. See `docs/SETUP_ISSUES.md` Bug 16 for the full diagnosis.
+
 ---
 
 ## Phase 1: Configure Feishu App
@@ -235,25 +270,31 @@ Tell the user:
 > 2. Select all text in the editor, delete it
 > 3. Paste the JSON I'll give you, then click **"Next, Review New Scopes"** → **"Add"**
 
-The JSON to paste is the `scopes` object from `config/feishu_scopes.json` (without the `description` field):
+`config/feishu_scopes.json` is already in the exact format Feishu's batch import expects — paste it as-is:
 
 ```bash
-python3 -c "import json; d=json.load(open('config/feishu_scopes.json')); print(json.dumps({'scopes': d['scopes']}, indent=2))"
+cat config/feishu_scopes.json
 ```
+
+**⚠️ Don't forget to publish.** After adding the scopes, click **"Create version & Publish"** in the top-right corner of the developer console. Without publishing, `auth login` in the next step will fail with `no permission`.
 
 ### Step 3: User login (enables calendar, docs, tasks, contacts)
 
-`config init` only sets up bot identity. Many features (calendar, docs, task queries, contact search) require user identity. Run:
+**Why a second authentication step?** The App ID / App Secret you already provided gives the *bot* permission to act. Feishu's permission model requires a *separate* user token for features that act on the user's personal data (their calendar, their docs, their private tasks, contact search). This scan is a one-time consent to let agents act on the user's behalf — it is unrelated to the App configuration itself, and cannot be skipped by providing more credentials.
+
+**Is this step optional?** Yes, for most ClaudeTeam use cases. The core loop (group chat, Bitable kanban, agent coordination) runs entirely on the bot identity. Only skip this if the user explicitly wants calendar / docs / personal-task automation. When in doubt, ask the user whether they need those features before running this step.
+
+If proceeding, run:
 
 ```bash
 npx @larksuite/cli auth login --domain all
 ```
 
-This opens a browser page. Tell the user:
+This prints a device-flow verification URL. **Do not ask the user to run the command themselves — you run it, then extract the URL from the output and give it to them to open.** Tell the user:
 
-> Please scan the QR code to authorize user access. This enables your agents to manage your calendar, create documents, and query tasks.
+> Please open this link in your browser and authorize with your Feishu account: `<url>`. Authorization code: `<code>`.
 
-Wait for `OK: 登录成功!`.
+Wait for `OK: 登录成功!`. If you see `no permission`, the scopes from Step 2 were not published yet — go back and publish, then retry.
 
 ### Step 4: Verify
 
@@ -392,4 +433,4 @@ python3 scripts/feishu_msg.py log <your-name> 任务日志 "<what you did>"
 5. **Personal output → `agents/<name>/workspace/`**
 6. **Shared output → `workspace/shared/`**
 7. **Never create files in project root**
-8. **Every Claude instance must use `--name`** — `claude --dangerously-skip-permissions --name <agent名>`
+8. **Every Claude instance must use `--name`** — `IS_SANDBOX=1 claude --dangerously-skip-permissions --name <agent名>`. The `IS_SANDBOX=1` prefix is required when running as root (common in VMs / containers); without it, `--dangerously-skip-permissions` refuses to start and the tmux window falls back to a bare bash shell where init messages get typed into the shell instead of Claude.

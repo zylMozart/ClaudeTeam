@@ -53,18 +53,18 @@ echo "   Agents: ${AGENTS[*]}"
 
 # 创建 tmux session + agent 窗口
 tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$ROOT"
-tmux send-keys -t "$SESSION:${AGENTS[0]}" "claude --dangerously-skip-permissions --name ${AGENTS[0]}" Enter
+tmux send-keys -t "$SESSION:${AGENTS[0]}" "IS_SANDBOX=1 claude --dangerously-skip-permissions --name ${AGENTS[0]}" Enter
 sleep 2
 
 for agent in "${AGENTS[@]:1}"; do
   tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
-  tmux send-keys -t "$SESSION:$agent" "claude --dangerously-skip-permissions --name $agent" Enter
+  tmux send-keys -t "$SESSION:$agent" "IS_SANDBOX=1 claude --dangerously-skip-permissions --name $agent" Enter
   sleep 2
 done
 
 # Router（lark-cli WebSocket 事件流）
 tmux new-window -t "$SESSION" -n "router" -c "$ROOT"
-tmux send-keys -t "$SESSION:router" "npx @larksuite/cli event +subscribe --event-types im.message.receive_v1 --compact --quiet --force | python3 scripts/feishu_router.py --stdin" Enter
+tmux send-keys -t "$SESSION:router" "npx @larksuite/cli event +subscribe --event-types im.message.receive_v1 --compact --quiet --force --as bot | python3 scripts/feishu_router.py --stdin" Enter
 
 # 看板同步
 tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"

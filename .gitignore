@@ -7,6 +7,7 @@ scripts/.token_cache.json
 scripts/runtime_config.json
 scripts/sync_manifest.json
 scripts/.router_seen_ids.json
+scripts/.*.pid
 
 # ── 运行时生成的文件与目录 ──
 CLAUDE.md

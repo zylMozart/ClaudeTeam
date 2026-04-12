@@ -59,13 +59,27 @@ class RouterState:
         self._team_mtime = 0
         self._agent_names = []
         self.seen_ids = set()
+        self.first_event_at = None  # Bug 16: 首事件时间戳,用于检测订阅缺失
 
     def init_bot_id(self):
-        """通过 lark-cli 获取 bot 的 open_id（从群成员列表中识别 bot 成员）。"""
+        """通过 lark-cli 获取 bot 的 open_id（从群成员列表中识别 bot 成员）。
+
+        Bug 14 防御:
+        - 先从 runtime_config.json 读缓存,命中就不再探测(ClaudeTeam 的 bot open_id
+          跟 App 绑定,不会变)。
+        - 超时从 15s 提到 40s,避免 chat.members get 在集群繁忙时被误判为失败。
+        - 成功拿到后回写到 runtime_config.json。
+        """
+        cfg_path = os.path.join(os.path.dirname(__file__), "runtime_config.json")
         try:
-            cfg_path = os.path.join(os.path.dirname(__file__), "runtime_config.json")
             with open(cfg_path) as f:
-                chat_id = json.load(f).get("chat_id", "")
+                cfg = json.load(f)
+            chat_id = cfg.get("chat_id", "")
+            cached = cfg.get("bot_open_id", "")
+            if cached:
+                self.bot_open_id = cached
+                print(f"🤖 Bot open_id (cached): {cached}")
+                return
             if not chat_id:
                 print("⚠️ 无 chat_id，自回声过滤将不可用")
                 return
@@ -73,22 +87,26 @@ class RouterState:
                 LARK_CLI + ["im", "chat.members", "get",
                             "--params", json.dumps({"chat_id": chat_id, "member_id_type": "open_id"}),
                             "--as", "bot", "--page-all", "--format", "json"],
-                capture_output=True, text=True, timeout=15)
+                capture_output=True, text=True, timeout=40)
             if r.returncode == 0:
                 d = json.loads(r.stdout)
                 items = d.get("data", {}).get("items", [])
-                # Bot members have member_id_type "open_id" but no tenant_key,
-                # or we can identify by checking all members — the bot is the one
-                # whose open_id starts with "ou_" and is not a regular user.
-                # Fallback: use the app_id prefix to derive bot identity.
                 for item in items:
                     if item.get("member_id_type") == "open_id" and not item.get("tenant_key"):
                         self.bot_open_id = item["member_id"]
                         print(f"🤖 Bot open_id: {self.bot_open_id}")
+                        cfg["bot_open_id"] = self.bot_open_id
+                        with open(cfg_path, "w") as f:
+                            json.dump(cfg, f, indent=2, ensure_ascii=False)
                         return
-                print("⚠️ 未在群成员中找到 bot，自回声过滤将不可用")
+                # chat.members.get 在飞书里经常不把 bot 当作 member 返回(bot_count
+                # 另外计数),所以这里拿不到不是致命问题 —— im.message.receive_v1
+                # 上游已经过滤 bot 自身消息,这里只是 belt-and-suspenders。
+                print("⚠️ 群成员中无 bot 条目(不影响上游事件过滤,自回声防护降级)")
             else:
-                print(f"⚠️ 获取群成员失败，自回声过滤将不可用")
+                print(f"⚠️ 获取群成员失败: {r.stderr.strip()[:120]}")
+        except subprocess.TimeoutExpired:
+            print("⚠️ 获取 bot info 超时(40s),自回声过滤将不可用")
         except Exception as e:
             print(f"⚠️ 获取 bot info 异常: {e}，自回声过滤将不可用")
 
@@ -196,6 +214,10 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
 
 def handle_event(event):
     """处理一条 --compact 格式的事件 JSON。"""
+    # Bug 16: 记录首事件时间,给 _event_watchdog 用。
+    if _state.first_event_at is None:
+        _state.first_event_at = time.time()
+
     msg_id = event.get("message_id", "")
     if not msg_id or msg_id in _state.seen_ids:
         return
@@ -305,6 +327,25 @@ def main():
     delivery_thread = threading.Thread(target=_queue_delivery_loop, daemon=True)
     delivery_thread.start()
 
+    # Bug 16 防御:启动后 45 秒内如果一条事件都没到,打印醒目警告。
+    # 最常见的根因是 App 的 im.message.receive_v1 事件订阅没配(config init
+    # 用 --app-id/--app-secret-stdin 只存凭证,不会调 Feishu API 订阅事件)。
+    # 这种情况下 WebSocket 连接正常、--as bot 正常,但服务器永远不推事件,
+    # 用户看来就是"发消息没反应"。
+    def _event_watchdog():
+        time.sleep(45)
+        if _state.first_event_at is None:
+            print("=" * 60)
+            print("🚨 Router 启动 45 秒内未收到任何事件!")
+            print("   最可能的根因: App 未订阅 im.message.receive_v1 事件")
+            print("   修复方法:")
+            print("     npx @larksuite/cli config init --new")
+            print("     ↳ 扫码 → 选「使用已有应用」→ 选当前 App ID")
+            print("   这会把事件订阅推到 App 服务端并自动发布。")
+            print("   详见: docs/SETUP_ISSUES.md Bug 16")
+            print("=" * 60)
+    threading.Thread(target=_event_watchdog, daemon=True).start()
+
     stdin_mode = "--stdin" in sys.argv
 
     if stdin_mode:
@@ -329,7 +370,7 @@ def main():
         proc = subprocess.Popen(
             LARK_CLI + ["event", "+subscribe",
                         "--event-types", "im.message.receive_v1",
-                        "--compact", "--quiet", "--force"],
+                        "--compact", "--quiet", "--force", "--as", "bot"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             for line in proc.stdout:
