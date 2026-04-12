@@ -53,15 +53,27 @@ RUN echo 'set -g history-limit 50000' > /home/claudeteam/.tmux.conf \
     && echo 'set -g mouse on' >> /home/claudeteam/.tmux.conf \
     && chown claudeteam:claudeteam /home/claudeteam/.tmux.conf
 
+# Claude Code 首次启动配置：跳过主题选择菜单 + 跳过危险权限提示
+# 没有这一步,每个新容器的 manager 窗口都会卡在 "Choose the text style" 交互菜单,
+# 因为 tmux send-keys 发送的初始化消息会被当成菜单键盘输入吞掉。
+# 同时写到 /home/claudeteam/.claude 和 /root/.claude,兼容以两种身份运行容器。
+RUN for H in /home/claudeteam /root; do \
+      mkdir -p "$H/.claude" && \
+      echo '{"theme":"dark","hasCompletedOnboarding":true,"skipDangerousModePermissionPrompt":true}' \
+        > "$H/.claude/settings.json" ; \
+    done && chown -R claudeteam:claudeteam /home/claudeteam/.claude
+
 # lark-cli skills 安装（全局，容器构建时执行）
-RUN npx skills add larksuite/cli -g -y 2>/dev/null || true
+# 失败即构建失败 — 如果 skills 确实非必需,可删除整行而不是用 `|| true` 吞错
+RUN npx skills add larksuite/cli -g -y
 
 # 切换到非 root 用户
 USER claudeteam
 
 # ── 健康检查 ──────────────────────────────────────────────────
+# 直接从 team.json 读 session 名,没有兜底 — 兜底只会掩盖 team.json 缺失的配置错误
 HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
-    CMD tmux has-session -t $(python3 -c "import json; print(json.load(open('team.json'))['session'])" 2>/dev/null || echo claudeteam) 2>/dev/null || exit 1
+    CMD tmux has-session -t "$(python3 -c 'import json; print(json.load(open("team.json"))["session"])')" || exit 1
 
 # ── 入口 ──────────────────────────────────────────────────────
 # 默认启动团队；容器前台进程为 tmux，保持容器存活
