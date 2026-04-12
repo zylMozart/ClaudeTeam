@@ -123,18 +123,20 @@ Before contributing, understand the key components:
 
 | Component | File | Role |
 |-----------|------|------|
-| Message Bus | `scripts/feishu_msg.py` | All inter-agent communication |
-| Router | `scripts/feishu_router.py` | Feishu → tmux message delivery |
+| Message Bus | `scripts/feishu_msg.py` | All inter-agent communication (lark-cli wrapper) |
+| Router | `scripts/feishu_router.py` | lark-cli WebSocket events → tmux delivery |
+| Message Queue | `scripts/msg_queue.py` | FIFO queue for pending message delivery |
 | Config | `scripts/config.py` | Central configuration loader |
-| Setup | `scripts/setup.py` | One-time Feishu resource creation |
+| Setup | `scripts/setup.py` | One-time Feishu resource creation (lark-cli) |
 | Launcher | `scripts/start-team.sh` | tmux session + agent startup |
 | Guidance | `CLAUDE.md` | Claude Code reads this on startup |
+| lark-cli | `@larksuite/cli` | Feishu API operations (auth, messaging, bitable) |
 
 **Key principles:**
 - `scripts/` contains runtime infrastructure — changes here affect all users
 - `templates/` contains identity templates — changes here affect new agents
 - `CLAUDE.md` is the entry point for Claude Code — keep it clear and machine-readable
-- Runtime data (`agents/`, `team.json`, `.env`) is never committed
+- Runtime data (`agents/`, `team.json`) is never committed
 
 ---
 
@@ -162,7 +164,7 @@ If you're adding a new script to `scripts/`:
 
 1. Follow existing patterns in the codebase
 2. Use `config.py` for configuration access
-3. Use `token_cache.py` for Feishu API authentication
+3. Use `lark-cli` (via subprocess) for Feishu API operations
 4. Add the script to the project structure section in both README files
 5. If it's a daemon process, add monitoring support in `watchdog.py`
 

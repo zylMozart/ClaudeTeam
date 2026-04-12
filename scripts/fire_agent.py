@@ -14,12 +14,13 @@
 
 依赖:
   Python 3.6+, config.py
+  注: 本脚本仅做本地操作（tmux/文件归档/配置清理），不直接调用飞书 API。
 """
 import sys, os, json, time, re, shutil, subprocess
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import CONFIG_FILE, PROJECT_ROOT
+from config import PROJECT_ROOT, load_runtime_config, save_runtime_config
 
 def validate_name(name):
     if not re.match(r'^[a-z0-9_-]+$', name):
@@ -34,14 +35,12 @@ def load_team():
         return json.load(f)
 
 def load_cfg():
-    if not os.path.exists(CONFIG_FILE):
+    try:
+        return load_runtime_config()
+    except SystemExit:
         return None
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
 
-def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+save_cfg = save_runtime_config
 
 # ── 命令：stop-tmux ──────────────────────────────────────────
 

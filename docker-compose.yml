@@ -1,0 +1,59 @@
+###############################################################################
+# ClaudeTeam — Docker Compose
+#
+# 用法：
+#   首次启动：docker compose up -d
+#   查看日志：docker compose logs -f
+#   进入 tmux：docker compose exec team tmux attach -t <session>
+#   停止：docker compose down
+###############################################################################
+
+services:
+  team:
+    build: .
+    container_name: claudeteam
+    restart: unless-stopped
+
+    # ── 环境变量 ──────────────────────────────────────────────
+    environment:
+      # Claude Code API Key（必须）
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # lark-cli 凭证（通过 lark-cli config init 生成的配置文件挂载更佳，见 volumes）
+      - TERM=xterm-256color
+
+    # ── 数据持久化 ────────────────────────────────────────────
+    volumes:
+      # 团队配置（必须）
+      - ./team.json:/app/team.json
+      # 运行时配置（飞书资源 ID，setup.py 生成）
+      - ./scripts/runtime_config.json:/app/scripts/runtime_config.json
+      # Agent 工作空间（持久化，容器重建不丢失）
+      - claudeteam-agents:/app/agents
+      - claudeteam-workspace:/app/workspace
+      # lark-cli 配置（首次需在宿主机运行 lark-cli config init）
+      - ~/.larksuite-cli:/home/claudeteam/.larksuite-cli:ro
+      # Claude Code 配置（API key 等）
+      - ~/.claude:/home/claudeteam/.claude
+
+    # ── 资源限制 ──────────────────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          memory: 8G      # 10 个 agent 建议 8GB
+          cpus: "4.0"
+        reservations:
+          memory: 2G
+
+    # ── 安全 ──────────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+
+    # ── 网络（仅需出站访问 Anthropic API + 飞书 API）────────
+    # 无需暴露端口
+
+# ── 命名卷 ────────────────────────────────────────────────────
+volumes:
+  claudeteam-agents:
+    driver: local
+  claudeteam-workspace:
+    driver: local

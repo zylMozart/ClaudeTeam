@@ -4,27 +4,35 @@ Watchdog Daemon — 监控并自动重启关键守护进程
 运行：python3 scripts/watchdog.py
 
 监控对象:
-  feishu_router.py — 消息路由（核心依赖）
-  kanban_sync.py   — 看板同步守护进程
+  router (lark-cli event | feishu_router.py) — 消息路由（核心依赖）
+  kanban_sync.py — 看板同步守护进程
 
-检测方式: pgrep -f <脚本名>，60秒轮询一次
+检测方式: PID 锁文件 / pgrep，60秒检查一次
 重启方式: subprocess.Popen start_new_session=True
 通知方式: 子进程调用 feishu_msg.py send
 """
-import sys, os, time, subprocess
+import sys, os, time, subprocess, atexit, signal
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import PROJECT_ROOT
+from config import PROJECT_ROOT, LARK_CLI
 
 CHECK_INTERVAL = 60  # 秒
 
+# 构建带 profile 的 lark-cli event 命令
+_lark_event_cmd = " ".join(LARK_CLI) + (
+    " event +subscribe "
+    "--event-types im.message.receive_v1 "
+    "--compact --quiet --force --as bot"
+)
+
 PROCS = [
     {
-        "name":  "feishu_router.py",
+        "name":  "router (lark-cli event | router)",
         "match": "feishu_router.py",
-        "cmd":   ["python3", "scripts/feishu_router.py"],
-        "health_file": os.path.join(os.path.dirname(__file__), ".router_seen_ids.json"),
-        "health_stale_secs": 300,  # 5 分钟无更新视为异常
+        "cmd":   ["bash", "-c",
+                  f"{_lark_event_cmd} "
+                  "| python3 scripts/feishu_router.py --stdin"],
+        "pid_file": os.path.join(os.path.dirname(__file__), ".router.pid"),
         "max_retries": 3,
         "retry_count": 0,
     },
@@ -32,6 +40,7 @@ PROCS = [
         "name":  "kanban_sync.py",
         "match": "kanban_sync.py daemon",
         "cmd":   ["python3", "scripts/kanban_sync.py", "daemon"],
+        "pid_file": os.path.join(os.path.dirname(__file__), ".kanban_sync.pid"),
         "max_retries": 3,
         "retry_count": 0,
     },
@@ -40,7 +49,20 @@ PROCS = [
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
+def is_running_by_pid_file(pid_file):
+    """通过 PID 锁文件检测进程是否存活（精确匹配本项目）"""
+    if not os.path.exists(pid_file):
+        return False
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except (ValueError, OSError):
+        return False
+
 def is_running(match_str):
+    """降级方案：pgrep 匹配（用于没有 PID 文件的进程）"""
     r = subprocess.run(["pgrep", "-f", match_str], capture_output=True)
     return r.returncode == 0
 
@@ -66,7 +88,11 @@ def notify_manager(proc_name):
 
 def is_healthy(proc):
     """进程存在 + 健康检查通过"""
-    if not is_running(proc["match"]):
+    pid_file = proc.get("pid_file")
+    if pid_file:
+        if not is_running_by_pid_file(pid_file):
+            return False
+    elif not is_running(proc["match"]):
         return False
     health_file = proc.get("health_file")
     if health_file and os.path.exists(health_file):
@@ -97,7 +123,36 @@ def check_once():
     if all_ok:
         log("✅ 所有守护进程运行正常")
 
+_PID_FILE = os.path.join(os.path.dirname(__file__), ".watchdog.pid")
+
+def _acquire_pid_lock():
+    if os.path.exists(_PID_FILE):
+        try:
+            with open(_PID_FILE) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)
+            log(f"❌ Watchdog 已在运行 (PID {old_pid})")
+            sys.exit(1)
+        except (ValueError, OSError):
+            pass
+    with open(_PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(_cleanup_pid)
+
+def _cleanup_pid():
+    try:
+        if os.path.exists(_PID_FILE):
+            with open(_PID_FILE) as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(_PID_FILE)
+    except Exception:
+        pass
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
 def main():
+    _acquire_pid_lock()
     log("🐕 Watchdog 启动")
     log(f"   监控对象: {', '.join(p['name'] for p in PROCS)}")
     log(f"   检查间隔: {CHECK_INTERVAL}s")

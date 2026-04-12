@@ -1,20 +1,20 @@
 # ClaudeTeam
 
-[English](docs/README_EN.md) | [中文](README.md)
+[中文](docs/README_CN.md) | [English](README.md)
 
-> *Harness Your Claude Code*
+> *Harness your Claude Code*
 
-你的 Claude Code 总在污染自己的上下文。修好 A，B 坏了。修好 B，A 又坏了。
+Your Claude Code agent keeps polluting its own context. Fix A, break B. Fix B, break A.
 
-你需要的不是更强的 Agent，而是一个 Harness —— 隔离的 Agent、并行执行、零交叉污染。
+You don't need a smarter agent. You need a Harness — isolated agents, parallel execution, zero cross-contamination.
 
-**ClaudeTeam：你的第一个 Harness。** 一个仓库，多个 Claude Code Agent，通过飞书协同。
+**ClaudeTeam: your first Harness.** One repo, multiple Claude Code agents, coordinated through Feishu.
 
-*2025，Prompt Engineering。2026，Harness Engineering。*
+*2025, Prompt Engineering. 2026, Harness Engineering.*
 
-### 效果展示
+### Screenshots
 
-**飞书群聊 — 实时操控 AI Agent 团队**
+**Feishu Group Chat — Control your AI team in real-time**
 
 <table>
   <tr>
@@ -26,68 +26,57 @@
   </tr>
 </table>
 
-**tmux 后台 — Claude Code Agent 并行运行**
+**tmux Backend — Claude Code agents running in parallel**
 
 <p><img src="docs/media/example/tmux_example.png" width="800" /></p>
 
 ---
 
-## 它能做什么
+## What It Does
 
-ClaudeTeam 把 Claude Code 变成多智能体系统。每个 Agent 运行在独立的 tmux 窗口中，拥有自己的身份、记忆和工作空间，通过飞书群聊与队友协作。一个 Manager Agent 负责统筹全局 —— 分配任务、审查产出、向你汇报。
-
-**工作原理：**
+ClaudeTeam turns Claude Code into a multi-agent system. Each agent runs in its own tmux window, has its own identity and memory, and communicates with teammates through a Feishu group chat. A manager agent coordinates the team — assigns tasks, reviews output, and reports to you.
 
 ```
-你（飞书群聊）
+You (Feishu group chat)
   ↕
-路由守护进程（轮询飞书，分发消息）
+Router (real-time WebSocket events from Feishu)
   ↕
 ┌──────────┬──────────┬──────────┐
-│  主管     │ Agent A  │ Agent B  │  ← tmux 窗口，各自运行 Claude Code
-│(分配任务) │(执行任务) │(执行任务) │    （你来定义角色）
+│ Manager  │ Agent A  │ Agent B  │  ← tmux windows, each running Claude Code
+│(assigns) │(executes)│(executes)│     (you define the roles)
 └──────────┴──────────┴──────────┘
   ↕
-飞书多维表格（消息存储、状态看板、任务追踪）
-```
-
-你在飞书群里发消息，主管分配工作，Agent 执行、协作、汇报。所有消息记录在飞书多维表格中，全程可追溯。
-
----
-
-## 特性
-
-- **一键启动** —— Clone 仓库、运行 `setup.py`，CLAUDE.md 自动生成供 Claude Code 读取
-- **实时协作** —— Agent 通过飞书群聊通讯，彩色消息卡片一眼看清谁在说话
-- **自治 Agent** —— 每个 Agent 拥有独立的身份、记忆、工作空间和任务队列
-- **团队管理** —— `/hire` 和 `/fire` 斜杠命令，随时增减 Agent
-- **自动看门狗** —— Agent 崩溃自动重启，飞书群内通知
-- **看板同步** —— 任务状态实时同步到飞书多维表格
-- **灵活扩展** —— 按需添加角色：架构师、测试、调研员、运维、教育者……
-
----
-
-## 前提条件
-
-
-| 依赖              | 版本   | 检查命令                                     |
-| --------------- | ---- | ---------------------------------------- |
-| macOS 或 Linux   | —    | —                                        |
-| Python          | 3.8+ | `python3 --version`                      |
-| tmux            | 任意   | `tmux -V`                                |
-| Claude Code CLI | 最新版  | `claude --version`                       |
-| 飞书账号            | 企业版  | [open.feishu.cn](https://open.feishu.cn) |
-
-
-安装 Claude Code：
-
-```bash
-npm install -g @anthropic-ai/claude-code
+Feishu Bitable (message storage, status board, kanban)
 ```
 
 ---
 
-## 快速开始（30 秒）
+## Features
+
+- **One-command setup** — Clone, open Claude Code, the Agent guides you through everything
+- **Real-time collaboration** — Agents communicate through Feishu group chat with colored message cards
+- **Autonomous agents** — Each agent has its own identity, memory, workspace, and task queue
+- **Team management** — `/hire` and `/fire` slash commands to add or remove agents on the fly
+- **Watchdog** — Crashed agents auto-restart, with notifications in Feishu
+- **Kanban board** — Task status synced to Feishu Bitable in real-time
+- **Extensible** — Add any role you need: architect, tester, researcher, ops, educator...
+
+---
+
+## Prerequisites
+
+| Requirement     | Version    | Check                                    |
+| --------------- | ---------- | ---------------------------------------- |
+| macOS or Linux  | —          | —                                        |
+| Python          | 3.8+       | `python3 --version`                      |
+| Node.js         | 18+        | `node --version`                         |
+| tmux            | any        | `tmux -V`                                |
+| Claude Code CLI | latest     | `claude --version`                       |
+| Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
+
+---
+
+## Quick Start
 
 ```bash
 git clone https://github.com/zylMozart/ClaudeTeam.git
@@ -95,242 +84,353 @@ cd ClaudeTeam
 claude
 ```
 
-就这么简单。初始化会自动生成 `CLAUDE.md`，Claude Code 启动时读取它：
+That's it. Claude Code reads this file and auto-guides you through:
 
-1. **飞书凭证** —— 在飞书开放平台创建应用，粘贴 App ID 和 App Secret
-2. **设计团队** —— 定义你的团队角色（manager + 任何你需要的角色）
-3. **自动初始化** —— 创建飞书群组、多维表格、Agent 目录
-4. **启动** —— 在 tmux 中启动所有 Agent，开始运行
+1. **Creating a Feishu app** — Agent opens the browser for you, you just click and paste credentials
+2. **Designing your team** — Agent asks what roles you need
+3. **Initializing Feishu resources** — fully automatic
+4. **Launching the team** — fully automatic
 
-全程约 5 分钟，大部分时间花在创建飞书应用上。
+The whole process takes about 5 minutes.
 
 ---
 
-## 手动设置（如果你更喜欢）
+## Usage
 
-点击展开手动设置步骤
+### Talking to Your Team
 
-### 1. 配置飞书凭证
+Send messages in the Feishu group chat. The manager distributes work. @mention a specific agent to talk to them directly.
+
+### Viewing the Team
 
 ```bash
-cp .env.example .env
-# 编辑 .env，填入飞书 App ID 和 App Secret
+tmux attach -t <session-name>    # enter the tmux session
+Ctrl+B, n / p                    # next / previous agent window
+Ctrl+B, d                        # detach (leave running)
 ```
 
-**获取飞书凭证：**
+### Managing Agents
 
-1. 访问 [飞书开放平台](https://open.feishu.cn) → 开发者后台
-2. 创建企业自建应用
-3. 在「凭证与基础信息」页面复制 App ID 和 App Secret
-4. 添加必选权限：
-  - `bitable:app`（多维表格）
-  - `im:chat`（群组管理）
-  - `im:message`（消息收发）
-  - `im:resource`（文件上传下载）
-5. （可选）如需文档同步功能，还需添加：
-  - `docx:document`（文档读写）
-  - `drive:drive`（云空间管理）
-6. 发布应用
+From within Claude Code (as manager):
 
-### 2. 定义团队
+```
+/hire <role-name> "<role-description>"
+/fire <role-name>
+```
 
-在项目根目录创建 `team.json`。每个团队必须包含 `manager`，其他角色自行定义。参考 `templates/` 目录下的身份模板。
+---
 
+## FAQ
+
+**Q: Does this work with other LLMs?**
+A: Currently built for Claude Code. The harness could theoretically work with other CLI LLM tools.
+
+**Q: Can I use Slack/Discord instead of Feishu?**
+A: Not out of the box. The messaging layer is Feishu-specific.
+
+**Q: How many agents can I run?**
+A: Tested up to 10. 8GB RAM handles 5 comfortably.
+
+**Q: Is `--dangerously-skip-permissions` safe?**
+A: Required for autonomous operation. Only use in trusted environments.
+
+**Q: What if an agent crashes?**
+A: The watchdog auto-restarts it and notifies you in Feishu.
+
+**Q: How much does it cost?**
+A: ClaudeTeam is free and open source. Costs come from Claude API usage. Feishu free tier and lark-cli are both free.
+
+---
+
+## Contributing
+
+Contributions welcome! See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+<!-- CLAUDE:START — Everything below is for Claude Code automated setup -->
+
+> **Below this line is for Claude Code.**
+> Human users do not need to read past this point — Claude Code handles everything automatically.
+> When you run `claude` in this project, it reads this file and follows the instructions below.
+
+---
+
+## Agent Instructions
+
+You are the setup assistant for ClaudeTeam. Run the status checks below, follow the decision tree, and guide the user through each phase.
+
+## Quick Status Check
+
+**Run these checks every time you start. They determine what to do next.**
+
+### Check 1: Is lark-cli configured?
+
+```bash
+npx @larksuite/cli im +chat-search --query "test" --as bot 2>/dev/null | grep -q '"ok": true' && echo "CONFIGURED" || echo "NOT CONFIGURED"
+```
+
+### Check 2: Does `team.json` exist?
+
+```bash
+test -f team.json && echo "EXISTS" || echo "MISSING"
+```
+
+### Check 3: Is the tmux session running?
+
+```bash
+python3 -c "import json; print(json.load(open('team.json'))['session'])" 2>/dev/null | xargs -I{} tmux has-session -t {} 2>/dev/null && echo "RUNNING" || echo "NOT RUNNING"
+```
+
+### Decision Tree
+
+| lark-cli | `team.json` | tmux session | Action |
+|----------|------------|--------------|--------|
+| NOT CONFIGURED | — | — | Go to **Phase 1** |
+| CONFIGURED | MISSING | — | Go to **Phase 2** |
+| CONFIGURED | EXISTS | NOT RUNNING | Go to **Phase 4** |
+| CONFIGURED | EXISTS | RUNNING | Go to **Phase 5** |
+
+### Handling user-provided credentials
+
+If the user hands over an App ID / App Secret at the start of the conversation, **do not silently trust whatever lark-cli already has configured**. Run this check first:
+
+```bash
+npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1
+```
+
+Compare the returned `appId` with the user's:
+
+- **Match** → keep the existing config, proceed with the status check above.
+- **Different** → ask the user explicitly which App has permissions + publishing completed:
+  > I see lark-cli is currently configured with `<existing>`, but you provided `<new>`. Which one has the scopes batch-imported and published? If I switch to the new one and it's a freshly-created empty App, `auth login` will fail with "no permission".
+
+  Only after the user confirms should you `config remove` + `config init --app-id ... --app-secret-stdin`.
+
+This avoids a wasted round-trip where the agent switches to an empty App and the user has to re-hand the original credentials.
+
+**⚠️ Critical — `config init --app-id ... --app-secret-stdin` does NOT configure event subscriptions.** It only writes credentials. If the App was created manually (not via `config init --new`), it likely has no events subscribed on the server side — meaning router will connect, `--as bot` will succeed, but `im.message.receive_v1` events will never arrive. After setting credentials, always probe the event stream:
+
+```bash
+# 5-second probe: send a test message as user, count events received
+timeout 8 bash -c '
+  npx @larksuite/cli event +subscribe --event-types im.message.receive_v1 --as bot 2>/dev/null > /tmp/evt_probe.out &
+  EVT_PID=$!
+  sleep 2
+  npx @larksuite/cli im +messages-send --chat-id <EXISTING_CHAT_ID> --text "probe" --as user > /dev/null 2>&1
+  sleep 5
+  kill $EVT_PID 2>/dev/null
+  wc -l < /tmp/evt_probe.out
+'
+```
+
+If the line count is 0, the App is missing event subscriptions. Run `config init --new` and have the user pick **"使用已有应用"** + the existing App ID to push event subs to the server. See `docs/SETUP_ISSUES.md` Bug 16 for the full diagnosis.
+
+---
+
+## Phase 1: Configure Feishu App
+
+`lark-cli config init --new` handles everything: app creation, permissions, event subscription, and publishing — all in one command.
+
+### Step 1: Run config init
+
+```bash
+npx @larksuite/cli config init --new
+```
+
+This opens a browser page. Tell the user:
+
+> A browser window has opened. Please:
+> 1. **Scan the QR code** with Feishu to log in
+> 2. Choose **"Create"** (to make a new app) or **"Use Existing App"** (if you already have one)
+> 3. Click **"Confirm"** — that's it!
+
+Wait for the CLI to print `OK: 应用配置成功!` — this means the app is created, permissions and events are configured, and the app is published.
+
+### Step 2: Add remaining permissions
+
+`config init` adds basic scopes, but ClaudeTeam needs more (Bitable, chat management, etc.). Batch-import them:
+
+Open the app's Permissions page:
+
+```bash
+# Get the App ID from lark-cli config
+APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
+open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || xdg-open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || echo "Please open: https://open.feishu.cn/app/${APP_ID}/auth"
+```
+
+Tell the user:
+
+> I've opened the Permissions page. Please:
+> 1. Click **"Batch import/export scopes"**
+> 2. Select all text in the editor, delete it
+> 3. Paste the JSON I'll give you, then click **"Next, Review New Scopes"** → **"Add"**
+
+`config/feishu_scopes.json` is already in the exact format Feishu's batch import expects — paste it as-is:
+
+```bash
+cat config/feishu_scopes.json
+```
+
+**⚠️ Don't forget to publish.** After adding the scopes, click **"Create version & Publish"** in the top-right corner of the developer console. Without publishing, `auth login` in the next step will fail with `no permission`.
+
+### Step 3: User login (enables calendar, docs, tasks, contacts)
+
+**Why a second authentication step?** The App ID / App Secret you already provided gives the *bot* permission to act. Feishu's permission model requires a *separate* user token for features that act on the user's personal data (their calendar, their docs, their private tasks, contact search). This scan is a one-time consent to let agents act on the user's behalf — it is unrelated to the App configuration itself, and cannot be skipped by providing more credentials.
+
+**Is this step optional?** Yes, for most ClaudeTeam use cases. The core loop (group chat, Bitable kanban, agent coordination) runs entirely on the bot identity. Only skip this if the user explicitly wants calendar / docs / personal-task automation. When in doubt, ask the user whether they need those features before running this step.
+
+If proceeding, run:
+
+```bash
+npx @larksuite/cli auth login --domain all
+```
+
+This prints a device-flow verification URL. **Do not ask the user to run the command themselves — you run it, then extract the URL from the output and give it to them to open.** Tell the user:
+
+> Please open this link in your browser and authorize with your Feishu account: `<url>`. Authorization code: `<code>`.
+
+Wait for `OK: 登录成功!`. If you see `no permission`, the scopes from Step 2 were not published yet — go back and publish, then retry.
+
+### Step 4: Verify
+
+```bash
+npx @larksuite/cli im +chat-search --query "test" --as bot
+```
+
+If it returns `{"ok": true, ...}`, you're good. Proceed to Phase 2.
+
+---
+
+## Phase 2: Design Your Team
+
+### Step 1: Understand the project
+
+Ask the user to describe their project:
+
+> **Tell me about your project.** What are you building?
+> I'll analyze what you need and suggest the right team.
+
+### Step 2: Propose a team
+
+Based on the user's description, analyze what roles are needed. Consider:
+- Frontend work? → coder
+- Backend/API work? → backend or coder
+- System design needed? → architect
+- Testing needed? → tester
+- Documentation/content? → writer
+- Research needed? → researcher
+- Deployment/infra? → devops
+- Platform-specific needs? → specialist roles
+
+Propose a team. Example:
+
+> Based on your project, I recommend:
+>
+> | Role | Responsibility |
+> |------|---------------|
+> | 🎯 manager (me) | Coordinate, review, report to you |
+> | 🏗️ architect | System design, tech decisions |
+> | 💻 coder | Implementation |
+> | 🧪 tester | Quality assurance |
+>
+> Should I start building this team? You can also add or remove roles.
+
+### Step 3: Get confirmation
+
+**⚠️ MANDATORY: Wait for explicit user confirmation before proceeding.**
+Do NOT create any agents without the user saying "yes" / "ok" / "go ahead" or similar.
+
+The user may:
+- **Approve as-is** → proceed
+- **Modify** (add/remove roles) → adjust proposal, show updated list, ask for confirmation again
+- **Say "just manager for now"** → minimal path (skip /hire, only manager)
+
+### Step 4: Build the team
+
+After confirmation, ask the user for a team name, then:
+
+1. Create `team.json` with only `manager`:
 ```json
-{
-  "session": "my-team",
-  "agents": {
-    "manager": {"role": "主管", "emoji": "🎯", "color": "blue"}
-  }
-}
+{"session": "<team-name>", "agents": {"manager": {"role": "主管", "emoji": "🎯", "color": "blue"}}}
 ```
 
-### 3. 安装依赖并初始化
+2. Run `python3 scripts/setup.py` to initialize Feishu resources
+
+3. Run `bash scripts/start-team.sh` to start tmux (starts manager + router + watchdog)
+
+4. For each additional role the user confirmed, execute `/hire`:
+```
+/hire architect 系统架构师，负责技术方案设计
+/hire coder 软件工程师，负责代码实现
+/hire tester 测试工程师，负责质量保障
+```
+
+5. **Generate and send the Feishu group chat invite link to the user.** This is the final deliverable — without it the user cannot interact with the team.
 
 ```bash
-pip install -r requirements.txt
-python3 scripts/setup.py
+# Get chat_id from runtime config
+CHAT_ID=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json'))['chat_id'])")
+
+# Generate a permanent share link
+npx @larksuite/cli im chats link \
+  --params "{\"chat_id\":\"${CHAT_ID}\"}" \
+  --data '{"validity_period":"permanently"}' \
+  --as bot --format json
 ```
 
-### 4. 启动
+Extract the `share_link` from the response and send it to the user. Tell them:
+
+> Here is your team's Feishu group chat link. Click to join, then you can send messages to control your AI team.
+
+**⚠️ MANDATORY: Do NOT skip this step. The invite link is the primary way the user interacts with their team.**
+
+6. Once all agents are hired and the link is delivered, enter Phase 5.
+
+### Minimal Path
+
+If the user says "just manager" or "no team yet":
+1. Create team.json with only manager
+2. Run setup.py + start-team.sh
+3. Generate and send the group chat invite link to the user
+4. Tell the user: "Team is running with just me (manager). Use `/hire` anytime to add teammates."
+
+---
+
+## Phase 5: Enter Manager Mode
+
+Read `agents/manager/identity.md`, then check inbox:
 
 ```bash
-bash scripts/start-team.sh
+python3 scripts/feishu_msg.py inbox manager
 ```
+
+Follow the manager workflow: check inbox → process messages → assign tasks → monitor progress.
 
 ---
 
-## 使用方法
-
-### 与团队对话
-
-在飞书群聊中发消息，主管 Agent 会阅读并分配工作。你可以 @某个 Agent 直接与其对话。
-
-### 查看团队
+## Communication Commands Reference
 
 ```bash
-# 进入 tmux 会话
-tmux attach -t <session-name>
-
-# 切换 Agent 窗口
-Ctrl+B, n     # 下一个窗口
-Ctrl+B, p     # 上一个窗口
-Ctrl+B, 0-9   # 按编号跳转
-
-# 分离（保持后台运行）
-Ctrl+B, d
+python3 scripts/feishu_msg.py send <recipient> <sender> "<message>" [高|中|低]
+python3 scripts/feishu_msg.py say <sender> "<message>"
+python3 scripts/feishu_msg.py inbox <your-name>
+python3 scripts/feishu_msg.py read <record_id>
+python3 scripts/feishu_msg.py status <your-name> <状态> "<description>"
+python3 scripts/feishu_msg.py log <your-name> 任务日志 "<what you did>"
 ```
 
-### 管理 Agent
+## Rules for All Agents
 
-在 Claude Code 中（以 manager 身份）：
-
-```
-/hire <角色名> "<角色描述>"
-/fire <角色名>
-```
-
-### 通讯命令
-
-所有 Agent 使用 `feishu_msg.py` 通讯：
-
-```bash
-# 发送私信
-python3 scripts/feishu_msg.py send <收件人> <发件人> "<消息>" [高|中|低]
-
-# 群聊发言
-python3 scripts/feishu_msg.py say <名字> "<消息>"
-
-# 查看收件箱
-python3 scripts/feishu_msg.py inbox <名字>
-
-# 更新状态
-python3 scripts/feishu_msg.py status <名字> <状态> "<描述>"
-
-# 记录日志
-python3 scripts/feishu_msg.py log <名字> 任务日志 "<做了什么>"
-```
-
----
-
-## 团队自定义
-
-每个团队必须包含一个 **manager** Agent。除此之外，你可以定义任何你需要的角色 —— 没有固定模板。在引导式设置中，Claude 会询问你需要哪些角色。
-
-使用 `/hire` 和 `/fire` 随时增减 Agent。参考 `templates/` 目录下的身份模板了解角色定义方式。
-
----
-
-## 项目结构
-
-```
-ClaudeTeam/
-├── README.md                  # 本文件（中文文档）
-├── LICENSE                    # MIT 许可证
-├── .env.example               # 凭证模板
-├── requirements.txt           # Python 依赖
-│
-├── docs/                      # 文档
-│   ├── POLICY.md              # 团队通讯规范
-│   ├── README_EN.md           # English documentation
-│   └── CONTRIBUTING.md        # 贡献指南
-│
-├── scripts/                   # 运行时脚本
-│   ├── config.py              # 配置加载器
-│   ├── setup.py               # 一键初始化
-│   ├── start-team.sh          # 团队启动器
-│   ├── feishu_msg.py          # 消息总线
-│   ├── feishu_router.py       # 消息路由守护进程
-│   ├── tmux_utils.py          # tmux 工具
-│   ├── token_cache.py         # 飞书 Token 管理
-│   ├── hire_agent.py          # Agent 招聘助手
-│   ├── fire_agent.py          # Agent 裁撤助手
-│   ├── watchdog.py            # 进程监控
-│   ├── memory_manager.py      # Agent 记忆管理
-│   ├── kanban_sync.py         # 看板同步
-│   ├── task_tracker.py        # 任务追踪
-│   ├── feishu_sync.py         # 文件同步到飞书文档（可选）
-│   └── upload_folded_doc.py   # Markdown 上传飞书文档（可选）
-│
-├── templates/                 # 身份模板
-│   ├── manager.identity.md    # 主管角色模板
-│   └── worker.identity.md     # 通用员工模板
-│
-└── .claude/skills/            # 斜杠命令
-    ├── hire/SKILL.md           # /hire 命令
-    └── fire/SKILL.md           # /fire 命令
-```
-
-**运行时生成（已 gitignore）：** `.env`、`team.json`、`CLAUDE.md`、`agents/`、`workspace/`、`scripts/runtime_config.json`
-
----
-
-## 工作原理（架构）
-
-### 消息流
-
-1. **用户** 在飞书群聊发消息
-2. **路由器**（`feishu_router.py`）每 3 秒轮询群消息，检测新消息
-3. 路由器解析 @提及，将消息注入目标 Agent 的 tmux 窗口
-4. **Agent**（Claude Code）处理消息，执行任务
-5. Agent 使用 `feishu_msg.py` 回复 —— 消息同时出现在飞书群和多维表格中
-
-### 基础设施
-
-
-| 组件       | 脚本                 | 用途                         |
-| -------- | ------------------ | -------------------------- |
-| 消息总线     | `feishu_msg.py`    | 收发消息、更新状态、记录日志             |
-| 路由器      | `feishu_router.py` | 轮询飞书群 → 通过 tmux 分发给 Agent  |
-| 看门狗      | `watchdog.py`      | 监控进程，崩溃自动重启                |
-| 看板       | `kanban_sync.py`   | 任务状态同步到飞书多维表格              |
-| Token 缓存 | `token_cache.py`   | 缓存飞书 API Token（1.5 小时 TTL） |
-
-
-### Agent 生命周期
-
-```
-/hire → 创建目录 → 生成 identity.md → 创建多维表格
-     → 打开 tmux 窗口 → 启动 Claude Code → 发送初始化消息
-     → Agent 读取身份 → 查收件箱 → 开始工作
-
-/fire → 归档工作空间 → 关闭 tmux 窗口 → 从 team.json 移除
-     → 清理飞书资源
-```
-
----
-
-## 常见问题
-
-**Q：支持其他大模型吗？**
-A：目前 ClaudeTeam 专为 Claude Code 构建。Agent 外壳（tmux 管理、消息路由、身份系统）理论上可以适配其他 CLI 大模型工具，但尚未测试。
-
-**Q：能用 Slack/Discord 替代飞书吗？**
-A：开箱不支持。消息层（`feishu_msg.py`）是飞书专用的，替换平台需要重写消息总线和路由器。
-
-**Q：能跑多少个 Agent？**
-A：单机测试过最多 10 个。每个 Agent 是一个 Claude Code 进程，资源消耗线性增长。8GB 内存可以舒适运行 5 个 Agent。
-
-**Q：`--dangerously-skip-permissions` 安全吗？**
-A：该标志允许 Agent 无需手动审批就执行命令，这是自治运行的必要条件。请仅在可信环境中使用，谨慎评估分配的任务。
-
-**Q：Agent 崩溃了怎么办？**
-A：看门狗会监控所有 Agent 进程并自动重启，飞书群内会收到通知。
-
-**Q：能停止后再恢复吗？**
-A：可以。tmux 分离（`Ctrl+B, d`）后 Agent 保持后台运行。完全停止：`tmux kill-session -t <session-name>`。恢复：`bash scripts/start-team.sh`。
-
-**Q：要花多少钱？**
-A：ClaudeTeam 本身免费开源。费用来自 Claude API 调用（每个 Agent 会消耗 API 额度）和飞书（免费版足够大多数团队使用）。
-
----
-
-## 贡献
-
-欢迎贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解提交 Issue 和 Pull Request 的规范。
-
----
-
-## 许可证
-
-[MIT](LICENSE) —— 随便用。
+1. **All communication through Feishu** — use feishu_msg.py commands
+2. **Check inbox on startup** — first action after reading identity.md
+3. **Update status after every state change**
+4. **Log important milestones**
+5. **Personal output → `agents/<name>/workspace/`**
+6. **Shared output → `workspace/shared/`**
+7. **Never create files in project root**
+8. **Every Claude instance must use `--name`** — `IS_SANDBOX=1 claude --dangerously-skip-permissions --name <agent名>`. The `IS_SANDBOX=1` prefix is required when running as root (common in VMs / containers); without it, `--dangerously-skip-permissions` refuses to start and the tmux window falls back to a bare bash shell where init messages get typed into the shell instead of Claude.

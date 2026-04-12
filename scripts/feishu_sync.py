@@ -4,7 +4,8 @@
 
 功能描述:
   扫描本地 workspace/ 产出文件 + agents/ 角色和记忆文件，增量同步到飞书 Drive 云文档。
-  内容以单个 Markdown 代码块存储，文件变化检测用 sha256 hash，映射关系存 sync_manifest.json。
+  使用 lark-cli docs 命令直传 Markdown，无需自研解析器。
+  文件变化检测用 sha256 hash，映射关系存 sync_manifest.json。
 
 同步范围:
   agents/*/workspace/**/*.md  workspace/shared/**/*.md
@@ -20,13 +21,13 @@
     daemon [--interval N]        — 后台守护（默认30秒检查一次）
 
 依赖:
-  Python 3.6+，requests，runtime_config.json（先运行 setup.py）
+  Python 3.6+, lark-cli (npx @larksuite/cli), runtime_config.json（先运行 setup.py）
 """
-import sys, os, re, json, time, glob, hashlib, requests
+import sys, os, json, time, glob, hashlib, subprocess, atexit, signal
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, CONFIG_FILE
+from config import load_runtime_config, save_runtime_config, LARK_CLI
 
 ROOT          = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST_FILE = os.path.join(os.path.dirname(__file__), "sync_manifest.json")
@@ -40,27 +41,11 @@ SYNC_PATTERNS = [
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
-def get_token():
-    r = requests.post(f"{BASE}/auth/v3/app_access_token/internal",
-                      json={"app_id": APP_ID, "app_secret": APP_SECRET})
-    return r.json()["app_access_token"]
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
 def now_str():
     return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
-def load_cfg():
-    if not os.path.exists(CONFIG_FILE):
-        print("❌ 未找到 runtime_config.json，请先运行 python3 scripts/setup.py")
-        sys.exit(1)
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
-
-def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+load_cfg = load_runtime_config
+save_cfg = save_runtime_config
 
 def load_manifest():
     if not os.path.exists(MANIFEST_FILE):
@@ -88,290 +73,51 @@ def file_hash(abs_path):
     with open(abs_path, "rb") as f:
         return "sha256:" + hashlib.sha256(f.read()).hexdigest()[:16]
 
-# ── Markdown → Block 解析 ────────────────────────────────────
+# ── lark-cli 文档操作 ────────────────────────────────────────
 
-LANG_MAP = {
-    "python": 21, "py": 21,
-    "bash": 2, "sh": 2, "shell": 2,
-    "javascript": 13, "js": 13,
-    "typescript": 28, "ts": 28,
-    "go": 9, "golang": 9,
-    "java": 12,
-    "rust": 23,
-    "sql": 32,
-    "json": 29,
-    "yaml": 36, "yml": 36,
-    "html": 10,
-    "markdown": 18, "md": 18,
-    "ruby": 22, "rb": 22,
-}
-
-def resolve_language(lang_str):
-    return LANG_MAP.get(lang_str.lower().strip(), 1)
-
-def make_text_run(text, bold=False, italic=False, inline_code=False, link_url=""):
-    style = {}
-    if bold:        style["bold"] = True
-    if italic:      style["italic"] = True
-    if inline_code: style["inline_code"] = True
-    if link_url:    style["link"] = {"url": link_url}
-    elem = {"text_run": {"content": text}}
-    if style:
-        elem["text_run"]["text_element_style"] = style
-    return elem
-
-def make_text_block(block_type, runs):
-    key = {2: "text", 3: "heading1", 4: "heading2", 5: "heading3",
-           12: "bullet", 13: "ordered"}[block_type]
-    return {"block_type": block_type, key: {"elements": runs, "style": {}}}
-
-def make_code_block(code_text, language=1):
-    if len(code_text) > 100000:
-        code_text = code_text[:100000] + "\n...[内容已截断]"
-    return {
-        "block_type": 14,
-        "code": {
-            "elements": [{"text_run": {"content": code_text}}],
-            "language": language,
-            "wrap": False,
-        }
-    }
-
-_TOKEN_RE = re.compile(
-    r'(`[^`]+`)'               # 行内代码
-    r'|(\*\*[^*]+\*\*)'        # 加粗 **
-    r'|(__[^_]+__)'             # 加粗 __
-    r'|(\*[^*]+\*)'             # 斜体 *
-    r'|(_[^_]+_)'               # 斜体 _
-    r'|(\[[^\]]+\]\([^)]+\))'  # 链接
-    r'|([^`*_\[]+)'             # 普通文本
-)
-
-def parse_inline(text):
-    runs = []
-    for m in _TOKEN_RE.finditer(text):
-        raw = m.group(0)
-        if raw.startswith('`') and raw.endswith('`') and len(raw) >= 2:
-            runs.append(make_text_run(raw[1:-1], inline_code=True))
-        elif raw.startswith('**') or raw.startswith('__'):
-            runs.append(make_text_run(raw[2:-2], bold=True))
-        elif raw.startswith('*') or raw.startswith('_'):
-            runs.append(make_text_run(raw[1:-1], italic=True))
-        elif raw.startswith('['):
-            lm = re.match(r'\[([^\]]+)\]\(([^)]+)\)', raw)
-            if lm:
-                runs.append(make_text_run(lm.group(1), link_url=lm.group(2)))
-        else:
-            if raw:
-                runs.append(make_text_run(raw))
-    return runs if runs else [make_text_run(text)]
-
-def parse_table_rows(table_rows, R, C):
-    """table_rows: list of list of str（已去除分隔行）。返回 (table_block, cell_matrix)。"""
-    table_block = {
-        "block_type": 22,
-        "table": {"property": {"row_size": R, "column_size": C}}
-    }
-    cell_matrix = []
-    for row in table_rows:
-        padded = list(row) + [""] * (C - len(row))
-        cell_matrix.append(padded[:C])
-    return table_block, cell_matrix
-
-def parse_markdown_to_blocks(content):
-    """将 Markdown 字符串解析为飞书 docx block 列表。"""
-    blocks = []
-    lines = content.split("\n")
-    i = 0
-
-    while i < len(lines):
-        line = lines[i]
-
-        # 四级及以上标题 → Heading3
-        if re.match(r'^#{4,} ', line):
-            blocks.append(make_text_block(5, parse_inline(re.sub(r'^#{4,} ', '', line))))
-            i += 1
-
-        elif line.startswith("### "):
-            blocks.append(make_text_block(5, parse_inline(line[4:])))
-            i += 1
-
-        elif line.startswith("## "):
-            blocks.append(make_text_block(4, parse_inline(line[3:])))
-            i += 1
-
-        elif line.startswith("# "):
-            blocks.append(make_text_block(3, parse_inline(line[2:])))
-            i += 1
-
-        # 代码块（围栏式）
-        elif line.startswith("```"):
-            lang = line[3:].strip()
-            code_lines = []
-            i += 1
-            while i < len(lines) and not lines[i].startswith("```"):
-                code_lines.append(lines[i])
-                i += 1
-            i += 1  # 跳过结束 ```
-            blocks.append(make_code_block("\n".join(code_lines), resolve_language(lang)))
-
-        # 无序列表
-        elif re.match(r'^[-*] ', line):
-            blocks.append(make_text_block(12, parse_inline(line[2:])))
-            i += 1
-
-        # 有序列表
-        elif re.match(r'^\d+\. ', line):
-            blocks.append(make_text_block(13, parse_inline(re.sub(r'^\d+\. ', '', line))))
-            i += 1
-
-        # 表格
-        elif (re.match(r'^\|.*\|$', line) and
-              i + 1 < len(lines) and re.match(r'^\|[-:| ]+\|$', lines[i + 1])):
-            table_rows = []
-            while i < len(lines) and re.match(r'^\|.*\|$', lines[i]):
-                if re.match(r'^\|[-:| ]+\|$', lines[i]):
-                    i += 1
-                    continue
-                cells = [c.strip() for c in lines[i].strip("|").split("|")]
-                table_rows.append(cells)
-                i += 1
-            if table_rows:
-                # 飞书 Table block API（block_type=22）创建时返回 1770001 invalid param，
-                # 降级为纯文本代码块，保留 Markdown 表格格式以便阅读。
-                sep = "|" + "|".join("---" for _ in table_rows[0]) + "|"
-                table_lines = ["| " + " | ".join(table_rows[0]) + " |", sep]
-                for row in table_rows[1:]:
-                    table_lines.append("| " + " | ".join(row) + " |")
-                blocks.append(make_code_block("\n".join(table_lines), 1))
-
-        # 水平分隔线（跳过）
-        elif re.match(r'^[-*_]{3,}$', line.strip()):
-            i += 1
-
-        elif line.strip() == "":
-            i += 1
-
-        else:
-            blocks.append(make_text_block(2, parse_inline(line)))
-            i += 1
-
-    return blocks
-
-# ── 飞书 API（含 429 指数退避）───────────────────────────────
-
-def api_request(method, url, token, **kwargs):
-    """带指数退避重试的 API 调用（最多3次）。"""
-    for attempt in range(3):
-        resp = requests.request(method, url, headers=h(token), **kwargs)
-        if resp.status_code == 429:
-            wait = 2 ** attempt
-            print(f"  ⏳ 触发限流，{wait}s 后重试...")
-            time.sleep(wait)
-            continue
-        return resp
-    return resp  # 最后一次失败时也返回
-
-# ── 飞书 Drive 文件夹 ─────────────────────────────────────────
-
-def create_folder(token, name):
+def lark_create_folder(name):
     """在飞书 Drive 根目录创建文件夹，返回 folder_token。"""
-    r = api_request("POST", f"{BASE}/drive/v1/files/create_folder", token,
-                    json={"name": name, "folder_token": ""})
-    d = r.json()
-    if d.get("code") != 0:
-        print(f"❌ 创建文件夹失败: {d}"); sys.exit(1)
-    return d["data"]["token"]
+    r = subprocess.run(
+        LARK_CLI + ["drive", "files", "create_folder",
+                    "--name", name, "--folder_token", "", "--as", "bot"],
+        capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        print(f"❌ 创建文件夹失败: {r.stderr}")
+        sys.exit(1)
+    d = json.loads(r.stdout)
+    return d.get("data", {}).get("token", "")
 
-# ── 飞书 Docx 文档操作 ────────────────────────────────────────
+def lark_create_doc(folder_token, title, markdown_path):
+    """用 lark-cli 创建飞书文档（直传 Markdown 文件），返回 doc URL。"""
+    r = subprocess.run(
+        LARK_CLI + ["docs", "+create",
+                    "--folder-token", folder_token,
+                    "--title", title,
+                    "--markdown", f"@{markdown_path}",
+                    "--as", "bot"],
+        capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError(f"创建文档失败: {r.stderr.strip()}")
+    d = json.loads(r.stdout)
+    return d.get("document_id", d.get("url", ""))
 
-def _chunks(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
-def ensure_doc(token, folder_token, title):
-    """创建空飞书 docx 文档，返回 doc_id。"""
-    r = api_request("POST", f"{BASE}/docx/v1/documents", token,
-                    json={"title": title, "folder_token": folder_token})
-    d = r.json()
-    if d.get("code") != 0:
-        raise RuntimeError(f"创建文档失败: {d}")
-    return d["data"]["document"]["document_id"]
-
-def clear_doc_children(token, doc_id):
-    """删除 doc 页面 block 下的所有子 block。"""
-    r = api_request("GET",
-                    f"{BASE}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                    token, params={"page_size": 200})
-    items = r.json().get("data", {}).get("items", [])
-    if not items:
-        return
-    r2 = api_request("DELETE",
-                     f"{BASE}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                     token,
-                     params={"start_index": 0, "end_index": len(items)})
-    if r2.status_code >= 300:
-        raise RuntimeError(f"清空文档内容失败: HTTP {r2.status_code} {r2.text[:100]}")
-
-def _json(resp):
-    """解析响应 JSON，失败时抛出含原始响应的 RuntimeError。"""
-    try:
-        return resp.json()
-    except ValueError as e:
-        raise RuntimeError(f"API 响应非 JSON (HTTP {resp.status_code}): {resp.text[:200]}") from e
-
-def upload_children(token, doc_id, parent_block_id, blocks):
-    """向指定父 block 批量追加子 block，每批最多 50 个。用 POST（创建），非 PATCH（重排序）。"""
-    for batch in _chunks(blocks, 50):
-        r = api_request("POST",
-                        f"{BASE}/docx/v1/documents/{doc_id}/blocks/{parent_block_id}/children",
-                        token,
-                        json={"children": batch, "index": -1})
-        d = _json(r)
-        if d.get("code") != 0:
-            raise RuntimeError(f"上传 block 失败: {d}")
-
-def get_table_cell_ids(token, doc_id, table_block_id, R, C):
-    """获取表格自动生成的 cell block IDs，返回 R×C 二维列表。"""
-    r = api_request("GET",
-                    f"{BASE}/docx/v1/documents/{doc_id}/blocks/{table_block_id}/children",
-                    token, params={"page_size": R * C + 10})
-    items = r.json().get("data", {}).get("items", [])
-    block_ids = [item["block_id"] for item in items]
-    return [block_ids[r_idx * C:(r_idx + 1) * C] for r_idx in range(R)]
-
-def upload_table(token, doc_id, table_entry):
-    """两阶段上传表格 block。"""
-    R = table_entry["block"]["table"]["property"]["row_size"]
-    C = table_entry["block"]["table"]["property"]["column_size"]
-    cells = table_entry["cells"]
-
-    # 阶段1：创建 Table block，获取 table_block_id（POST 创建，非 PATCH 重排序）
-    r = api_request("POST",
-                    f"{BASE}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                    token,
-                    json={"children": [table_entry["block"]], "index": -1})
-    d = _json(r)
-    if d.get("code") != 0:
-        raise RuntimeError(f"创建 Table block 失败: {d}")
-    table_block_id = d["data"]["children"][0]["block_id"]
-
-    # 阶段2：获取 cell IDs 并写入内容
-    cell_ids = get_table_cell_ids(token, doc_id, table_block_id, R, C)
-    for r_idx in range(R):
-        for c_idx in range(C):
-            if r_idx >= len(cell_ids) or c_idx >= len(cell_ids[r_idx]):
-                continue
-            cell_id = cell_ids[r_idx][c_idx]
-            cell_text = cells[r_idx][c_idx] if c_idx < len(cells[r_idx]) else ""
-            upload_children(token, doc_id, cell_id,
-                            [make_text_block(2, [make_text_run(cell_text)])])
+def lark_update_doc(doc_url, markdown_path):
+    """用 lark-cli 覆盖更新飞书文档内容。"""
+    r = subprocess.run(
+        LARK_CLI + ["docs", "+update",
+                    "--doc", doc_url,
+                    "--mode", "overwrite",
+                    "--markdown", f"@{markdown_path}",
+                    "--as", "bot"],
+        capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError(f"更新文档失败: {r.stderr.strip()}")
 
 # ── 单文件同步逻辑 ────────────────────────────────────────────
 
-def sync_one_file(token, rel_path, manifest, verbose=True):
+def sync_one_file(rel_path, manifest, verbose=True):
     """
-    同步单个文件到飞书 docx（v2：逐 block 上传，支持标题/列表/代码块/表格）。
+    同步单个文件到飞书文档（使用 lark-cli docs --markdown）。
     - 文件不存在时标记 deleted=true，不删飞书侧文档。
     - 内容未变化时跳过。
     """
@@ -395,30 +141,15 @@ def sync_one_file(token, rel_path, manifest, verbose=True):
             print(f"  ─ 未变化，跳过: {rel_path}")
         return
 
-    content = open(abs_path, encoding="utf-8").read()
     folder_token = manifest["folder_token"]
     doc_title = rel_path.replace("/", "_").replace(".md", "")
 
     try:
         if not entry.get("doc_token"):
-            doc_id = ensure_doc(token, folder_token, doc_title)
+            doc_id = lark_create_doc(folder_token, doc_title, abs_path)
         else:
             doc_id = entry["doc_token"]
-            clear_doc_children(token, doc_id)
-
-        blocks = parse_markdown_to_blocks(content)
-
-        plain_batch = []
-        for block in blocks:
-            if block.get("type") == "table":
-                if plain_batch:
-                    upload_children(token, doc_id, doc_id, plain_batch)
-                    plain_batch = []
-                upload_table(token, doc_id, block)
-            else:
-                plain_batch.append(block)
-        if plain_batch:
-            upload_children(token, doc_id, doc_id, plain_batch)
+            lark_update_doc(doc_id, abs_path)
 
         manifest["files"][rel_path] = {
             "doc_token":   doc_id,
@@ -434,7 +165,6 @@ def sync_one_file(token, rel_path, manifest, verbose=True):
 # ── 命令：init ────────────────────────────────────────────────
 
 def cmd_init(folder_name="Agent团队工作空间"):
-    token = get_token()
     cfg = load_cfg()
     manifest = load_manifest()
 
@@ -442,7 +172,7 @@ def cmd_init(folder_name="Agent团队工作空间"):
         print(f"⚠️  同步文件夹已存在: {cfg['sync_folder_token']}，跳过创建")
         return
 
-    folder_token = create_folder(token, folder_name)
+    folder_token = lark_create_folder(folder_name)
     cfg["sync_folder_token"] = folder_token
     save_cfg(cfg)
 
@@ -457,7 +187,6 @@ def cmd_init(folder_name="Agent团队工作空间"):
 # ── 命令：sync ────────────────────────────────────────────────
 
 def cmd_sync():
-    token = get_token()
     manifest = load_manifest()
     if not manifest["folder_token"]:
         print("❌ 未配置 folder_token，请先运行: python3 scripts/feishu_sync.py init")
@@ -466,18 +195,17 @@ def cmd_sync():
     files = scan_files()
     print(f"🔍 扫描到 {len(files)} 个待检查文件")
     for rel_path in files:
-        sync_one_file(token, rel_path, manifest, verbose=True)
+        sync_one_file(rel_path, manifest, verbose=True)
     print("✅ 全量同步完成")
 
 # ── 命令：sync-file ───────────────────────────────────────────
 
 def cmd_sync_file(rel_path):
-    token = get_token()
     manifest = load_manifest()
     if not manifest["folder_token"]:
         print("❌ 未配置 folder_token，请先运行: python3 scripts/feishu_sync.py init")
         sys.exit(1)
-    sync_one_file(token, rel_path, manifest, verbose=True)
+    sync_one_file(rel_path, manifest, verbose=True)
 
 # ── 命令：status ──────────────────────────────────────────────
 
@@ -510,7 +238,6 @@ def cmd_status():
 
         print(f"  {rel_path:<50} {state:<10} {last}")
 
-    # 显示 manifest 中有记录但不在当前扫描结果里的文件（已删除）
     extra = set(synced.keys()) - set(files)
     for rel_path in sorted(extra):
         entry = synced[rel_path]
@@ -526,11 +253,39 @@ def cmd_status():
 
 # ── 命令：daemon ──────────────────────────────────────────────
 
+_PID_FILE = os.path.join(os.path.dirname(__file__), ".feishu_sync.pid")
+
+def _acquire_pid_lock():
+    if os.path.exists(_PID_FILE):
+        try:
+            with open(_PID_FILE) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, 0)
+            print(f"❌ feishu_sync daemon 已在运行 (PID {old_pid})")
+            sys.exit(1)
+        except (ValueError, OSError):
+            pass
+    with open(_PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(_cleanup_pid)
+
+def _cleanup_pid():
+    try:
+        if os.path.exists(_PID_FILE):
+            with open(_PID_FILE) as f:
+                pid = int(f.read().strip())
+            if pid == os.getpid():
+                os.remove(_PID_FILE)
+    except Exception:
+        pass
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
 def cmd_daemon(interval=30):
+    _acquire_pid_lock()
     print(f"🔄 文件同步守护进程启动（每 {interval} 秒检查一次）")
     while True:
         try:
-            token = get_token()
             manifest = load_manifest()
             if not manifest["folder_token"]:
                 print("⚠️  folder_token 未配置，跳过本次同步")
@@ -543,7 +298,7 @@ def cmd_daemon(interval=30):
                         continue
                     entry = manifest["files"].get(rel_path, {})
                     if entry.get("last_hash") != file_hash(abs_path):
-                        sync_one_file(token, rel_path, manifest, verbose=True)
+                        sync_one_file(rel_path, manifest, verbose=True)
                         changed += 1
                 if changed:
                     print(f"[{time.strftime('%H:%M:%S')}] 同步 {changed} 个变化文件")

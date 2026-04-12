@@ -13,22 +13,26 @@
     start-tmux <agent_name>     — 创建 tmux 窗口，启动 Claude，发送初始化消息
 
 依赖:
-  Python 3.6+, requests, config.py, tmux_utils.py
+  Python 3.6+, lark-cli (base 命令), config.py, tmux_utils.py
+  底层通过 lark-cli 执行飞书 API 操作。
 """
-import sys, os, json, time, re, subprocess, requests
+import sys, os, json, time, re, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import APP_ID, APP_SECRET, BASE, CONFIG_FILE, PROJECT_ROOT
+from config import PROJECT_ROOT, load_runtime_config, save_runtime_config, LARK_CLI
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
-def get_token():
-    r = requests.post(f"{BASE}/auth/v3/app_access_token/internal",
-                      json={"app_id": APP_ID, "app_secret": APP_SECRET})
-    return r.json()["app_access_token"]
-
-def h(token):
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+def _lark(args, label="", timeout=30):
+    r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0:
+        print(f"   ⚠️ {label}: {r.stderr.strip()[:200]}")
+        return None
+    try:
+        full = json.loads(r.stdout) if r.stdout.strip() else {}
+        return full.get("data", full)
+    except json.JSONDecodeError:
+        return None
 
 def load_team():
     team_file = os.path.join(PROJECT_ROOT, "team.json")
@@ -36,26 +40,68 @@ def load_team():
         return json.load(f)
 
 def load_cfg():
-    if not os.path.exists(CONFIG_FILE):
+    try:
+        return load_runtime_config()
+    except SystemExit:
         print("❌ 未找到 runtime_config.json，跳过飞书操作")
         return None
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
 
-def save_cfg(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+save_cfg = save_runtime_config
 
 def validate_name(name):
     if not re.match(r'^[a-z0-9_-]+$', name):
         print(f"❌ 角色名 '{name}' 不合法，只允许小写字母、数字、下划线和连字符")
         sys.exit(1)
 
+# 飞书卡片支持的 header template 颜色(剔除 grey,留给 fallback)。
+# 顺序 = 分配优先级,靠前的先被用掉,从而让前几个 agent 颜色差异最大。
+FEISHU_CARD_COLORS = [
+    "blue",      # 主管通常占这个
+    "turquoise",
+    "orange",
+    "purple",
+    "green",
+    "carmine",
+    "indigo",
+    "violet",
+    "wathet",
+    "yellow",
+    "red",
+]
+
+def ensure_color(agent_name):
+    """确保 team.json 里 agent_name 有独立的 color 字段。
+
+    Bug:原 /hire skill 模板只要求写 role + emoji 不写 color,导致所有新 agent
+    在群聊消息卡片上都是默认 grey,视觉上分不清楚谁发的。这个函数在 setup-feishu
+    里兜底:如果该 agent 没有 color,从 FEISHU_CARD_COLORS 里挑一个当前团队还没
+    用过的颜色写回 team.json。skill 已经分配了 color 的情况下 no-op。
+    """
+    team_file = os.path.join(PROJECT_ROOT, "team.json")
+    with open(team_file) as f:
+        team = json.load(f)
+    agents = team.get("agents", {})
+    info = agents.get(agent_name)
+    if not info or info.get("color"):
+        return  # 不存在或已有颜色 → 不动
+    used = {a.get("color") for a in agents.values() if a.get("color")}
+    pick = next((c for c in FEISHU_CARD_COLORS if c not in used), None)
+    if pick is None:
+        # 11 种颜色全用完了才会走到这里(超过 11 人),循环复用
+        pick = FEISHU_CARD_COLORS[len(agents) % len(FEISHU_CARD_COLORS)]
+    info["color"] = pick
+    with open(team_file, "w") as f:
+        json.dump(team, f, indent=2, ensure_ascii=False)
+    print(f"🎨 为 {agent_name} 分配卡片颜色: {pick}")
+
 # ── 命令：setup-feishu ───────────────────────────────────────
 
 def cmd_setup_feishu(agent_name):
     """在飞书 Bitable 中创建该 Agent 的工作空间表，并更新 runtime_config.json。"""
     validate_name(agent_name)
+
+    # 兜底:skill 忘记写 color 时自动补一个独立色
+    ensure_color(agent_name)
 
     cfg = load_cfg()
     if cfg is None:
@@ -69,34 +115,37 @@ def cmd_setup_feishu(agent_name):
 
     role = agent_info.get("role", agent_name)
     bt = cfg["bitable_app_token"]
-    token = get_token()
 
-    # 检查是否已有工作空间表
     ws_tables = cfg.get("workspace_tables", {})
     if agent_name in ws_tables:
         print(f"⚠️  {agent_name} 的工作空间表已存在: {ws_tables[agent_name]}，跳过创建")
         return
 
-    # 创建工作空间表（复用 setup.py 的表结构）
-    r = requests.post(f"{BASE}/bitable/v1/apps/{bt}/tables",
-                      headers=h(token),
-                      json={"table": {"name": f"{agent_name}（{role}）工作空间",
-                          "fields": [
-                              {"field_name": "类型", "type": 3, "property": {"options": [
-                                  {"name": "状态更新", "color": 1}, {"name": "任务日志", "color": 2},
-                                  {"name": "消息发出", "color": 3}, {"name": "消息收到", "color": 4},
-                                  {"name": "产出记录", "color": 0}, {"name": "阻塞上报", "color": 5},
-                              ]}},
-                              {"field_name": "内容",     "type": 1},
-                              {"field_name": "时间",     "type": 5},
-                              {"field_name": "关联对象", "type": 1},
-                          ]}})
-    d = r.json()
-    if d.get("code") != 0:
-        print(f"❌ 创建工作空间表失败: {d.get('msg', d)}")
+    # 先建空表，再逐个添加字段（规避 AddField 限流）
+    ws_fields = [
+        {"name": "类型", "type": "text"},
+        {"name": "内容", "type": "text"},
+        {"name": "时间", "type": "date_time"},
+        {"name": "关联对象", "type": "text"},
+    ]
+    d = _lark(["base", "+table-create", "--base-token", bt,
+               "--name", f"{agent_name}（{role}）工作空间", "--as", "bot"],
+              label="创建工作空间表")
+    tid = ""
+    if d:
+        if isinstance(d.get("table"), dict):
+            tid = d["table"].get("id", d["table"].get("table_id", ""))
+        else:
+            tid = d.get("table_id", "")
+    if not tid:
+        print(f"❌ 创建工作空间表失败: {d}")
         sys.exit(1)
-
-    tid = d["data"]["table_id"]
+    for field in ws_fields:
+        time.sleep(1)
+        _lark(["base", "+field-create", "--base-token", bt,
+               "--table-id", tid,
+               "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
+              label=f"添加字段 {field['name']}")
     ws_tables[agent_name] = tid
     cfg["workspace_tables"] = ws_tables
     save_cfg(cfg)
@@ -105,14 +154,13 @@ def cmd_setup_feishu(agent_name):
     # 在状态表中插入初始状态行
     st = cfg.get("sta_table_id")
     if st:
-        requests.post(f"{BASE}/bitable/v1/apps/{bt}/tables/{st}/records",
-                      headers=h(token),
-                      json={"fields": {
-                          "Agent名称": agent_name,
-                          "状态": "待命",
-                          "当前任务": "刚入职，等待初始化",
-                          "更新时间": int(time.time() * 1000),
-                      }})
+        payload = json.dumps({
+            "fields": ["Agent名称", "状态", "当前任务"],
+            "rows": [[agent_name, "待命", "刚入职，等待初始化"]]
+        }, ensure_ascii=False)
+        _lark(["base", "+record-batch-create", "--base-token", bt,
+               "--table-id", st, "--json", payload, "--as", "bot"],
+              label="写入初始状态")
         print(f"✅ 状态表已添加 {agent_name} 初始记录")
 
 # ── 命令：start-tmux ─────────────────────────────────────────
@@ -124,7 +172,6 @@ def cmd_start_tmux(agent_name):
     team = load_team()
     session = team.get("session", "ClaudeTeam")
 
-    # 检查 tmux session 是否存在
     r = subprocess.run(["tmux", "has-session", "-t", session],
                        capture_output=True, timeout=5)
     if r.returncode != 0:
@@ -132,33 +179,44 @@ def cmd_start_tmux(agent_name):
         print(f"   请先运行: bash scripts/start-team.sh")
         return
 
-    # 检查窗口是否已存在
     r = subprocess.run(["tmux", "has-session", "-t", f"{session}:{agent_name}"],
                        capture_output=True, timeout=5)
     if r.returncode == 0:
         print(f"⚠️  tmux 窗口 {agent_name} 已存在，跳过创建")
         return
 
-    # 创建新窗口
     subprocess.run(["tmux", "new-window", "-t", session, "-n", agent_name,
                     "-c", PROJECT_ROOT], capture_output=True)
     print(f"✅ tmux 窗口 {agent_name} 已创建")
 
-    # 启动 Claude
+    # IS_SANDBOX=1 绕过 Claude Code 对 root/sudo 身份的启动检查。ClaudeTeam
+    # 的主流部署环境是容器或 VM root，用户已明确接受 --dangerously-skip-permissions
+    # 的风险。不加这个变量,root 下裸跑会被拒,agent 窗口只剩 bash shell。
     subprocess.run(["tmux", "send-keys", "-t", f"{session}:{agent_name}",
-                    "claude --dangerously-skip-permissions", "Enter"],
+                    f"IS_SANDBOX=1 claude --dangerously-skip-permissions --name {agent_name}", "Enter"],
                    capture_output=True)
     print(f"⏳ 等待 Claude 启动...")
+    time.sleep(3)
 
-    # 等待 Claude 完全就绪（trust dialog 通过后）
-    from tmux_utils import inject_when_idle, wait_for_ready, auto_accept_trust
-    auto_accept_trust(session, agent_name, timeout=5)
-    if wait_for_ready(session, agent_name, timeout=30):
-        print(f"   ✅ Claude 已就绪")
-    else:
-        print(f"   ⚠️  等待超时，尝试强制发送")
+    # 验证 Claude UI 确实起来了 (Bug 11 的后续防御)。
+    # 没起来的时候 tmux 窗口只剩 bash prompt,后面 inject_when_idle 会把 init
+    # 消息写进 bash,看起来"成功"但 agent 实际是死的。
+    probe = subprocess.run(
+        ["tmux", "capture-pane", "-t", f"{session}:{agent_name}", "-p", "-S", "-60"],
+        capture_output=True, text=True)
+    if "bypass permissions on" not in probe.stdout and "? for shortcuts" not in probe.stdout:
+        print(f"❌ {agent_name}: Claude 未能在 3 秒内进入 UI,窗口当前内容:")
+        for line in probe.stdout.strip().splitlines()[-8:]:
+            print(f"     | {line}")
+        if "root/sudo privileges" in probe.stdout:
+            print("   ↳ Claude 拒绝以 root 启动 --dangerously-skip-permissions。")
+            print("     检查 IS_SANDBOX=1 是否被 shell 过滤,或改用非 root 用户。")
+        else:
+            print("   ↳ 可能 PATH 里没有 claude,或 --name 等参数被 shell 吞掉。")
+        print(f"   ↳ 已中止 {agent_name} 的初始化,请修好后手动重试。")
+        return
 
-    # 发送初始化消息
+    from tmux_utils import inject_when_idle
     init_msg = (
         f"你是团队的 {agent_name}。\n\n"
         f"【必读】请读取：agents/{agent_name}/identity.md — 了解你的角色和通讯规范\n"

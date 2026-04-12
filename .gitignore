@@ -1,9 +1,13 @@
-# ── 凭证与运行时配置（绝不入库）──
+# ── 凭证与密钥（绝不入库）──
 .env
+.env.*
+scripts/.token_cache.json
+
+# ── 运行时配置（绝不入库）──
 scripts/runtime_config.json
 scripts/sync_manifest.json
 scripts/.router_seen_ids.json
-scripts/.token_cache.json
+scripts/.*.pid
 
 # ── 运行时生成的文件与目录 ──
 CLAUDE.md

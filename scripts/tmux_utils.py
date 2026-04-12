@@ -13,7 +13,7 @@ tmux 工具函数 — 检测 Agent 空闲状态后安全注入文本
   或"Thinking"等流式输出特征。inject_when_idle 轮询最多 wait_secs 秒，
   确认空闲后用 send-keys -l（字面模式）注入，避免 # $ 等字符被 tmux/shell 解释。
 """
-import subprocess, time, os
+import subprocess, time, os, tempfile
 
 # ── 状态特征字符串 ─────────────────────────────────────────────
 
@@ -89,7 +89,6 @@ def check_agent_alive(session, window, stale_minutes=15):
         )
         if r.returncode == 0 and r.stdout.strip():
             last_activity = int(r.stdout.strip())
-            import time
             idle_minutes = (time.time() - last_activity) / 60
             if idle_minutes > stale_minutes:
                 return False, f"pane 已 {idle_minutes:.0f} 分钟无活动（阈值 {stale_minutes} 分钟）"
@@ -141,16 +140,10 @@ def inject_when_idle(session, window, text,
             return False
         # 超时后强制注入（允许打断）
 
-    # [v2] 注入前二次确认空闲（防竞态）
-    time.sleep(0.1)
-    if not is_agent_idle(session, window) and not force_after_wait:
-        return False
-
     # 发送文本到 tmux
     target = f"{session}:{window}"
     if len(text) > 600:
         # 长文本：写临时文件 → tmux load-buffer → paste-buffer（绕过 pty 缓冲限制）
-        import tempfile
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
                                           delete=False, encoding="utf-8")
         tmp.write(text)
@@ -167,74 +160,11 @@ def inject_when_idle(session, window, text,
             capture_output=True
         )
 
-    # [v2] 延迟后发送 Enter，带重试（解决 Enter 丢失问题）
-    time.sleep(0.3)  # 等待 TUI 处理完粘贴内容
-    for attempt in range(3):  # 最多 3 次 Enter
-        subprocess.run(
-            ["tmux", "send-keys", "-t", target, "Enter"],
-            capture_output=True
-        )
-        time.sleep(0.5)
-        # 检查 Enter 是否生效（agent 变忙 = 开始处理消息）
-        if not is_agent_idle(session, window):
-            break  # 成功，agent 开始工作
-    else:
-        print(f"  ⚠️ {window}: 发送 Enter ×3 后 agent 仍空闲，消息可能未提交")
+    # 等待 TUI 处理完文本输入后再按 Enter
+    time.sleep(0.5)
+    subprocess.run(
+        ["tmux", "send-keys", "-t", target, "Enter"],
+        capture_output=True
+    )
 
     return True
-
-
-# ── 启动就绪检测 ─────────────────────────────────────────────
-
-def wait_for_ready(session, window, timeout=30, poll_interval=1):
-    """
-    正向检测 Claude Code 完全就绪（❯ 提示符出现）。
-    与 is_agent_idle() 不同，这里必须看到提示符才返回 True。
-    用于首次启动场景，确保 trust dialog 已通过。
-
-    返回：True=就绪，False=超时
-    """
-    READY_MARKERS = ["❯", "$ "]
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        content = capture_pane(session, window)
-        if not content:
-            time.sleep(poll_interval)
-            continue
-        last_lines = content.rstrip().split("\n")[-5:]
-        for line in last_lines:
-            for marker in READY_MARKERS:
-                if marker in line:
-                    return True
-        time.sleep(poll_interval)
-    return False
-
-
-def auto_accept_trust(session, window, timeout=15, poll_interval=1):
-    """
-    检测并自动通过 trust dialog（兜底方案）。
-    扫描 pane 内容，检测到 trust 相关关键词时发送 y+Enter 确认。
-
-    返回：True=检测到并已确认，False=未检测到 trust dialog
-    """
-    TRUST_KEYWORDS = ["trust", "Trust", "folder", "directory"]
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        content = capture_pane(session, window)
-        last_lines = content.rstrip().split("\n")[-10:] if content else []
-        text = "\n".join(last_lines)
-
-        if any(kw in text for kw in TRUST_KEYWORDS):
-            subprocess.run(
-                ["tmux", "send-keys", "-t", f"{session}:{window}", "y", "Enter"],
-                capture_output=True, timeout=5
-            )
-            time.sleep(2)
-            return True
-
-        # 已经看到 ❯ 提示符，说明没有 trust dialog
-        if any("❯" in line for line in last_lines):
-            return False
-
-        time.sleep(poll_interval)
-    return False
