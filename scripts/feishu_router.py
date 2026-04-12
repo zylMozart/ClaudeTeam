@@ -56,6 +56,7 @@ class RouterState:
 
     def __init__(self):
         self.bot_open_id = ""
+        self.chat_id = ""  # 本团队的 chat_id,用于过滤跨团队事件
         self._team_mtime = 0
         self._agent_names = []
         self.seen_ids = set()
@@ -223,6 +224,13 @@ def handle_event(event):
         return
     _state.seen_ids.add(msg_id)
 
+    # 过滤非本团队 chat 的事件。多团队共用同一个 Feishu App 时,WebSocket
+    # 会把 bot 可见的所有群的消息都推过来;不做这一步会导致一个团队的消息
+    # 被另一个团队的 router 投递(跨团队串台)。
+    event_chat_id = event.get("chat_id", "")
+    if _state.chat_id and event_chat_id and event_chat_id != _state.chat_id:
+        return
+
     # 过滤 bot 自己的消息
     sender_id = event.get("sender_id", "")
     if _state.is_bot_message(sender_id):
@@ -319,6 +327,7 @@ def main():
         print("❌ chat_id 未配置，请先运行 setup.py")
         sys.exit(1)
 
+    _state.chat_id = chat_id  # 启用跨团队事件过滤
     _state.init_bot_id()
     print(f"💬 监听群组: {chat_id}")
     print(f"👥 Agent 列表: {', '.join(_state.reload_agents())}")
@@ -342,7 +351,6 @@ def main():
             print("     npx @larksuite/cli config init --new")
             print("     ↳ 扫码 → 选「使用已有应用」→ 选当前 App ID")
             print("   这会把事件订阅推到 App 服务端并自动发布。")
-            print("   详见: docs/SETUP_ISSUES.md Bug 16")
             print("=" * 60)
     threading.Thread(target=_event_watchdog, daemon=True).start()
 

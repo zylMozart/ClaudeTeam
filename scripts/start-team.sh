@@ -66,7 +66,7 @@ done
 
 # window: router (lark-cli event stream → router)
 # 从 runtime_config.json 读取 lark_profile，确保多项目隔离
-LARK_PROFILE=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json')).get('lark_profile',''))" 2>/dev/null)
+LARK_PROFILE=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json')).get('lark_profile') or '')" 2>/dev/null)
 PROFILE_FLAG=""
 if [ -n "$LARK_PROFILE" ]; then
   PROFILE_FLAG="--profile $LARK_PROFILE"
@@ -82,18 +82,31 @@ tmux send-keys -t "$SESSION:kanban" "python3 scripts/kanban_sync.py daemon" Ente
 tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
 tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
-sleep 2
-
 # ── 验证每个 Agent 窗口里 Claude 真的起来了 (Bug 11 防御) ─────
 # 如果窗口里只剩 bash,后续 init 消息会被当成 shell 命令跑,看起来"启动了"
 # 实际全员死亡。所以先 probe 每个窗口,没进 Claude UI 的直接 abort。
+#
+# Claude 冷启动在繁忙机器上可能需要 10+ 秒,固定 sleep+one-shot probe 会把
+# 正常但慢的启动误判为失败。改成轮询: 每秒检查一次,最多 15 次,任一次全绿
+# 就 break,大多数情况下不到 5 秒就跳出。
+MAX_PROBE_ATTEMPTS=15
 FAILED_AGENTS=()
-for agent in "${AGENTS[@]}"; do
-  PANE=$(tmux capture-pane -t "$SESSION:$agent" -p -S -60 2>/dev/null)
-  if echo "$PANE" | grep -q "bypass permissions on\|? for shortcuts"; then
-    :
-  else
-    FAILED_AGENTS+=("$agent")
+for attempt in $(seq 1 "$MAX_PROBE_ATTEMPTS"); do
+  FAILED_AGENTS=()
+  for agent in "${AGENTS[@]}"; do
+    PANE=$(tmux capture-pane -t "$SESSION:$agent" -p -S -60 2>/dev/null)
+    if echo "$PANE" | grep -q "bypass permissions on\|? for shortcuts"; then
+      :
+    else
+      FAILED_AGENTS+=("$agent")
+    fi
+  done
+  if [ ${#FAILED_AGENTS[@]} -eq 0 ]; then
+    break
+  fi
+  # 最后一次不 sleep,直接进入诊断分支
+  if [ "$attempt" -lt "$MAX_PROBE_ATTEMPTS" ]; then
+    sleep 1
   fi
 done
 
@@ -162,4 +175,12 @@ echo "    python3 scripts/feishu_msg.py inbox ${AGENTS[0]}"
 
 # 切到第一个 agent 窗口
 tmux select-window -t "$SESSION:${AGENTS[0]}"
-tmux attach -t "$SESSION"
+
+# 只在交互式终端下 attach。非 TTY 环境 (CI/脚本/嵌套 agent) 下 tmux attach
+# 会报 "open terminal failed: not a terminal" 并用退出码 1 污染上游调用者的
+# 判断。session 本身已经跑起来了,没必要用 attach 阻塞。
+if [ -t 1 ] && [ -t 0 ]; then
+  tmux attach -t "$SESSION"
+else
+  echo "ℹ️  非交互式运行,跳过 tmux attach。查看团队: tmux attach -t $SESSION"
+fi

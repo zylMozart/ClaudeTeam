@@ -4,12 +4,140 @@
 底层通过 lark-cli 执行飞书 API 操作（im/base 命令）。
 运行：python3 scripts/setup.py
 """
-import sys, os, json, time, subprocess
+import sys, os, json, time, subprocess, glob
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import AGENTS, CONFIG_FILE, TMUX_SESSION, PROJECT_ROOT, save_runtime_config, get_lark_cli
 
 LARK_CLI = get_lark_cli()  # 自动带 --profile（如已初始化）
+
+
+# ── 同机多团队部署的 profile 冲突检查 ─────────────────────────────
+
+def _scan_other_deployments(current_root):
+    """扫描宿主机上其他 ClaudeTeam 部署的 runtime_config.json。
+
+    搜索范围: $HOME 以及 $CLAUDE_TEAM_SEARCH_PATHS (冒号分隔) 下的
+    */ClaudeTeam/scripts/runtime_config.json 文件。当前项目自身排除在外。
+
+    返回 list[dict]: [{"path": <project_root>, "session": ..., "lark_profile": ...}, ...]
+    """
+    search_roots = [os.path.expanduser("~")]
+    extra = os.environ.get("CLAUDE_TEAM_SEARCH_PATHS", "")
+    if extra:
+        search_roots.extend(p for p in extra.split(":") if p)
+
+    current_real = os.path.realpath(current_root)
+    results = []
+    seen = set()
+
+    for root in search_roots:
+        if not os.path.isdir(root):
+            continue
+        pattern = os.path.join(root, "**", "ClaudeTeam", "scripts", "runtime_config.json")
+        for cfg_path in glob.iglob(pattern, recursive=True):
+            project_root = os.path.dirname(os.path.dirname(cfg_path))
+            real = os.path.realpath(project_root)
+            if real == current_real or real in seen:
+                continue
+            seen.add(real)
+            try:
+                with open(cfg_path) as f:
+                    cfg = json.load(f)
+            except Exception:
+                continue
+            team_path = os.path.join(project_root, "team.json")
+            session = ""
+            if os.path.exists(team_path):
+                try:
+                    with open(team_path) as f:
+                        session = json.load(f).get("session", "")
+                except Exception:
+                    pass
+            results.append({
+                "path": project_root,
+                "session": session,
+                "lark_profile": cfg.get("lark_profile"),
+            })
+    return results
+
+
+def _current_default_profile():
+    """问 lark-cli 当前默认 profile 的名字 (appId)。失败返回空字符串。
+
+    注意: `lark-cli config show` 不支持 --format 参数——它的 stdout 本身
+    就是 JSON + 一行尾部文本 (Config file path: ...),截出 JSON 块解析即可。
+    """
+    try:
+        r = subprocess.run(LARK_CLI + ["config", "show"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return ""
+        text = r.stdout
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return ""
+        d = json.loads(text[start:end + 1])
+        return d.get("profile") or d.get("appId") or ""
+    except Exception:
+        return ""
+
+
+def _normalize_profile(p, default_name):
+    """把 None / 空串归一到当前默认 profile,方便比较。"""
+    if not p:
+        return default_name
+    return p
+
+
+def _check_profile_conflict(effective_profile, default_name):
+    """扫描冲突并决定是否 abort。
+
+    返回 effective_profile (可能被修正)。冲突且未确认时 sys.exit(1)。
+    """
+    deployments = _scan_other_deployments(PROJECT_ROOT)
+    if not deployments:
+        return effective_profile
+
+    norm_self = _normalize_profile(effective_profile, default_name)
+    conflicts = [
+        d for d in deployments
+        if _normalize_profile(d["lark_profile"], default_name) == norm_self
+    ]
+    if not conflicts:
+        print(f"ℹ️  宿主机上还有 {len(deployments)} 个其他 ClaudeTeam 部署,"
+              f"但它们使用不同的 lark-cli profile,不会冲突。")
+        return effective_profile
+
+    accept = os.environ.get("CLAUDE_TEAM_ACCEPT_SHARED_PROFILE", "").lower() in ("1", "yes", "true")
+
+    print("=" * 70)
+    print("⚠️  检测到 lark-cli profile 冲突")
+    print(f"   当前准备使用的 profile: {norm_self}")
+    print(f"   以下已有部署也在使用同一个 profile (= 同一个 Feishu App):")
+    for d in conflicts:
+        label = d.get("session") or "?"
+        print(f"     • {d['path']}  (session={label})")
+    print()
+    print("   共享 profile 意味着所有团队共享一个 bot 身份 + 一条事件流。")
+    print("   Router 会按 chat_id 过滤跨团队事件,但这依赖 router 代码")
+    print("   的正确性,不是真正的身份隔离。")
+    print()
+    print("   推荐做法 (真正隔离):")
+    print(f"     1) npx @larksuite/cli config init --new --name {TMUX_SESSION}")
+    print("        扫码为本团队创建一个独立的 Feishu App")
+    print(f"     2) LARK_CLI_PROFILE={TMUX_SESSION} python3 scripts/setup.py")
+    print()
+    print("   继续使用共享 profile (依赖 chat_id 过滤):")
+    print("     CLAUDE_TEAM_ACCEPT_SHARED_PROFILE=1 python3 scripts/setup.py")
+    print("=" * 70)
+
+    if not accept:
+        sys.exit(1)
+
+    print("✅ CLAUDE_TEAM_ACCEPT_SHARED_PROFILE=1 已设置,继续。")
+    return effective_profile
 
 
 def _lark(args, label="", timeout=30):
@@ -303,18 +431,21 @@ def main():
         print("❌ team.json 未配置或为空，请先创建团队配置。")
         sys.exit(1)
 
-    # 检测当前 lark-cli profile 并保存，确保多项目隔离
-    lark_profile = None
-    try:
-        r = subprocess.run(LARK_CLI + ["config", "show", "--format", "json"],
-                           capture_output=True, text=True, timeout=10)
-        if r.returncode == 0:
-            cfg_data = json.loads(r.stdout)
-            lark_profile = cfg_data.get("profile") or cfg_data.get("appId", "")
-            if lark_profile:
-                print(f"🔑 lark-cli profile: {lark_profile}")
-    except Exception:
-        pass
+    # 解析本次 setup 将使用的 lark-cli profile。
+    # 优先级: LARK_CLI_PROFILE 环境变量 > lark-cli 当前默认 profile。
+    default_name = _current_default_profile()
+    env_profile = os.environ.get("LARK_CLI_PROFILE", "").strip()
+    lark_profile = env_profile or default_name
+    if not lark_profile:
+        print("❌ 无法确定 lark-cli profile。请先运行:")
+        print("     npx @larksuite/cli config init --new")
+        sys.exit(1)
+    print(f"🔑 lark-cli profile: {lark_profile}")
+
+    # 同机多团队部署时,若多个部署共用同一个 profile (= 同一个 Feishu App),
+    # 它们会在 WebSocket 层共享事件流,router 必须按 chat_id 过滤才不会串台。
+    # 这里做预检查,让用户显式选路。
+    lark_profile = _check_profile_conflict(lark_profile, default_name)
 
     base_token = create_bitable()
     time.sleep(2)  # 等待 Bitable 初始化完成，避免后续建表报 OpenAPIAddField limited
