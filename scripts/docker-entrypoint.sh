@@ -15,36 +15,35 @@ echo ""
 
 # ── 前置检查 ──────────────────────────────────────────────────
 
-# team.json — 必须是有内容的合法 JSON,不能是 bind mount 不存在时被 Docker 自动
-# 创建出来的空目录。分两步检查,给出明确错误。
-if [ -d team.json ]; then
-  echo "❌ team.json 是一个目录,不是文件。"
-  echo "   原因: docker-compose.yml 把 ./team.json 作为 bind mount,但宿主机上"
-  echo "         该文件不存在时 Docker 会创建同名目录顶替。"
-  echo "   修复: 在宿主机上手写一份 team.json 后重新 up。"
-  exit 1
-fi
-if [ ! -s team.json ]; then
-  echo "❌ team.json 缺失或为空。请通过 volume 挂载一份已初始化的 team.json。"
-  exit 1
-fi
-if ! python3 -c "import json,sys; json.load(open('team.json'))" 2>/dev/null; then
-  echo "❌ team.json 不是合法 JSON。"
-  exit 1
-fi
+# 常见坑: docker-compose.yml 里的 bind mount 目标文件如果宿主机上不存在,
+# Docker 会自动创建一个同名"目录"顶替,后续 cat/python 会报"Is a directory"
+# 而不是清晰的"文件缺失"。这个 helper 一次性处理三种失败: 是目录/为空/
+# 不是合法 JSON,给出统一的报错格式。
+require_json_file() {
+  local path="$1" remediation="$2"
+  if [ -d "$path" ]; then
+    echo "❌ $path 是一个目录,不是文件(bind mount 目标在宿主机不存在)。"
+    [ -n "$remediation" ] && echo "   $remediation"
+    exit 1
+  fi
+  if [ ! -s "$path" ]; then
+    echo "❌ $path 缺失或为空。"
+    [ -n "$remediation" ] && echo "   $remediation"
+    exit 1
+  fi
+  if ! python3 -c "import json,sys; json.load(open('$path'))" 2>/dev/null; then
+    echo "❌ $path 不是合法 JSON。"
+    [ -n "$remediation" ] && echo "   $remediation"
+    exit 1
+  fi
+}
 
-# runtime_config.json — 同样必须存在且合法。不再尝试在容器内跑 setup.py,
-# 因为 setup.py 是交互式/半交互式流程,应该在宿主机上跑一次,然后把文件挂进来。
-if [ -d scripts/runtime_config.json ]; then
-  echo "❌ scripts/runtime_config.json 是一个目录,不是文件(bind mount 目标缺失)。"
-  echo "   修复: 在宿主机上先跑 python3 scripts/setup.py 生成该文件。"
-  exit 1
-fi
-if [ ! -s scripts/runtime_config.json ]; then
-  echo "❌ scripts/runtime_config.json 缺失或为空。"
-  echo "   修复: 在宿主机上先跑 python3 scripts/setup.py 生成该文件。"
-  exit 1
-fi
+require_json_file team.json \
+  "在宿主机上手写一份 team.json 后重新 docker compose up。"
+
+require_json_file scripts/runtime_config.json \
+  "在宿主机上先跑 python3 scripts/setup.py 生成该文件。"
+
 if ! python3 -c "
 import json,sys
 cfg=json.load(open('scripts/runtime_config.json'))
