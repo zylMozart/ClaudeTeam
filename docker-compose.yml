@@ -29,6 +29,11 @@ services:
     environment:
       # Claude Code API Key（可选；如果用 ~/.claude/.credentials.json OAuth 可省略）
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # 飞书 App 凭证(如果在 .env 里填了,entrypoint 会生成 config.json;
+      # 留空则依赖宿主机 ~/.lark-cli volume 挂载的 config.json)
+      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
+      - FEISHU_BRAND=${FEISHU_BRAND:-feishu}
       - TERM=xterm-256color
       # 强制 HOME 指向 /home/claudeteam — 即使以 root 运行容器(user: "0:0"),
       # claude / lark-cli 等工具仍然通过 $HOME 读取 ~/.claude、~/.lark-cli,

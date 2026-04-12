@@ -56,15 +56,57 @@ for k in ('bitable_app_token','msg_table_id','sta_table_id','chat_id'):
   exit 1
 fi
 
-# lark-cli 凭证 — 必须能看到 config.json,否则 router/kanban 都会崩
+# ── 飞书 App 凭证 ──────────────────────────────────────────
+# 两条路径:
+#   (a) 环境变量 FEISHU_APP_ID + FEISHU_APP_SECRET 都给了 → 生成 inline 格式
+#       config.json,不依赖 ~/.local/share/lark-cli/ 加密存储。优先级最高,
+#       存在即覆盖。适合新用户直接从 .env 起步。
+#   (b) 都没给 → 期待宿主机挂载已经配好的 ~/.lark-cli。适合已经跑过
+#       lark-cli config init --new 的老用户。
+if [ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ]; then
+  mkdir -p /home/claudeteam/.lark-cli
+  python3 - <<'PY'
+import json, os
+cfg = {"apps": [{
+    "appId":     os.environ["FEISHU_APP_ID"],
+    "appSecret": os.environ["FEISHU_APP_SECRET"],
+    "brand":     os.environ.get("FEISHU_BRAND", "feishu") or "feishu",
+    "lang":      "zh",
+    "users":     [],
+}]}
+with open("/home/claudeteam/.lark-cli/config.json", "w") as f:
+    json.dump(cfg, f, indent=2)
+os.chmod("/home/claudeteam/.lark-cli/config.json", 0o600)
+PY
+  echo "✅ 已从环境变量生成 /home/claudeteam/.lark-cli/config.json (appId=$FEISHU_APP_ID, brand=${FEISHU_BRAND:-feishu})"
+fi
+
 if [ ! -f /home/claudeteam/.lark-cli/config.json ]; then
-  echo "❌ lark-cli 未配置(找不到 /home/claudeteam/.lark-cli/config.json)"
-  echo "   请确保 docker-compose.yml 挂载了宿主机的 ~/.lark-cli 到容器。"
+  echo "❌ lark-cli 未配置: /home/claudeteam/.lark-cli/config.json 不存在。"
+  echo "   二选一:"
+  echo "     (a) 在 .env 里填 FEISHU_APP_ID 和 FEISHU_APP_SECRET,由容器自动生成"
+  echo "     (b) 在宿主机跑 \`npx @larksuite/cli config init --new\` 扫码,"
+  echo "         确保 ~/.lark-cli 和 ~/.local/share/lark-cli 都存在"
   exit 1
 fi
-if [ ! -f /home/claudeteam/.local/share/lark-cli/master.key ]; then
-  echo "❌ lark-cli 加密 secret 存储未挂载(~/.local/share/lark-cli/master.key 缺失)"
-  echo "   请确保 docker-compose.yml 挂载了宿主机的 ~/.local/share/lark-cli 到容器。"
+
+# 解析 config.json 判断 secret 的存储形式。如果是 {"source":"keychain",...}
+# 的引用形式,必须依赖 ~/.local/share/lark-cli/master.key + 对应的 .enc 文件
+# 才能拿到明文;如果是纯字符串(inline 模式),就不需要加密存储。
+SECRET_MODE=$(python3 -c "
+import json
+cfg = json.load(open('/home/claudeteam/.lark-cli/config.json'))
+app = cfg.get('apps', [{}])[0]
+sec = app.get('appSecret')
+print('keychain' if isinstance(sec, dict) else 'inline')
+" 2>/dev/null || echo "unknown")
+
+if [ "$SECRET_MODE" = "keychain" ] && [ ! -f /home/claudeteam/.local/share/lark-cli/master.key ]; then
+  echo "❌ lark-cli config.json 使用 keychain 引用模式但加密存储未挂载"
+  echo "   (~/.local/share/lark-cli/master.key 缺失)"
+  echo "   修复: 在 docker-compose.yml 里加一行"
+  echo "         - ~/.local/share/lark-cli:/home/claudeteam/.local/share/lark-cli"
+  echo "   或者改用 .env 里的 FEISHU_APP_ID/FEISHU_APP_SECRET,切到 inline 模式。"
   exit 1
 fi
 
