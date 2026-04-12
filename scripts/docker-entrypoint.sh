@@ -15,23 +15,97 @@ echo ""
 
 # ── 前置检查 ──────────────────────────────────────────────────
 
-if [ ! -f team.json ]; then
-  echo "❌ team.json 未找到。请通过 volume 挂载或先运行初始化。"
-  echo "   示例：docker run -v ./team.json:/app/team.json ..."
+# team.json — 必须是有内容的合法 JSON,不能是 bind mount 不存在时被 Docker 自动
+# 创建出来的空目录。分两步检查,给出明确错误。
+if [ -d team.json ]; then
+  echo "❌ team.json 是一个目录,不是文件。"
+  echo "   原因: docker-compose.yml 把 ./team.json 作为 bind mount,但宿主机上"
+  echo "         该文件不存在时 Docker 会创建同名目录顶替。"
+  echo "   修复: 在宿主机上手写一份 team.json 后重新 up。"
+  exit 1
+fi
+if [ ! -s team.json ]; then
+  echo "❌ team.json 缺失或为空。请通过 volume 挂载一份已初始化的 team.json。"
+  exit 1
+fi
+if ! python3 -c "import json,sys; json.load(open('team.json'))" 2>/dev/null; then
+  echo "❌ team.json 不是合法 JSON。"
   exit 1
 fi
 
-if [ ! -f scripts/runtime_config.json ]; then
-  echo "⚠️  runtime_config.json 未找到，尝试运行初始化..."
-  python3 scripts/setup.py
-fi
-
-# 检查 Claude Code API key
-if [ -z "$ANTHROPIC_API_KEY" ]; then
-  echo "❌ 环境变量 ANTHROPIC_API_KEY 未设置。"
-  echo "   请在 docker-compose.yml 或 docker run -e 中设置。"
+# runtime_config.json — 同样必须存在且合法。不再尝试在容器内跑 setup.py,
+# 因为 setup.py 是交互式/半交互式流程,应该在宿主机上跑一次,然后把文件挂进来。
+if [ -d scripts/runtime_config.json ]; then
+  echo "❌ scripts/runtime_config.json 是一个目录,不是文件(bind mount 目标缺失)。"
+  echo "   修复: 在宿主机上先跑 python3 scripts/setup.py 生成该文件。"
   exit 1
 fi
+if [ ! -s scripts/runtime_config.json ]; then
+  echo "❌ scripts/runtime_config.json 缺失或为空。"
+  echo "   修复: 在宿主机上先跑 python3 scripts/setup.py 生成该文件。"
+  exit 1
+fi
+if ! python3 -c "
+import json,sys
+cfg=json.load(open('scripts/runtime_config.json'))
+for k in ('bitable_app_token','msg_table_id','sta_table_id','chat_id'):
+    if not cfg.get(k): sys.exit('missing '+k)
+" 2>/tmp/rtcfg.err; then
+  echo "❌ scripts/runtime_config.json 缺少关键字段: $(cat /tmp/rtcfg.err)"
+  echo "   修复: 删除该文件后在宿主机上重新跑 python3 scripts/setup.py"
+  exit 1
+fi
+
+# lark-cli 凭证 — 必须能看到 config.json,否则 router/kanban 都会崩
+if [ ! -f /home/claudeteam/.lark-cli/config.json ]; then
+  echo "❌ lark-cli 未配置(找不到 /home/claudeteam/.lark-cli/config.json)"
+  echo "   请确保 docker-compose.yml 挂载了宿主机的 ~/.lark-cli 到容器。"
+  exit 1
+fi
+if [ ! -f /home/claudeteam/.local/share/lark-cli/master.key ]; then
+  echo "❌ lark-cli 加密 secret 存储未挂载(~/.local/share/lark-cli/master.key 缺失)"
+  echo "   请确保 docker-compose.yml 挂载了宿主机的 ~/.local/share/lark-cli 到容器。"
+  exit 1
+fi
+
+# Claude Code 认证 — 两选一
+if [ -z "$ANTHROPIC_API_KEY" ] && [ ! -f /home/claudeteam/.claude/.credentials.json ]; then
+  echo "❌ Claude Code 没有可用凭证: 既没有 ANTHROPIC_API_KEY 环境变量,"
+  echo "   也没有 /home/claudeteam/.claude/.credentials.json OAuth 凭证。"
+  echo "   二选一:"
+  echo "     (a) export ANTHROPIC_API_KEY=sk-... 再 docker compose up"
+  echo "     (b) 宿主机先 \`claude login\` 生成 ~/.claude/.credentials.json"
+  exit 1
+fi
+# OAuth 模式下还需要 ~/.claude.json(账户元数据,和 .credentials.json 分开存)
+if [ -z "$ANTHROPIC_API_KEY" ] && [ ! -f /home/claudeteam/.claude.json ]; then
+  echo "❌ OAuth 模式缺少 /home/claudeteam/.claude.json(账户元数据文件)。"
+  echo "   Claude Code 会弹出 'Select login method' 菜单阻塞启动。"
+  echo "   修复: docker-compose.yml 增加一行"
+  echo "         - ~/.claude.json:/home/claudeteam/.claude.json"
+  exit 1
+fi
+
+# 确保 /app 在 projects 里且 hasTrustDialogAccepted=true,否则 Claude Code
+# 首次进入 /app 会弹出 "Is this a project you trust?" 交互菜单,和主题菜单一样
+# 会吃掉 tmux send-keys 的初始化消息。这里做一次幂等写入。
+python3 - <<'PY'
+import json, os
+p = "/home/claudeteam/.claude.json"
+if not os.path.exists(p):
+    raise SystemExit(0)
+with open(p) as f:
+    d = json.load(f)
+projects = d.setdefault("projects", {})
+app = projects.setdefault("/app", {})
+if not app.get("hasTrustDialogAccepted"):
+    app["hasTrustDialogAccepted"] = True
+    app.setdefault("hasCompletedProjectOnboarding", True)
+    app.setdefault("projectOnboardingSeenCount", 1)
+    with open(p, "w") as f:
+        json.dump(d, f, indent=2)
+    print("✅ 已为 /app 写入信任标记")
+PY
 
 # ── 启动团队（非交互模式）────────────────────────────────────
 
@@ -69,6 +143,22 @@ tmux send-keys -t "$SESSION:router" "npx @larksuite/cli event +subscribe --event
 # 看板同步
 tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"
 tmux send-keys -t "$SESSION:kanban" "python3 scripts/kanban_sync.py daemon" Enter
+
+# 等 router / kanban 真正起来并写出各自的 PID 锁文件后再启动 watchdog。
+# 不等的话 watchdog 的首次检查会在 t=0 即认定目标未启动 → 错误地"重启"它们,
+# 后果是 router 被启动两遍,两个 lark-cli WebSocket 订阅同时跑,事件收两次。
+echo "⏳ 等待 router / kanban 启动..."
+for i in $(seq 1 30); do
+  if [ -f scripts/.router.pid ] && [ -f scripts/.kanban_sync.pid ]; then
+    echo "   ✓ router + kanban PID 就位"
+    break
+  fi
+  sleep 1
+done
+if [ ! -f scripts/.router.pid ] || [ ! -f scripts/.kanban_sync.pid ]; then
+  echo "⚠️  等待 30s 后 router 或 kanban 仍未写出 PID 文件,继续启动 watchdog。"
+  echo "   这可能意味着 router/kanban 启动失败,请 docker exec 进入 tmux 查看。"
+fi
 
 # Watchdog
 tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"

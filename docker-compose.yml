@@ -6,6 +6,12 @@
 #   查看日志：docker compose logs -f
 #   进入 tmux：docker compose exec team tmux attach -t <session>
 #   停止：docker compose down
+#
+# 前置条件（在宿主机上完成一次）：
+#   1. python3 scripts/setup.py        # 生成 scripts/runtime_config.json
+#   2. 确保 ~/.lark-cli/ 与 ~/.local/share/lark-cli/ 存在（lark-cli 凭证）
+#   3. 确保 ~/.claude/.credentials.json 存在（Claude Code OAuth 凭证）
+#      或 export ANTHROPIC_API_KEY=...
 ###############################################################################
 
 services:
@@ -13,13 +19,21 @@ services:
     build: .
     container_name: claudeteam
     restart: unless-stopped
+    # 以 root 运行: 避免宿主机上 ~/.claude/.credentials.json、
+    # ~/.local/share/lark-cli/master.key 等文件 mode 0600/0700 时容器内非 root
+    # 用户读不到。Claude Code 的 --dangerously-skip-permissions 模式本来就要求
+    # IS_SANDBOX=1 表示受信任环境,以 root 身份运行容器不额外降低安全性。
+    user: "0:0"
 
     # ── 环境变量 ──────────────────────────────────────────────
     environment:
-      # Claude Code API Key（必须）
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      # lark-cli 凭证（通过 lark-cli config init 生成的配置文件挂载更佳，见 volumes）
+      # Claude Code API Key（可选；如果用 ~/.claude/.credentials.json OAuth 可省略）
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - TERM=xterm-256color
+      # 强制 HOME 指向 /home/claudeteam — 即使以 root 运行容器(user: "0:0"),
+      # claude / lark-cli 等工具仍然通过 $HOME 读取 ~/.claude、~/.lark-cli,
+      # 这样它们会看到我们挂载的配置,而不是 root 的 /root/.*(空的)。
+      - HOME=/home/claudeteam
 
     # ── 数据持久化 ────────────────────────────────────────────
     volumes:
@@ -27,22 +41,32 @@ services:
       - ./team.json:/app/team.json
       # 运行时配置（飞书资源 ID，setup.py 生成）
       - ./scripts/runtime_config.json:/app/scripts/runtime_config.json
-      # Agent 工作空间（持久化，容器重建不丢失）
-      - claudeteam-agents:/app/agents
-      - claudeteam-workspace:/app/workspace
-      # lark-cli 配置（首次需在宿主机运行 lark-cli config init）
-      - ~/.larksuite-cli:/home/claudeteam/.larksuite-cli:ro
-      # Claude Code 配置（API key 等）
-      - ~/.claude:/home/claudeteam/.claude
+      # Agent 身份目录 + 共享工作空间 — 必须是 bind mount,否则 setup.py 在
+      # 宿主机创建的 agents/<name>/identity.md / core_memory.md 不会进入容器,
+      # manager 会降级到 templates/ 读兜底 identity,丢失 /hire 产生的角色差异。
+      - ./agents:/app/agents
+      - ./workspace:/app/workspace
+      # lark-cli 配置 + 加密 secret 存储（两个都必须挂）
+      - ~/.lark-cli:/home/claudeteam/.lark-cli
+      - ~/.local/share/lark-cli:/home/claudeteam/.local/share/lark-cli
+      # Claude Code 凭证与账户状态
+      # - .credentials.json: OAuth access/refresh token
+      # - .claude.json:     oauthAccount / userID / hasCompletedOnboarding 等
+      #                     (Claude Code 在 HOME 目录下,不在 .claude/ 子目录里!)
+      # 两者缺一不可,否则容器内 Claude Code 会显示 "Select login method" 菜单。
+      # 不用 :ro —— Claude Code 需要刷写 OAuth token + 更新 projects 等运行态。
+      - ~/.claude/.credentials.json:/home/claudeteam/.claude/.credentials.json
+      - ~/.claude.json:/home/claudeteam/.claude.json
 
     # ── 资源限制 ──────────────────────────────────────────────
+    # 默认值针对 2C/4G 的小机器；大机器上可在 .env 里改 CLAUDETEAM_CPUS/CLAUDETEAM_MEM
     deploy:
       resources:
         limits:
-          memory: 8G      # 10 个 agent 建议 8GB
-          cpus: "4.0"
+          memory: ${CLAUDETEAM_MEM:-4G}
+          cpus: "${CLAUDETEAM_CPUS:-2.0}"
         reservations:
-          memory: 2G
+          memory: 1G
 
     # ── 安全 ──────────────────────────────────────────────────
     security_opt:
