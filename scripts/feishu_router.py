@@ -271,6 +271,138 @@ def handle_event(event):
         # 用户消息默认路由到 manager
         wake_agent("manager", text, msg_id=msg_id, full_text=text)
 
+    # 推进 cursor + 更新心跳 — 必须放在成功路由之后,否则半路异常会让
+    # cursor 跳过没处理完的消息
+    _touch_heartbeat_and_cursor()
+
+# ── 事件心跳 + 重启补抓 ────────────────────────────────────────
+# 设计意图:
+#   Feishu WebSocket 长连接在 Docker bridge + 云 NAT 环境下,如果长时间没有
+#   消息流动,中间层的 conntrack 表项会过期,连接被静默切断。客户端的 TCP
+#   read 永远阻塞 — 进程看似活着(PID 存在),但事件流其实已经死了。watchdog
+#   默认只检查 PID 活性,查不出来。
+#
+#   双层防御:
+#   1) 每次成功处理事件就写一次 heartbeat 文件 + 更新 cursor(最后处理事件
+#      的墙钟时间)。scripts/watchdog.py 的 PROCS 给 router 加 health_file
+#      配置,长时间没心跳就判定 router 已死并自动重启。
+#   2) Router 启动时(无论首次还是被 watchdog 重启),先读上一次的 cursor,
+#      调 `im +chat-messages-list --start $cursor --sort asc` 把断联期间
+#      错过的群聊消息按时间顺序拉回来,逐条走正常的 handle_event() 流程,
+#      然后才接 WebSocket 事件循环。
+#   两者配合 = 自动检测 WebSocket 静默死亡 + 重启后零消息丢失。
+
+HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".router.heartbeat")
+CURSOR_FILE    = os.path.join(os.path.dirname(__file__), ".router.cursor")
+
+
+def _touch_heartbeat_and_cursor(ts=None):
+    """更新 heartbeat mtime + 把 cursor(最后处理事件的墙钟)落盘。
+
+    两件事解耦: 即使 cursor 写失败也保证 heartbeat 更新,避免 watchdog
+    在磁盘短暂故障时误杀 router。
+    """
+    t = ts if ts is not None else time.time()
+    try:
+        with open(CURSOR_FILE, "w") as f:
+            f.write(f"{t:.3f}")
+    except Exception as e:
+        print(f"  ⚠️ 写 cursor 失败: {e}")
+    try:
+        if not os.path.exists(HEARTBEAT_FILE):
+            open(HEARTBEAT_FILE, "a").close()
+        os.utime(HEARTBEAT_FILE, (t, t))
+    except Exception as e:
+        print(f"  ⚠️ 更新 heartbeat 失败: {e}")
+
+
+def _load_cursor():
+    """读上一次的 cursor(unix 秒,float)。首次启动或读失败返回 None。"""
+    try:
+        with open(CURSOR_FILE) as f:
+            return float(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _catchup_from_history(chat_id):
+    """根据 cursor 从聊天记录 API 补抓错过的用户消息,逐条走 handle_event。
+
+    首次启动(无 cursor)直接初始化 cursor 为当前时间并跳过。
+    """
+    from datetime import datetime
+    cursor = _load_cursor()
+    if cursor is None:
+        _touch_heartbeat_and_cursor()
+        print("📥 首次启动,无 cursor,跳过历史补抓")
+        return
+
+    # 向前退 1 秒避免秒级精度漏掉同一秒的消息。代价是可能重复处理上一条
+    # 消息,但 _state.seen_ids 会在 session 内去重(跨 session 不去重,那条
+    # 会被 agent 视作新消息,这个重复的代价可以接受)。
+    start_dt = datetime.fromtimestamp(cursor - 1).astimezone()
+    start_iso = start_dt.isoformat(timespec="seconds")
+    print(f"📥 历史补抓: 从 {start_iso} 开始拉错过的群聊消息")
+
+    fetched = replayed = 0
+    page_token = ""
+    # 硬上限: 最多拉 20 页 * 50 条 = 1000 条,防止 cursor 极久远时卡死
+    for _ in range(20):
+        args = ["im", "+chat-messages-list",
+                "--chat-id", chat_id,
+                "--start", start_iso,
+                "--sort", "asc",
+                "--page-size", "50",
+                "--as", "bot",
+                "--format", "json"]
+        if page_token:
+            args += ["--page-token", page_token]
+        try:
+            r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=40)
+        except subprocess.TimeoutExpired:
+            print("  ⚠️ 历史补抓超时,放弃剩余页")
+            break
+        if r.returncode != 0:
+            print(f"  ⚠️ 历史补抓失败: {r.stderr.strip()[:200]}")
+            break
+        try:
+            data = json.loads(r.stdout).get("data", {})
+        except json.JSONDecodeError:
+            print("  ⚠️ 历史补抓响应不是合法 JSON")
+            break
+        for m in data.get("messages", []):
+            fetched += 1
+            sender = m.get("sender", {})
+            # 只 replay 真实用户消息,跳过 app/bot 发的卡片,避免 watchdog
+            # 的告警卡片被 replay 成"用户新消息"触发 manager
+            if sender.get("sender_type") != "user":
+                continue
+            # 非文本消息(图片/文件/post)补抓时暂时跳过,避免二次下载和
+            # 卡片解析的复杂度 — 真的想要的话 agent 可以自己去聊天记录拉
+            if m.get("msg_type") != "text":
+                print(f"  ⏭  跳过非文本历史消息: {m.get('message_id')}")
+                continue
+            event = {
+                "message_id":  m.get("message_id", ""),
+                "chat_id":     chat_id,
+                "sender_id":   sender.get("id", ""),
+                "text":        m.get("content", ""),
+                "message_type": "text",
+            }
+            try:
+                handle_event(event)
+                replayed += 1
+            except Exception as e:
+                print(f"  ⚠️ replay 事件失败: {e}")
+        if not data.get("has_more"):
+            break
+        page_token = data.get("page_token", "")
+        if not page_token:
+            break
+
+    print(f"📥 历史补抓完成: 拉取 {fetched} 条, replay {replayed} 条到 agent")
+
+
 # ── PID 锁 ──────────────────────────────────────────────────
 
 PID_FILE = os.path.join(os.path.dirname(__file__), ".router.pid")
@@ -335,6 +467,11 @@ def main():
     # 启动队列投递后台线程
     delivery_thread = threading.Thread(target=_queue_delivery_loop, daemon=True)
     delivery_thread.start()
+
+    # 启动时先补抓断联期间错过的群聊消息(见 HEARTBEAT_FILE 那段的说明)。
+    # 放在 delivery_thread 之后,让 replay 的消息能被后台队列投递线程及时
+    # 分发到 agent 窗口,不会在 catchup 里同步阻塞等 manager 空闲。
+    _catchup_from_history(chat_id)
 
     # Bug 16 防御:启动后 45 秒内如果一条事件都没到,打印醒目警告。
     # 最常见的根因是 App 的 im.message.receive_v1 事件订阅没配(config init
