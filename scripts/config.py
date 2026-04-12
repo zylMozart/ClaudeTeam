@@ -56,11 +56,27 @@ def save_runtime_config(cfg):
 # ── lark-cli profile 隔离 ──────────────────────────────────────
 
 def _detect_lark_profile():
-    """从 runtime_config.json 读取 lark_profile；未初始化时返回 None。"""
+    """解析当前应使用的 lark-cli profile 名称。
+
+    优先级:
+      1) LARK_CLI_PROFILE 环境变量 (显式 override,用于多团队同机部署)
+      2) runtime_config.json 的 lark_profile 字段 (setup.py 初始化时写入)
+      3) None = 让 lark-cli 使用其默认 profile
+
+    runtime_config.json 里 lark_profile 可能被写成 null (历史遗留),读出来
+    是 Python None,直接拼进命令行会变成 "--profile None" 让 lark-cli 报错。
+    这里用 `or None` 把空串和 None 都规范化,上游就不会看到歧义值。
+    """
+    # 1) 环境变量 override — 支持 `LARK_CLI_PROFILE=xxx python3 scripts/setup.py`
+    env_profile = _os.environ.get("LARK_CLI_PROFILE", "").strip()
+    if env_profile:
+        return env_profile
+    # 2) runtime_config.json
     if _os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE) as _f:
-                return _json.load(_f).get("lark_profile")
+                val = _json.load(_f).get("lark_profile")
+            return val or None
         except Exception:
             pass
     return None

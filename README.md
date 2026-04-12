@@ -120,6 +120,66 @@ From within Claude Code (as manager):
 
 ---
 
+## Running Multiple Teams on One Host
+
+You can run N teams side-by-side on the same machine — each team has its own project directory, its own `team.json`, its own tmux session, its own Feishu group chat. **But you have to choose how they share the Feishu identity:**
+
+### Option A — Shared Feishu App (simpler, recommended for hobby / dev)
+
+All teams use the **same** Feishu App (same App ID / App Secret). Each team has its own group chat; the router filters incoming events by `chat_id` so messages never cross team boundaries.
+
+**Setup:**
+```bash
+# First team — normal flow
+cd ~/project/teamA && claude     # follows README Phase 1 & 2 as usual
+
+# Second team — setup.py detects the shared profile and asks you to confirm
+cd ~/project/teamB && claude
+# ...when setup.py prints the "profile conflict" warning, rerun it with:
+CLAUDE_TEAM_ACCEPT_SHARED_PROFILE=1 python3 scripts/setup.py
+```
+
+**Pros:** Zero extra Feishu setup. One App, one permissions page, one publish step.
+**Cons:** All teams share a single bot identity. If App Secret leaks, every team is compromised. Depends on the router's `chat_id` event filter being correct.
+
+### Option B — Separate Feishu App per team (real isolation)
+
+Each team gets its own Feishu App, saved as a **named lark-cli profile**.
+
+**Setup:**
+```bash
+cd ~/project/teamB
+
+# 1) Create a new Feishu App under a named profile (scan QR, click through)
+npx @larksuite/cli config init --new --name teamB
+
+# 2) Run setup.py with the profile override — it writes lark_profile=teamB
+#    into runtime_config.json so all subsequent scripts use the right identity.
+LARK_CLI_PROFILE=teamB python3 scripts/setup.py
+
+# 3) Start the team as usual
+bash scripts/start-team.sh
+```
+
+`start-team.sh`, `feishu_router.py`, `watchdog.py` all read `lark_profile` from `runtime_config.json` and pass `--profile <name>` to every `lark-cli` call, so the two teams never share credentials, events, or bot state.
+
+**Pros:** True identity isolation. A leaked secret or misconfigured bot in team A can't touch team B.
+**Cons:** Double the Feishu admin work (two Apps, two permission pages, two publish steps).
+
+### Deciding which one you need
+
+| | Option A | Option B |
+|---|---|---|
+| Different teams owned by the same person | ✅ | overkill |
+| Different teams owned by different people | ❌ | ✅ |
+| Testing + staging + prod on one box | ❌ (easy to confuse) | ✅ |
+| Single-user hobby projects | ✅ | overkill |
+| You're unsure | start with A, migrate to B if needed | |
+
+Under the hood, both options rely on the `chat_id` filter in `feishu_router.py` — Option A as the primary isolation mechanism, Option B as defense-in-depth.
+
+---
+
 ## FAQ
 
 **Q: Does this work with other LLMs?**
@@ -228,7 +288,7 @@ timeout 8 bash -c '
 '
 ```
 
-If the line count is 0, the App is missing event subscriptions. Run `config init --new` and have the user pick **"使用已有应用"** + the existing App ID to push event subs to the server. See `docs/SETUP_ISSUES.md` Bug 16 for the full diagnosis.
+If the line count is 0, the App is missing event subscriptions. Run `config init --new` and have the user pick **"使用已有应用"** + the existing App ID to push event subs to the server.
 
 ---
 
