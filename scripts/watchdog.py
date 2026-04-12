@@ -11,7 +11,7 @@ Watchdog Daemon — 监控并自动重启关键守护进程
 重启方式: subprocess.Popen start_new_session=True
 通知方式: 子进程调用 feishu_msg.py send
 """
-import sys, os, time, subprocess, atexit, signal
+import sys, os, time, glob, subprocess, atexit, signal
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import PROJECT_ROOT, LARK_CLI
@@ -33,13 +33,13 @@ PROCS = [
                   f"{_lark_event_cmd} "
                   "| python3 scripts/feishu_router.py --stdin"],
         "pid_file": os.path.join(os.path.dirname(__file__), ".router.pid"),
-        # 事件心跳文件:router 每处理一条事件就 utime 一次。1800s 没更新
-        # = WebSocket 静默死亡(Docker+云 NAT conntrack 过期场景),触发重启。
-        # router 启动时会从 cursor 文件补抓断联期间错过的群聊消息,所以
-        # 这次重启对用户是透明的,不会丢消息。
-        # 调优提示:如果群聊整天安静,误重启代价很低(catchup 会兜底);如果
-        # 群聊很活跃,这个门槛几乎永远不会被触发。
-        "health_file": os.path.join(os.path.dirname(__file__), ".router.heartbeat"),
+        # 事件心跳: router 每次从 WebSocket 收到事件(即使被过滤)都会
+        # os.utime 这个文件。1800s 没更新 = WebSocket 静默死亡(Docker+云
+        # NAT conntrack 过期场景),触发重启。router 启动时会从 cursor 文件
+        # 补抓断联期间错过的消息,重启对用户透明不丢消息。
+        # cursor 文件一物两用: content 是"最后成功路由的本团队消息时间",
+        # mtime 是"最后收到任何 WebSocket 事件的时间"。watchdog 只看 mtime。
+        "health_file": os.path.join(os.path.dirname(__file__), ".router.cursor"),
         "health_stale_secs": 1800,
         "max_retries": 3,
         "retry_count": 0,
@@ -74,40 +74,48 @@ def is_running(match_str):
     r = subprocess.run(["pgrep", "-f", match_str], capture_output=True)
     return r.returncode == 0
 
-def restart_process(proc):
-    # 心跳超时触发的"重启"实际上进程可能还活着(比如 router 的 WebSocket
-    # 悄悄死了但 python 进程还在 stdin 上阻塞等事件)。必须先把旧的杀干净,
-    # 否则新进程在 acquire_pid_lock() 时会看到旧 PID 还活着,直接 sys.exit(1),
-    # 导致 watchdog 每次 health 检查都 restart 一次但都拉不起新的。
-    pid_file = proc.get("pid_file")
-    if pid_file and os.path.exists(pid_file):
+def _kill_by_pid_file(pid_file, label):
+    """SIGTERM → (1s) → SIGKILL the PID in pid_file, then remove the file.
+    No-op if the file or PID don't exist. Used before restart_process to
+    make sure a stuck-alive process doesn't block the new one from acquiring
+    the same pid lock.
+    """
+    if not pid_file:
+        return
+    try:
+        with open(pid_file) as f:
+            old_pid = int(f.read().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return
+    try:
+        os.kill(old_pid, signal.SIGTERM)
+        time.sleep(1)
         try:
-            with open(pid_file) as f:
-                old_pid = int(f.read().strip())
-            # 先尝试 SIGTERM 给它清理的机会,不行再 SIGKILL。对 bash pipeline
-            # 里的 lark-cli 也要一起干掉,否则管道左侧会孤儿,产生新旧两套
-            # lark-cli event 订阅争抢同一个 WebSocket。
-            os.kill(old_pid, signal.SIGTERM)
-            time.sleep(1)
-            try:
-                os.kill(old_pid, 0)
-                os.kill(old_pid, signal.SIGKILL)  # 还活着,强杀
-            except OSError:
-                pass
-            log(f"   🔪 杀掉旧 {proc['name']} (pid {old_pid})")
-        except (ValueError, OSError, FileNotFoundError):
-            pass
-        # 清理残留的 pid 文件,防止新 router 启动后 acquire_pid_lock 误判
-        try:
-            os.remove(pid_file)
+            os.kill(old_pid, 0)
+            os.kill(old_pid, signal.SIGKILL)
         except OSError:
             pass
-    # 同时清理孤儿的 lark-cli event 订阅子进程(router pipeline 左半部分)。
-    # 它们不在 pid_file 里,但和 router 是同一 bash -c 的兄弟。不依赖 pkill
-    # (容器 base 镜像未必有),直接扫 /proc 干掉匹配的 cmdline。
-    import glob as _glob
+        log(f"   🔪 杀掉旧 {label} (pid {old_pid})")
+    except OSError:
+        pass
+    try:
+        os.remove(pid_file)
+    except OSError:
+        pass
+
+
+def _kill_orphan_lark_subscribers():
+    """Scan /proc and SIGKILL any `lark-cli event +subscribe` processes.
+    These don't live in any pid_file — they're the left half of the
+    `lark-cli ... | feishu_router.py` bash pipeline, so when we kill the
+    router we must also kill them, otherwise the new pipeline spawns a
+    second lark-cli and two WebSocket subscriptions race.
+
+    Walks /proc instead of shelling out to pkill so we don't depend on
+    procps-ng being in the container base image.
+    """
     my_pid = os.getpid()
-    for proc_dir in _glob.glob("/proc/[0-9]*"):
+    for proc_dir in glob.glob("/proc/[0-9]*"):
         try:
             with open(f"{proc_dir}/cmdline", "rb") as f:
                 cmdline = f.read().decode("utf-8", errors="ignore")
@@ -121,6 +129,15 @@ def restart_process(proc):
             except (OSError, ValueError):
                 pass
     time.sleep(0.5)
+
+
+def restart_process(proc):
+    # 心跳超时触发重启时,旧进程往往还"活着"(router 的 python 在 read(stdin)
+    # 上阻塞,lark-cli 在 read(websocket) 上阻塞)。必须先把旧的杀干净,否则
+    # 新进程 acquire_pid_lock 看到旧 pid 还在就 sys.exit(1),watchdog 每次
+    # 循环都 restart 却永远拉不起新的。
+    _kill_by_pid_file(proc.get("pid_file"), proc["name"])
+    _kill_orphan_lark_subscribers()
 
     subprocess.Popen(
         proc["cmd"],

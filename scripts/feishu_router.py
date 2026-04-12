@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
 from tmux_utils import inject_when_idle, is_agent_idle
 from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
+from feishu_msg import _lark_run
 
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", "images")
 
@@ -224,6 +225,13 @@ def handle_event(event):
         return
     _state.seen_ids.add(msg_id)
 
+    # WebSocket 还在推事件 — 刷新心跳 mtime。必须在 chat_id 过滤和 bot 自发
+    # 消息过滤"之前"调用:多团队共用同一个 Feishu App 时,我们收到的大部分
+    # 事件都属于其他团队的 chat,如果只在成功路由后才刷新心跳,那么一个长期
+    # 只跑后台没对外发言的团队会被 watchdog 误判为"WebSocket 静默死亡"并
+    # 被反复重启。
+    _refresh_heartbeat()
+
     # 过滤非本团队 chat 的事件。多团队共用同一个 Feishu App 时,WebSocket
     # 会把 bot 可见的所有群的消息都推过来;不做这一步会导致一个团队的消息
     # 被另一个团队的 router 投递(跨团队串台)。
@@ -271,56 +279,67 @@ def handle_event(event):
         # 用户消息默认路由到 manager
         wake_agent("manager", text, msg_id=msg_id, full_text=text)
 
-    # 推进 cursor + 更新心跳 — 必须放在成功路由之后,否则半路异常会让
-    # cursor 跳过没处理完的消息
-    _touch_heartbeat_and_cursor()
+    # 推进 cursor — 必须放在成功路由之后,否则半路异常会让 cursor 跳过
+    # 没处理完的消息。watchdog 只看 mtime,不看 content,所以这里的写入也
+    # 顺带刷新了心跳。
+    _advance_cursor()
 
 # ── 事件心跳 + 重启补抓 ────────────────────────────────────────
 # 设计意图:
-#   Feishu WebSocket 长连接在 Docker bridge + 云 NAT 环境下,如果长时间没有
-#   消息流动,中间层的 conntrack 表项会过期,连接被静默切断。客户端的 TCP
-#   read 永远阻塞 — 进程看似活着(PID 存在),但事件流其实已经死了。watchdog
-#   默认只检查 PID 活性,查不出来。
+#   Feishu WebSocket 长连接在 Docker bridge + 云 NAT 环境下,如果长时间没
+#   流量,中间层的 conntrack 表项过期,连接被静默切断。客户端 TCP read 永远
+#   阻塞 — 进程看似活着(PID 存在),事件流其实已经死了。watchdog 默认只检查
+#   PID 活性,查不出来。
 #
 #   双层防御:
-#   1) 每次成功处理事件就写一次 heartbeat 文件 + 更新 cursor(最后处理事件
-#      的墙钟时间)。scripts/watchdog.py 的 PROCS 给 router 加 health_file
-#      配置,长时间没心跳就判定 router 已死并自动重启。
-#   2) Router 启动时(无论首次还是被 watchdog 重启),先读上一次的 cursor,
+#   1) 每次从 WebSocket 读到事件(即使被 chat_id 或 bot 自发消息过滤掉)就
+#      刷新 CURSOR_FILE 的 mtime 当心跳。scripts/watchdog.py 配 health_file
+#      指向 CURSOR_FILE,长时间没更新就判定 router 已死并自动重启。
+#   2) 每次成功把一条用户消息路由到 agent,就把墙钟时间写进 CURSOR_FILE 的
+#      内容(这叫 cursor 推进)。router 启动时(首次或被重启)先读这个 cursor,
 #      调 `im +chat-messages-list --start $cursor --sort asc` 把断联期间
-#      错过的群聊消息按时间顺序拉回来,逐条走正常的 handle_event() 流程,
-#      然后才接 WebSocket 事件循环。
-#   两者配合 = 自动检测 WebSocket 静默死亡 + 重启后零消息丢失。
+#      错过的群聊消息按时间序拉回来,逐条走 handle_event(),然后才接
+#      WebSocket 事件循环。
+#
+#   为什么一个文件兼做两件事: content 代表"最后成功路由的本团队消息时间",
+#   mtime 代表"最后从 WebSocket 收到任何事件的时间"。两个维度刚好需要独立,
+#   cursor 写操作天然会更新 mtime(心跳也顺带刷新),cross-team 事件只需要
+#   os.utime 就够了(不能动 cursor content,否则会漏补抓本团队的消息)。
 
-HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), ".router.heartbeat")
-CURSOR_FILE    = os.path.join(os.path.dirname(__file__), ".router.cursor")
+CURSOR_FILE = os.path.join(os.path.dirname(__file__), ".router.cursor")
 
 
-def _touch_heartbeat_and_cursor(ts=None):
-    """更新 heartbeat mtime + 把 cursor(最后处理事件的墙钟)落盘。
-
-    两件事解耦: 即使 cursor 写失败也保证 heartbeat 更新,避免 watchdog
-    在磁盘短暂故障时误杀 router。
+def _refresh_heartbeat():
+    """更新 CURSOR_FILE 的 mtime(不动 content)。任何从 WebSocket 收到的
+    事件都应该调一次,包括后续会被过滤掉的 cross-team 事件和 bot 自发消息。
     """
-    t = ts if ts is not None else time.time()
+    try:
+        os.utime(CURSOR_FILE, None)
+    except FileNotFoundError:
+        # 首次启动,CURSOR_FILE 还没创建。用当前时间初始化一个,这样 mtime
+        # 立刻有合法值,content 也有合法 cursor(假装"从现在开始是新的
+        # 世界"); 下次重启时不会因为 cursor 缺失而 skip 补抓。
+        _advance_cursor()
+
+
+def _advance_cursor():
+    """把当前墙钟写进 CURSOR_FILE 的 content。在成功路由一条本团队用户消息
+    之后调用。同时会刷新 mtime(心跳顺带)。
+    """
+    t = time.time()
     try:
         with open(CURSOR_FILE, "w") as f:
             f.write(f"{t:.3f}")
     except Exception as e:
         print(f"  ⚠️ 写 cursor 失败: {e}")
-    try:
-        if not os.path.exists(HEARTBEAT_FILE):
-            open(HEARTBEAT_FILE, "a").close()
-        os.utime(HEARTBEAT_FILE, (t, t))
-    except Exception as e:
-        print(f"  ⚠️ 更新 heartbeat 失败: {e}")
 
 
 def _load_cursor():
-    """读上一次的 cursor(unix 秒,float)。首次启动或读失败返回 None。"""
+    """读 CURSOR_FILE 的 content(unix 秒,float)。首次启动或空文件返回 None。"""
     try:
         with open(CURSOR_FILE) as f:
-            return float(f.read().strip())
+            content = f.read().strip()
+        return float(content) if content else None
     except (FileNotFoundError, ValueError):
         return None
 
@@ -328,26 +347,27 @@ def _load_cursor():
 def _catchup_from_history(chat_id):
     """根据 cursor 从聊天记录 API 补抓错过的用户消息,逐条走 handle_event。
 
-    首次启动(无 cursor)直接初始化 cursor 为当前时间并跳过。
+    首次启动(无 cursor)写入当前时间并跳过;硬 30 秒上限,防止 cursor 极久远
+    时卡死 WebSocket 启动。
     """
     from datetime import datetime
     cursor = _load_cursor()
     if cursor is None:
-        _touch_heartbeat_and_cursor()
+        _advance_cursor()
         print("📥 首次启动,无 cursor,跳过历史补抓")
         return
 
-    # 向前退 1 秒避免秒级精度漏掉同一秒的消息。代价是可能重复处理上一条
-    # 消息,但 _state.seen_ids 会在 session 内去重(跨 session 不去重,那条
-    # 会被 agent 视作新消息,这个重复的代价可以接受)。
+    # 向前退 1 秒避免秒级精度漏掉同一秒的消息。代价: 上一条消息会被 replay
+    # 一次(跨 session seen_ids 清空),manager 可能重复响应一次。相比丢消息,
+    # 偶尔重复是更可接受的代价。
     start_dt = datetime.fromtimestamp(cursor - 1).astimezone()
     start_iso = start_dt.isoformat(timespec="seconds")
     print(f"📥 历史补抓: 从 {start_iso} 开始拉错过的群聊消息")
 
     fetched = replayed = 0
     page_token = ""
-    # 硬上限: 最多拉 20 页 * 50 条 = 1000 条,防止 cursor 极久远时卡死
-    for _ in range(20):
+    deadline = time.time() + 30  # 硬上限,避免 catchup 阻塞 WebSocket 启动太久
+    while time.time() < deadline:
         args = ["im", "+chat-messages-list",
                 "--chat-id", chat_id,
                 "--start", start_iso,
@@ -358,27 +378,21 @@ def _catchup_from_history(chat_id):
         if page_token:
             args += ["--page-token", page_token]
         try:
-            r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=40)
+            data = _lark_run(args, timeout=40)
         except subprocess.TimeoutExpired:
             print("  ⚠️ 历史补抓超时,放弃剩余页")
             break
-        if r.returncode != 0:
-            print(f"  ⚠️ 历史补抓失败: {r.stderr.strip()[:200]}")
-            break
-        try:
-            data = json.loads(r.stdout).get("data", {})
-        except json.JSONDecodeError:
-            print("  ⚠️ 历史补抓响应不是合法 JSON")
+        if data is None:
+            print("  ⚠️ 历史补抓 API 失败,停止")
             break
         for m in data.get("messages", []):
             fetched += 1
             sender = m.get("sender", {})
-            # 只 replay 真实用户消息,跳过 app/bot 发的卡片,避免 watchdog
-            # 的告警卡片被 replay 成"用户新消息"触发 manager
+            # 只 replay 真实用户消息,跳过 app/bot 发的卡片(watchdog 告警、
+            # manager 历史回复等),避免这些被 replay 成"新消息"再触发一轮处理
             if sender.get("sender_type") != "user":
                 continue
-            # 非文本消息(图片/文件/post)补抓时暂时跳过,避免二次下载和
-            # 卡片解析的复杂度 — 真的想要的话 agent 可以自己去聊天记录拉
+            # 非文本消息(图片/文件/post)暂时跳过,避免二次下载和卡片解析
             if m.get("msg_type") != "text":
                 print(f"  ⏭  跳过非文本历史消息: {m.get('message_id')}")
                 continue
@@ -400,6 +414,8 @@ def _catchup_from_history(chat_id):
         if not page_token:
             break
 
+    if time.time() >= deadline:
+        print("  ⚠️ 历史补抓达到 30s 硬上限,剩余页放弃(下次重启会继续)")
     print(f"📥 历史补抓完成: 拉取 {fetched} 条, replay {replayed} 条到 agent")
 
 
@@ -468,10 +484,14 @@ def main():
     delivery_thread = threading.Thread(target=_queue_delivery_loop, daemon=True)
     delivery_thread.start()
 
-    # 启动时先补抓断联期间错过的群聊消息(见 HEARTBEAT_FILE 那段的说明)。
-    # 放在 delivery_thread 之后,让 replay 的消息能被后台队列投递线程及时
-    # 分发到 agent 窗口,不会在 catchup 里同步阻塞等 manager 空闲。
-    _catchup_from_history(chat_id)
+    # 启动时把断联期间错过的群聊消息补抓回来(见 CURSOR_FILE 那段的说明)。
+    # 跑在 daemon 线程里,不阻塞主线程立刻进 WebSocket 事件循环 —— 如果
+    # 同步跑,最坏情况 catchup 每页 40s 超时累加可以让新 WebSocket 启动
+    # 推迟到 800 秒之后,期间 bash pipeline 的 stdin buffer(~64KB)会被
+    # 新流入的事件写爆,造成二次丢失。daemon 线程让 catchup 和实时流
+    # 并行跑,重复消息由 _state.seen_ids 去重。
+    threading.Thread(target=_catchup_from_history, args=(chat_id,),
+                     daemon=True).start()
 
     # Bug 16 防御:启动后 45 秒内如果一条事件都没到,打印醒目警告。
     # 最常见的根因是 App 的 im.message.receive_v1 事件订阅没配(config init
