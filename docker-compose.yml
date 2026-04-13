@@ -1,17 +1,25 @@
 ###############################################################################
 # ClaudeTeam — Docker Compose
 #
-# 用法：
-#   首次启动：docker compose up -d
+# 推荐用法（新用户，零宿主机依赖）：
+#   1. cp .env.example .env            # 填入 FEISHU_APP_ID / FEISHU_APP_SECRET
+#   2. 写好 team.json                  # 团队成员定义
+#   3. touch scripts/runtime_config.json   # 占位,让 bind mount 生效
+#   4. docker compose build
+#   5. docker compose run --rm team init   # 容器内跑 setup.py,创建飞书资源
+#   6. docker compose up -d                # 启动团队
+#
+# 常用命令：
 #   查看日志：docker compose logs -f
 #   进入 tmux：docker compose exec team tmux attach -t <session>
 #   停止：docker compose down
 #
-# 前置条件（在宿主机上完成一次）：
-#   1. python3 scripts/setup.py        # 生成 scripts/runtime_config.json
-#   2. 确保 ~/.lark-cli/ 与 ~/.local/share/lark-cli/ 存在（lark-cli 凭证）
-#   3. 确保 ~/.claude/.credentials.json 存在（Claude Code OAuth 凭证）
-#      或 export ANTHROPIC_API_KEY=...
+# 关于凭证：
+#   - 飞书：FEISHU_APP_ID/SECRET 从 .env 读取,容器内生成 inline config.json,
+#     不再挂宿主机 ~/.lark-cli。这样每个部署的 Feishu 身份完全独立于宿主机。
+#   - Claude：仍然 bind mount 宿主机 ~/.claude/.credentials.json 和
+#     ~/.claude.json —— 这两个是同一个账号的 OAuth,多部署共享没毛病。
+#     或者 .env 里填 ANTHROPIC_API_KEY 走 API 模式。
 ###############################################################################
 
 services:
@@ -19,6 +27,8 @@ services:
     build: .
     container_name: claudeteam
     restart: unless-stopped
+    env_file:
+      - .env
     # 以 root 运行: 避免宿主机上 ~/.claude/.credentials.json、
     # ~/.local/share/lark-cli/master.key 等文件 mode 0600/0700 时容器内非 root
     # 用户读不到。Claude Code 的 --dangerously-skip-permissions 模式本来就要求
@@ -44,22 +54,37 @@ services:
     volumes:
       # 团队配置（必须）
       - ./team.json:/app/team.json
-      # 运行时配置（飞书资源 ID，setup.py 生成）
-      - ./scripts/runtime_config.json:/app/scripts/runtime_config.json
+      # 整个 scripts/ 目录 bind mount —— 覆盖镜像 COPY 层。
+      # 好处 1: runtime_config.json 这类容器内生成的文件会自动持久化到宿主机,
+      #         不需要额外为单独文件写 bind mount。
+      # 好处 2: 开发者改脚本后不需要 docker compose build,直接 up 就能看到效果。
+      # 代价: 镜像里打包的 scripts 版本被宿主机的版本覆盖。这对普通 git clone
+      #       用户没问题(宿主机和镜像都是同一个 commit),对编辑过本地 scripts
+      #       的开发者来说正是他们想要的行为。
+      - ./scripts:/app/scripts
       # Agent 身份目录 + 共享工作空间 — 必须是 bind mount,否则 setup.py 在
-      # 宿主机创建的 agents/<name>/identity.md / core_memory.md 不会进入容器,
+      # 容器里创建的 agents/<name>/identity.md / core_memory.md 在容器重建时丢失,
       # manager 会降级到 templates/ 读兜底 identity,丢失 /hire 产生的角色差异。
       - ./agents:/app/agents
       - ./workspace:/app/workspace
-      # lark-cli 配置 + 加密 secret 存储（两个都必须挂）
-      - ~/.lark-cli:/home/claudeteam/.lark-cli
-      - ~/.local/share/lark-cli:/home/claudeteam/.local/share/lark-cli
+      # ⚠️ 故意不挂载 ~/.lark-cli / ~/.local/share/lark-cli。
+      # 飞书凭证从 .env 的 FEISHU_APP_ID / FEISHU_APP_SECRET 读取,
+      # 容器启动时由 docker-entrypoint.sh 写入容器内部的 inline config.json。
+      # 这样每个部署的 Feishu 身份只活在容器里,宿主机 ~/.lark-cli 保持干净,
+      # 同机多部署互不干扰。
+      #
+      # 如果你是老用户,已经在宿主机跑过 `lark-cli config init --new` 想复用那份
+      # 凭证,把 .env 里的 FEISHU_APP_ID/SECRET 留空,然后取消下面两行注释:
+      # - ~/.lark-cli:/home/claudeteam/.lark-cli
+      # - ~/.local/share/lark-cli:/home/claudeteam/.local/share/lark-cli
+
       # Claude Code 凭证与账户状态
       # - .credentials.json: OAuth access/refresh token
       # - .claude.json:     oauthAccount / userID / hasCompletedOnboarding 等
       #                     (Claude Code 在 HOME 目录下,不在 .claude/ 子目录里!)
       # 两者缺一不可,否则容器内 Claude Code 会显示 "Select login method" 菜单。
       # 不用 :ro —— Claude Code 需要刷写 OAuth token + 更新 projects 等运行态。
+      # 如果走 API key 路线 (.env 里填 ANTHROPIC_API_KEY),这两行可以去掉。
       - ~/.claude/.credentials.json:/home/claudeteam/.claude/.credentials.json
       - ~/.claude.json:/home/claudeteam/.claude.json
 

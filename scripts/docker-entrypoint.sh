@@ -1,12 +1,25 @@
 #!/bin/bash
 # ClaudeTeam Docker 入口脚本
-# 职责：检查配置 → 启动团队 → 保持容器前台运行
+#
+# 支持两种运行模式（通过第一个参数区分）：
+#   init   — 一次性：生成 lark-cli config → 跑 setup.py → 退出
+#            用法: docker compose run --rm team init
+#            首次部署时跑这个,它会创建飞书 Bitable + 群聊 + runtime_config.json
+#   start  — 默认：跑完前置检查后启动团队 + router + watchdog,保持前台运行
+#            用法: docker compose up -d
 set -e
+
+MODE="${1:-start}"
+if [ "$MODE" != "init" ] && [ "$MODE" != "start" ]; then
+  echo "❌ 未知模式: $MODE"
+  echo "   用法: docker-entrypoint.sh [init|start]"
+  exit 2
+fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "🐳 ClaudeTeam Docker 启动..."
+echo "🐳 ClaudeTeam Docker 启动 (mode=$MODE)..."
 echo "   Node.js: $(node --version)"
 echo "   Python:  $(python3 --version)"
 echo "   Claude:  $(claude --version 2>/dev/null || echo 'not found')"
@@ -41,32 +54,69 @@ require_json_file() {
 require_json_file team.json \
   "在宿主机上手写一份 team.json 后重新 docker compose up。"
 
-require_json_file scripts/runtime_config.json \
-  "在宿主机上先跑 python3 scripts/setup.py 生成该文件。"
+# init 模式下 runtime_config.json 由本次 setup.py 创建,允许它现在为空/不存在。
+# start 模式下必须已经有一份合法的 runtime_config.json。
+if [ "$MODE" = "start" ]; then
+  require_json_file scripts/runtime_config.json \
+    "首次部署请跑: docker compose run --rm team init"
 
-if ! python3 -c "
+  if ! python3 -c "
 import json,sys
 cfg=json.load(open('scripts/runtime_config.json'))
 for k in ('bitable_app_token','msg_table_id','sta_table_id','chat_id'):
     if not cfg.get(k): sys.exit('missing '+k)
 " 2>/tmp/rtcfg.err; then
-  echo "❌ scripts/runtime_config.json 缺少关键字段: $(cat /tmp/rtcfg.err)"
-  echo "   修复: 删除该文件后在宿主机上重新跑 python3 scripts/setup.py"
-  exit 1
+    echo "❌ scripts/runtime_config.json 缺少关键字段: $(cat /tmp/rtcfg.err)"
+    echo "   修复: 删除该文件后重新 docker compose run --rm team init"
+    exit 1
+  fi
 fi
 
 # ── 飞书 App 凭证 ──────────────────────────────────────────
 # 两条路径:
-#   (a) 环境变量 FEISHU_APP_ID + FEISHU_APP_SECRET 都给了 → 生成 inline 格式
-#       config.json,不依赖 ~/.local/share/lark-cli/ 加密存储。优先级最高,
-#       存在即覆盖。适合新用户直接从 .env 起步。
-#   (b) 都没给 → 期待宿主机挂载已经配好的 ~/.lark-cli。适合已经跑过
-#       lark-cli config init --new 的老用户。
+#   (a) .env 里填了 FEISHU_APP_ID + FEISHU_APP_SECRET → 生成 inline 格式的
+#       容器本地 config.json,不依赖宿主机。这是推荐方式。
+#   (b) 都没填 → 期待宿主机通过 bind mount 把已经配好的 ~/.lark-cli 和
+#       ~/.local/share/lark-cli 挂进容器(compose 里默认注释掉,需要手动
+#       取消注释)。适合已经有 lark-cli 环境的老用户。
+#
+# inline 模式里写入的 profile 名字取自 team.json 的 session 字段 (如 "test3"),
+# 这样后续 `--profile <session>` 在宿主机 start-team.sh 和容器内 docker-entrypoint
+# 两边都能一致工作。
 if [ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ]; then
+  # 安全检查: 如果 /home/claudeteam/.lark-cli/config.json 已经存在且里面的
+  # appId 不是我们要写入的这个(= 是从宿主机 bind mount 进来的旧 config),
+  # 直接覆盖会静默污染宿主机状态。拒绝工作,让用户显式决定。
+  EXISTING_APP_ID=""
+  if [ -f /home/claudeteam/.lark-cli/config.json ]; then
+    EXISTING_APP_ID=$(python3 -c "
+import json, sys
+try:
+    cfg = json.load(open('/home/claudeteam/.lark-cli/config.json'))
+    apps = cfg.get('apps', [])
+    if apps:
+        print(apps[0].get('appId', ''))
+except Exception:
+    pass
+" 2>/dev/null)
+  fi
+  if [ -n "$EXISTING_APP_ID" ] && [ "$EXISTING_APP_ID" != "$FEISHU_APP_ID" ]; then
+    echo "❌ 检测到 /home/claudeteam/.lark-cli/config.json 已经指向另一个 App:"
+    echo "     现有 appId: $EXISTING_APP_ID"
+    echo "     .env 里的:  $FEISHU_APP_ID"
+    echo "   这通常意味着 docker-compose.yml 正在 bind mount 宿主机 ~/.lark-cli。"
+    echo "   覆盖会修改你宿主机的 lark-cli 配置。请二选一:"
+    echo "     (a) 在 docker-compose.yml 注释掉 ~/.lark-cli bind mount (推荐)"
+    echo "     (b) 在 .env 里清空 FEISHU_APP_ID / FEISHU_APP_SECRET,走 bind mount 复用宿主机凭证"
+    exit 1
+  fi
+
   mkdir -p /home/claudeteam/.lark-cli
-  python3 - <<'PY'
+  PROFILE_NAME=$(python3 -c "import json; print(json.load(open('team.json')).get('session','default'))" 2>/dev/null)
+  python3 - <<PY
 import json, os
 cfg = {"apps": [{
+    "name":      "${PROFILE_NAME}",
     "appId":     os.environ["FEISHU_APP_ID"],
     "appSecret": os.environ["FEISHU_APP_SECRET"],
     "brand":     os.environ.get("FEISHU_BRAND", "feishu") or "feishu",
@@ -77,15 +127,15 @@ with open("/home/claudeteam/.lark-cli/config.json", "w") as f:
     json.dump(cfg, f, indent=2)
 os.chmod("/home/claudeteam/.lark-cli/config.json", 0o600)
 PY
-  echo "✅ 已从环境变量生成 /home/claudeteam/.lark-cli/config.json (appId=$FEISHU_APP_ID, brand=${FEISHU_BRAND:-feishu})"
+  echo "✅ 已从 .env 生成容器内 lark-cli config (profile=$PROFILE_NAME, appId=$FEISHU_APP_ID)"
 fi
 
 if [ ! -f /home/claudeteam/.lark-cli/config.json ]; then
   echo "❌ lark-cli 未配置: /home/claudeteam/.lark-cli/config.json 不存在。"
   echo "   二选一:"
-  echo "     (a) 在 .env 里填 FEISHU_APP_ID 和 FEISHU_APP_SECRET,由容器自动生成"
-  echo "     (b) 在宿主机跑 \`npx @larksuite/cli config init --new\` 扫码,"
-  echo "         确保 ~/.lark-cli 和 ~/.local/share/lark-cli 都存在"
+  echo "     (a) 在 .env 里填 FEISHU_APP_ID 和 FEISHU_APP_SECRET (推荐),由容器自动生成"
+  echo "     (b) 在 docker-compose.yml 取消注释 ~/.lark-cli bind mount,并确保宿主机"
+  echo "         跑过 \`npx @larksuite/cli config init --new\`"
   exit 1
 fi
 
@@ -148,6 +198,27 @@ if not app.get("hasTrustDialogAccepted"):
     print("✅ 已为 /app 写入信任标记")
 PY
 
+# ── init 模式：跑 setup.py 创建飞书资源,然后退出 ────────────
+if [ "$MODE" = "init" ]; then
+  echo ""
+  echo "🏗  init 模式: 创建飞书 Bitable / 群聊 / 工作空间表..."
+
+  # 把 inline 模式写的 profile 名字透给 setup.py,避免它自己去猜默认 profile
+  PROFILE_NAME=$(python3 -c "import json; print(json.load(open('team.json')).get('session','default'))")
+  export LARK_CLI_PROFILE="$PROFILE_NAME"
+
+  python3 scripts/setup.py
+  RC=$?
+  if [ "$RC" -ne 0 ]; then
+    echo "❌ setup.py 失败 (exit=$RC)"
+    exit $RC
+  fi
+
+  echo ""
+  echo "✅ init 完成。接下来启动团队: docker compose up -d"
+  exit 0
+fi
+
 # ── 启动团队（非交互模式）────────────────────────────────────
 
 # start-team.sh 最后会 tmux attach，容器内不需要 attach
@@ -178,8 +249,16 @@ for agent in "${AGENTS[@]:1}"; do
 done
 
 # Router（lark-cli WebSocket 事件流）
+# 从 runtime_config.json 读 lark_profile，确保多 profile 共存时订阅到正确的 App。
+# 不带 --profile 会落到 lark-cli 的默认 profile，在共享宿主机 ~/.lark-cli 时
+# 极易订阅错 App 的事件流。
+LARK_PROFILE=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json')).get('lark_profile') or '')" 2>/dev/null)
+PROFILE_FLAG=""
+if [ -n "$LARK_PROFILE" ]; then
+  PROFILE_FLAG="--profile $LARK_PROFILE"
+fi
 tmux new-window -t "$SESSION" -n "router" -c "$ROOT"
-tmux send-keys -t "$SESSION:router" "npx @larksuite/cli event +subscribe --event-types im.message.receive_v1 --compact --quiet --force --as bot | python3 scripts/feishu_router.py --stdin" Enter
+tmux send-keys -t "$SESSION:router" "npx @larksuite/cli $PROFILE_FLAG event +subscribe --event-types im.message.receive_v1 --compact --quiet --force --as bot | python3 scripts/feishu_router.py --stdin" Enter
 
 # 看板同步
 tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"

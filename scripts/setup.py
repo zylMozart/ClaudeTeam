@@ -63,13 +63,20 @@ def _scan_other_deployments(current_root):
 
 
 def _current_default_profile():
-    """问 lark-cli 当前默认 profile 的名字 (appId)。失败返回空字符串。
+    """问 lark-cli **真正**的默认 profile 名字 (appId)。失败返回空字符串。
 
-    注意: `lark-cli config show` 不支持 --format 参数——它的 stdout 本身
+    注意 1: `lark-cli config show` 不支持 --format 参数——它的 stdout 本身
     就是 JSON + 一行尾部文本 (Config file path: ...),截出 JSON 块解析即可。
+
+    注意 2: 这里**必须**用裸的 `npx @larksuite/cli`,不能用 LARK_CLI 常量。
+    LARK_CLI 已经被 config.get_lark_cli() 注入了 `--profile <env/runtime>`,
+    拿它去查 `config show` 会回显被 override 的 profile,而不是真正的默认。
+    用这个返回值再去跟其他部署比较,会把 `lark_profile=null` 的其他部署
+    (它们真正用的是宿主机默认 App)归一到当前 override 的 profile 上,
+    结果本应零冲突的部署被全部误判。已踩过一次,不要改回去。
     """
     try:
-        r = subprocess.run(LARK_CLI + ["config", "show"],
+        r = subprocess.run(["npx", "@larksuite/cli", "config", "show"],
                            capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return ""
@@ -417,15 +424,22 @@ python3 scripts/feishu_msg.py status manager 进行中 "<当前在做什么>"
 
 
 def main():
-    # 幂等性检查
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE) as f:
-            existing = json.load(f)
-        required_keys = ["bitable_app_token", "msg_table_id", "sta_table_id", "chat_id"]
-        if all(existing.get(k) for k in required_keys):
-            print("✅ runtime_config.json 已存在且配置完整，跳过初始化。")
-            print(f"   如需重新初始化，请先删除 {CONFIG_FILE}")
-            return
+    # 幂等性检查 —— 空文件 / 非 JSON 视为"未初始化",继续跑。
+    # 空文件场景很常见: Docker bind mount 要求目标文件存在,容器部署指南让用户
+    # `touch scripts/runtime_config.json` 占位,首次 init 时走到这里。
+    existing = {}
+    if os.path.exists(CONFIG_FILE) and os.path.getsize(CONFIG_FILE) > 0:
+        try:
+            with open(CONFIG_FILE) as f:
+                existing = json.load(f)
+        except json.JSONDecodeError:
+            print(f"⚠️  {CONFIG_FILE} 不是合法 JSON,当作未初始化处理")
+            existing = {}
+    required_keys = ["bitable_app_token", "msg_table_id", "sta_table_id", "chat_id"]
+    if all(existing.get(k) for k in required_keys):
+        print("✅ runtime_config.json 已存在且配置完整,跳过初始化。")
+        print(f"   如需重新初始化,请先删除 {CONFIG_FILE}")
+        return
 
     if not AGENTS:
         print("❌ team.json 未配置或为空，请先创建团队配置。")
