@@ -4,12 +4,15 @@
 底层通过 lark-cli 执行飞书 API 操作（im/base 命令）。
 运行：python3 scripts/setup.py
 """
-import sys, os, json, time, subprocess, glob
+import sys, os, json, time, subprocess, glob, shutil
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import AGENTS, CONFIG_FILE, TMUX_SESSION, PROJECT_ROOT, save_runtime_config, get_lark_cli
 
 LARK_CLI = get_lark_cli()  # 自动带 --profile（如已初始化）
+
+TEAM_JSON = os.path.join(PROJECT_ROOT, "team.json")
+TEAM_JSON_BACKUP = os.path.join(os.path.dirname(__file__), ".team.json.prev")
 
 
 # ── 同机多团队部署的 profile 冲突检查 ─────────────────────────────
@@ -169,20 +172,110 @@ def _extract_table_id(d):
     return d.get("table_id", "")
 
 
+def _find_table_id_by_name(base_token, table_name):
+    """用 +table-list 查找指定名字的表,返回 table_id 或空串。"""
+    d = _lark(["base", "+table-list", "--base-token", base_token, "--as", "bot"],
+              label=f"查找表 {table_name}")
+    if not d:
+        return ""
+    items = d.get("items") or d.get("tables") or []
+    for t in items:
+        if t.get("name") == table_name:
+            return t.get("table_id") or t.get("id") or ""
+    return ""
+
+
+def _list_existing_field_names(base_token, table_id):
+    """用 +field-list 返回表中已存在的字段名集合。"""
+    d = _lark(["base", "+field-list", "--base-token", base_token,
+               "--table-id", table_id, "--as", "bot"],
+              label="查列字段")
+    if not d:
+        return set()
+    items = d.get("items") or d.get("fields") or []
+    return {f.get("field_name") or f.get("name") for f in items if f.get("field_name") or f.get("name")}
+
+
+def _add_field_with_backoff(base_token, table_id, field, attempts=4):
+    """逐字段加字段,遇到 OpenAPIAddField limited (800004135) 指数退避重试。
+
+    退避序列: 0s, 8s, 20s, 45s (总计最多等 73s)。再不行就 sys.exit。
+    """
+    backoffs = [0, 8, 20, 45][:attempts]
+    for i, wait in enumerate(backoffs):
+        if wait > 0:
+            print(f"   ⏳ AddField 限流, 等 {wait}s 后重试字段 {field['name']} ({i+1}/{attempts})")
+            time.sleep(wait)
+        r = subprocess.run(
+            LARK_CLI + ["base", "+field-create", "--base-token", base_token,
+                        "--table-id", table_id,
+                        "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            return True
+        err = (r.stderr or "") + (r.stdout or "")
+        if "800004135" in err or "OpenAPIAddField limited" in err:
+            continue  # 限流重试
+        print(f"   ⚠️ 字段 {field['name']} 创建失败: {err.strip()[:200]}")
+        return False
+    print(f"   ⚠️ 字段 {field['name']} 反复限流,放弃")
+    return False
+
+
 def _create_table_with_fields(base_token, table_name, fields, label=""):
-    """先建空表，再逐个添加字段（每个间隔 1 秒，规避 AddField 限流）。返回 table_id。"""
+    """用 `+table-create --fields` 一次性创建表和字段，返回 table_id。
+
+    P1-6 修复: 原版先建空表再逐字段 sleep(1) 添加,一张 6 字段的表要 6 秒,
+    初始化 3 核心表 + N 个 workspace 会堆积到 >30 秒。kanban_sync.py:135 已经
+    在用 `--fields` 一次建完的写法,这里迁移过来对齐,消除 sleep 环节。
+
+    P0 自愈 (本地 patch): 一次性 create-with-fields 在新 Bitable 冷启动时
+    容易触发 800004135 "OpenAPIAddField limited",此时表已建出来但字段只加了
+    一半。原 fallback 会再试一次 +table-create,直接撞上 800010102 名字冲突。
+    新路径: 失败后 +table-list 定位已存在的半成品表,+field-list 算出缺的字段,
+    对每个缺字段用 _add_field_with_backoff 单独退避重试。
+    """
+    fields_json = json.dumps(fields, ensure_ascii=False)
     d = _lark(["base", "+table-create", "--base-token", base_token,
-               "--name", table_name, "--as", "bot"],
+               "--name", table_name, "--fields", fields_json, "--as", "bot"],
               label=label or f"创建表 {table_name}")
     tid = _extract_table_id(d)
+    if tid:
+        # 一次性成功不代表所有字段都加上了 (Feishu 有时静默只加部分)。
+        # 仍然跑一次字段补齐,幂等的。
+        existing = _list_existing_field_names(base_token, tid)
+        missing = [f for f in fields if f["name"] not in existing]
+        if missing:
+            print(f"   🩹 一次性建表返回 ok 但缺 {len(missing)}/{len(fields)} 个字段, 补齐中")
+            for f in missing:
+                if not _add_field_with_backoff(base_token, tid, f):
+                    print(f"❌ 表 {table_name} ({tid}) 补字段失败,请手动删表重跑",
+                          file=sys.stderr)
+                    sys.exit(1)
+        return tid
+
+    # ── 自愈路径: 一次性建表失败 (通常是 AddField 限流) ──
+    print(f"   🩹 一次性建表失败, 尝试自愈: 查找半成品表 + 补字段")
+    tid = _find_table_id_by_name(base_token, table_name)
     if not tid:
-        return ""
-    for field in fields:
-        time.sleep(1)
-        _lark(["base", "+field-create", "--base-token", base_token,
-               "--table-id", tid,
-               "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
-              label=f"添加字段 {field['name']}")
+        # 表根本没建出来 (纯网络 / 权限错误), 回退到老的空表+逐字段
+        print(f"   ↩️  未发现半成品表, 回退到空表+逐字段模式")
+        d = _lark(["base", "+table-create", "--base-token", base_token,
+                   "--name", table_name, "--as", "bot"],
+                  label=(label or f"创建表 {table_name}") + " (fallback)")
+        tid = _extract_table_id(d)
+        if not tid:
+            return ""
+
+    existing = _list_existing_field_names(base_token, tid)
+    missing = [f for f in fields if f["name"] not in existing]
+    print(f"   🩹 表 {tid}: 现存字段 {len(existing)}, 缺 {len(missing)}/{len(fields)}")
+    for f in missing:
+        if not _add_field_with_backoff(base_token, tid, f):
+            print(f"❌ 字段 {f['name']} 创建失败,表 {table_name} "
+                  f"({tid}) 处于残缺状态,请手动删除后重跑 setup.py",
+                  file=sys.stderr)
+            sys.exit(1)
     return tid
 
 
@@ -259,9 +352,15 @@ def create_status_table(base_token):
     if rows:
         payload = json.dumps({"fields": ["Agent名称", "角色", "状态", "当前任务"],
                               "rows": rows}, ensure_ascii=False)
-        _lark(["base", "+record-batch-create", "--base-token", base_token,
-               "--table-id", tid, "--json", payload, "--as", "bot"],
-              label="写入初始状态")
+        # ADR silent_swallow_remaining (architect 补丁): 和 hire_agent.py 的
+        # 状态表初始行写入对称, 失败走 warn 降级不 sys.exit —— 首次 setup 被
+        # 限流时状态表空行仍然让 setup 走完, 各 agent 首次 status 会自动补 create。
+        d_init = _lark(["base", "+record-batch-create", "--base-token", base_token,
+                        "--table-id", tid, "--json", payload, "--as", "bot"],
+                       label="写入初始状态")
+        if d_init is None:
+            print("   ⚠️ 状态表初始行写入失败, 各 agent 首次 status "
+                  "会自动补 create", file=sys.stderr)
     print(f"   table_id: {tid} ✅\n")
     return tid
 
@@ -303,10 +402,15 @@ def create_chat_group():
                "--type", "private",
                "--set-bot-manager", "--as", "bot"],
               label="创建群组", timeout=60)
-    chat_id = (d or {}).get("chat_id", "")
+    # ADR silent_swallow_remaining P1 ④: 不能把 None 折叠成空 chat_id,
+    # 后续 runtime_config.json 写入空 chat_id 会让 router 的 chat_id filter
+    # 把所有事件都当成跨团队过滤掉,一次性破坏整个团队部署。和 create_bitable
+    # 的错误处理风格对齐。
+    if d is None:
+        print("❌ 创建群组失败 — lark-cli 调用失败,检查 im:chat 权限 / 限流"); sys.exit(1)
+    chat_id = d.get("chat_id", "")
     if not chat_id:
-        print("⚠️  群组创建失败（可能缺少 im:chat 权限）")
-        return ""
+        print("❌ 创建群组失败 — 响应缺 chat_id 字段(可能权限不足)"); sys.exit(1)
     print(f"   chat_id: {chat_id} ✅")
     # 生成永久邀请链接
     link_data = _lark(["im", "chats", "link",
@@ -423,7 +527,114 @@ python3 scripts/feishu_msg.py status manager 进行中 "<当前在做什么>"
     print("   ✅ Manager identity.md + core_memory.md 已创建")
 
 
+def _check_team_json_consistency(existing_cfg):
+    """P0-7 保护: 检测"Phase 2 Step 4 意外覆盖 team.json"的情况。
+
+    背景
+    ----
+    README 的 CLAUDE 指令(Phase 2 Step 4)会让 Claude "Create team.json with
+    only manager",这对全新仓库是对的,但对**已经跑过一次 setup.py** 的仓库
+    就是灾难: 原有的 workspace_tables 里还挂着其他 agent (triager/coder/...)
+    的飞书表 id,但 team.json 里只剩 manager,agent 列表彻底丢失。
+
+    检测规则
+    --------
+    如果 runtime_config.json 的 workspace_tables 里出现了 team.json **不认识**
+    的 agent 名字,几乎可以 100% 确定 team.json 是被截断的。此时:
+      1) 先备份当前 team.json 到 scripts/.team.json.prev
+      2) 若备份里原本就有齐全的 agent 列表(= 上一次 setup 成功后保存的),
+         直接打印恢复命令并 sys.exit(1),让用户决定
+      3) 否则打印警告但允许继续(首次运行场景)
+    """
+    ws_tables = existing_cfg.get("workspace_tables", {}) or {}
+    if not ws_tables:
+        return  # 首次运行,没有历史残留,无从检测
+
+    missing_in_team = [a for a in ws_tables.keys() if a not in AGENTS]
+    if not missing_in_team:
+        return  # 所有残留 agent 都还在 team.json 里,一致
+
+    print("=" * 70)
+    print("⚠️  检测到 team.json 与 runtime_config.json 不一致")
+    print(f"    runtime_config.json 的 workspace_tables 里有这些 agent:")
+    for a in ws_tables.keys():
+        mark = "  " if a in AGENTS else "❌"
+        print(f"      {mark} {a}")
+    print(f"    但 team.json 只列出: {', '.join(AGENTS.keys()) or '(空)'}")
+    print()
+    print("    最可能的原因: Phase 2 Step 4 的 'Create team.json with only manager'")
+    print("    把已有团队的 team.json 截断成只剩 manager。此时继续 setup.py")
+    print("    会让 /hire 流程从零开始重建飞书资源,原有表和历史数据全部丢失。")
+    print()
+
+    if os.path.exists(TEAM_JSON_BACKUP):
+        print(f"    ✅ 找到 setup.py 上一次成功后的备份: {TEAM_JSON_BACKUP}")
+        print(f"    恢复命令:")
+        print(f"       cp {TEAM_JSON_BACKUP} {TEAM_JSON}")
+        print()
+        print("    如果你确认 team.json 当前状态就是你想要的(例如你故意裁撤了部分")
+        print("    agent),删除备份后重跑: rm " + TEAM_JSON_BACKUP)
+    else:
+        print("    (没找到 .team.json.prev 备份,本次是首次被检测到。)")
+
+    print("=" * 70)
+    sys.exit(1)
+
+
+def _backup_team_json():
+    """setup.py 成功跑完后,把当前 team.json 存一份到 scripts/.team.json.prev。
+
+    下次 setup.py 启动时,如果检测到 team.json 被截断,可以用这个备份恢复。
+    备份文件放在 scripts/ 下面,docker-compose 的 bind mount 会自动持久化。
+    """
+    if not os.path.exists(TEAM_JSON):
+        return
+    try:
+        shutil.copy2(TEAM_JSON, TEAM_JSON_BACKUP)
+        print(f"   💾 team.json 已备份到 {TEAM_JSON_BACKUP}")
+    except Exception as e:
+        print(f"   ⚠️  备份 team.json 失败(非致命): {e}")
+
+
+def _warmup_lark_cli():
+    """预热 npx 缓存,给首次下载 lark-cli 的用户明确进度预期。
+
+    为什么需要 (P1-12): npx 第一次执行 @larksuite/cli 时会从 npm registry
+    拉取约 80MB 的包,期间 stdout 几乎没有输出,慢网环境下用户会误以为
+    脚本卡死。Docker 镜像里已经 npm install -g 过,这里是 no-op 级别的快
+    速路径;host-native 首次使用则会真正触发下载。我们主动打印一条预期
+    提示,而不是让下载静默发生在后面 create_bitable() 的第一个 _lark
+    调用里。
+    """
+    print("📦 预热 lark-cli (npx 首次使用会从 npm registry 下载约 80MB 的包,")
+    print("   慢网环境可能需要 1–2 分钟,请保持网络稳定)...", flush=True)
+    try:
+        r = subprocess.run(
+            ["npx", "--yes", "@larksuite/cli", "--version"],
+            capture_output=True, text=True, timeout=600,
+        )
+    except FileNotFoundError:
+        print("❌ 系统里找不到 npx 命令,请先安装 Node.js (>=22)。")
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print("   ⚠️ warm-up 超过 10 分钟未完成,网络可能有问题。继续执行,")
+        print("      后续 _lark 调用若再次触发下载会抛出更具体的错误。")
+        return
+    if r.returncode == 0:
+        version = r.stdout.strip() or "unknown"
+        print(f"   ✓ lark-cli ready ({version})")
+    else:
+        # warm-up 失败只告警,不阻断 —— 后续真正的 _lark 调用会带更清晰的错误上下文。
+        err = (r.stderr or "").strip()[:200]
+        print(f"   ⚠️ warm-up 返回 {r.returncode}: {err}")
+    print()
+
+
 def main():
+    # P1-12 首次使用 lark-cli 时 npx 会下载 ~80MB 且完全静默。先 warm-up 一次,
+    # 让用户对"这 1-2 分钟的等待是下载, 不是脚本卡死"有明确预期。
+    _warmup_lark_cli()
+
     # 幂等性检查 —— 空文件 / 非 JSON 视为"未初始化",继续跑。
     # 空文件场景很常见: Docker bind mount 要求目标文件存在,容器部署指南让用户
     # `touch scripts/runtime_config.json` 占位,首次 init 时走到这里。
@@ -435,10 +646,17 @@ def main():
         except json.JSONDecodeError:
             print(f"⚠️  {CONFIG_FILE} 不是合法 JSON,当作未初始化处理")
             existing = {}
+
+    # P0-7: team.json vs runtime_config.json 一致性保护
+    # 必须在幂等性 short-circuit 之前跑,否则"配置完整就跳过"会掩盖截断事故。
+    _check_team_json_consistency(existing)
+
     required_keys = ["bitable_app_token", "msg_table_id", "sta_table_id", "chat_id"]
     if all(existing.get(k) for k in required_keys):
         print("✅ runtime_config.json 已存在且配置完整,跳过初始化。")
         print(f"   如需重新初始化,请先删除 {CONFIG_FILE}")
+        # 跳过场景下也刷新一次 team.json 备份(当前 team.json 就是权威版本)
+        _backup_team_json()
         return
 
     if not AGENTS:
@@ -462,7 +680,7 @@ def main():
     lark_profile = _check_profile_conflict(lark_profile, default_name)
 
     base_token = create_bitable()
-    time.sleep(2)  # 等待 Bitable 初始化完成，避免后续建表报 OpenAPIAddField limited
+    time.sleep(10)  # 等待 Bitable 初始化完成，避免后续建表报 OpenAPIAddField limited (原版 sleep(2) 被观察到不够)
     msg_table = create_inbox_table(base_token)
     sta_table = create_status_table(base_token)
     kanban_table = create_kanban_table(base_token)
@@ -484,6 +702,8 @@ def main():
     }
     save_runtime_config(cfg)
     print(f"✅ 配置已保存到 {CONFIG_FILE}")
+    # P0-7: 成功写入后立刻备份 team.json,作为下次 setup.py 的恢复依据
+    _backup_team_json()
     if share_link:
         print(f"\n📎 飞书群聊邀请链接（发给用户）:\n   {share_link}")
     print("=" * 50)

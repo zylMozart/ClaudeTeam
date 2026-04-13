@@ -18,6 +18,22 @@ from config import PROJECT_ROOT, LARK_CLI
 
 CHECK_INTERVAL = 60  # 秒
 
+# ── 测试隔离开关 (ADR watchdog_testing_env_guard) ──────────────
+# 设 WATCHDOG_TESTING=1 会让 _send_manager_alert 跳过真实 subprocess 调用,
+# 只打本地日志。这是 belt-and-suspenders 的 belt 层 —— 防止新测试作者忘记
+# patch subprocess.run/Popen 时误发真实消息到 manager inbox。
+#
+# ⚠️ 这不是测试可以依赖的唯一保护。测试仍然必须把 subprocess.run/Popen patch
+# 成 AssertionError,让泄漏 loud-fail 而不是 silent-skip。本开关只是最后一道兜底。
+#
+# production 启动时绝对不应该设这个变量。任何启动脚本(start-team.sh、
+# docker-entrypoint.sh)如果误设它,watchdog 的告警会彻底失效,整个系统变成
+# "静默故障",这是本 ADR 最大的部署风险。main() 启动时会打一条显眼警告。
+#
+# 严格 "1" 比较,不要用 bool(os.environ.get(...)) —— 后者会把
+# WATCHDOG_TESTING=0 / WATCHDOG_TESTING=false 都当成真值,是经典坑。
+TESTING = os.environ.get("WATCHDOG_TESTING") == "1"
+
 # 构建带 profile 的 lark-cli event 命令
 _lark_event_cmd = " ".join(LARK_CLI) + (
     " event +subscribe "
@@ -45,17 +61,25 @@ PROCS = [
         # 不查 health_file 新鲜度。避免 router 新进程还没来得及 touch cursor
         # 就被 watchdog 再次误判为"心跳超时"连锁重启。
         "restart_grace_secs": 120,
-        "max_retries": 3,
-        "retry_count": 0,
-        "last_restart_ts": 0,
+        # ADR watchdog_max_retries_cooldown: burst + cooldown 状态机
+        # max_retries   — 一个 burst 窗口内的重启配额
+        # cooldown_secs — burst 耗尽后的静默冷却时长,结束后自动重新 burst
+        "max_retries":    3,
+        "cooldown_secs":  600,
+        # 运行时状态(watchdog 自己维护,初始 0)
+        "retry_count":         0,
+        "last_restart_ts":     0,
+        "cooldown_start_ts":   0,
     },
     {
         "name":  "kanban_sync.py",
         "match": "kanban_sync.py daemon",
         "cmd":   ["python3", "scripts/kanban_sync.py", "daemon"],
         "pid_file": os.path.join(os.path.dirname(__file__), ".kanban_sync.pid"),
-        "max_retries": 3,
-        "retry_count": 0,
+        "max_retries":    3,
+        "cooldown_secs":  600,
+        "retry_count":         0,
+        "cooldown_start_ts":   0,
     },
 ]
 
@@ -154,15 +178,56 @@ def restart_process(proc):
     proc["last_restart_ts"] = time.time()
     log(f"🔄 已重启: {proc['name']}")
 
-def notify_manager(proc_name):
-    msg = f"[watchdog] {proc_name} 已崩溃并自动重启，请确认运行状态。"
-    subprocess.run(
+def _send_manager_alert(msg, log_label):
+    """向 manager 发送一条自定义告警消息,按 feishu_msg.py 退出码分流日志。
+
+    参数
+    ----
+    msg       : 完整的告警文案(含 '[watchdog] ...' 前缀),直接透传给 send
+    log_label : 日志里的动作描述,例如 '<proc> 重启' / '<proc> 进入 cooldown',
+                只用于 log 行的可读性,不进消息本体
+
+    WATCHDOG_TESTING=1 时跳过真实 subprocess 调用,只打本地 log —— 见
+    ADR watchdog_testing_env_guard.md。
+
+    退出码语义（与 feishu_msg.py 的 _check_lark_result 约定对齐）:
+      0 → 收件箱写入 + 群通知都成功
+      1 → 主写入失败(收件箱都没落库),告警很可能没送达,日志留痕让人看得到
+      2 → 收件箱已写但群通知失败,告警仍在 manager 的 inbox 里等待,日志降级
+          成 warning 即可,不要重发(会产生重复 Bitable 记录)
+    """
+    if TESTING:
+        # 打一条显眼的本地日志,让测试作者一眼看到 belt 拦截了。
+        # 如果测试里意外命中这条日志,说明测试的 mock 层有漏 —— 应该
+        # 把 mock 下沉到 _send_manager_alert 或 subprocess.run。
+        log(f"🧪 [TESTING] 已跳过真实 manager 告警: {log_label} — {msg[:120]}")
+        return
+
+    r = subprocess.run(
         ["python3", "scripts/feishu_msg.py",
          "send", "manager", "watchdog", msg, "高"],
         cwd=PROJECT_ROOT,
-        capture_output=True,
+        capture_output=True, text=True,
     )
-    log(f"📨 已通知 manager: {proc_name} 重启")
+    if r.returncode == 0:
+        log(f"📨 已通知 manager: {log_label}")
+    elif r.returncode == 2:
+        log(f"⚠️ 已通知 manager(收件箱OK,群通知失败): {log_label}")
+    else:
+        err = (r.stderr or "").strip()[:300] or (r.stdout or "").strip()[:300] or "(无输出)"
+        log(f"🚨 通知 manager 失败 (exit={r.returncode}): {log_label} — {err}")
+
+
+def notify_manager(proc_name):
+    """burst 分支: 发一条 '<proc> 已崩溃并自动重启' 的默认模板告警。
+
+    这个入口只负责 burst 场景。进 cooldown 时调用方应直接调 _send_manager_alert
+    传入自定义文案,避免告警文案互相污染(reviewer CR#1)。
+    """
+    _send_manager_alert(
+        f"[watchdog] {proc_name} 已崩溃并自动重启，请确认运行状态。",
+        log_label=f"{proc_name} 重启",
+    )
 
 def is_healthy(proc):
     """进程存在 + 健康检查通过"""
@@ -187,23 +252,70 @@ def is_healthy(proc):
     return True
 
 def check_once():
+    """ADR watchdog_max_retries_cooldown: burst + cooldown 状态机.
+
+    状态: HEALTHY -> BURSTING (最多 max_retries 次 restart) -> COOLDOWN
+          (cooldown_secs 内静默) -> BURSTING (自动重新 burst) -> ...
+          任何时刻 is_healthy=True 都立即重置 retry_count + 退出 cooldown.
+
+    告警节律: burst 每次 restart 发一条 notify,进入 cooldown 时发一条 notify
+    告知用户已进入静默,cooldown 期间 0 次 notify. 恢复健康时打 log 但不 notify.
+    """
     all_ok = True
     for proc in PROCS:
-        if not is_healthy(proc):
-            all_ok = False
-            proc["retry_count"] = proc.get("retry_count", 0) + 1
-            max_retries = proc.get("max_retries", 3)
-            if proc["retry_count"] > max_retries:
-                log(f"🚨 {proc['name']} 连续 {max_retries} 次重启失败，停止重试")
-                notify_manager(f"{proc['name']} 连续 {max_retries} 次重启失败，需人工介入")
+        name = proc["name"]
+        healthy = is_healthy(proc)
+
+        if healthy:
+            # 健康恢复: 无条件退出 cooldown + 重置 burst 计数
+            if proc.get("retry_count", 0) > 0 or proc.get("cooldown_start_ts", 0) > 0:
+                log(f"✅ {name} 恢复健康，重置重试计数")
+                proc["retry_count"] = 0
+                proc["cooldown_start_ts"] = 0
+            continue  # 这个 proc 没事，看下一个
+
+        # ── 不健康分支 ──
+        all_ok = False
+        now = time.time()
+        cooldown_start = proc.get("cooldown_start_ts", 0)
+        cooldown_secs = proc.get("cooldown_secs", 600)
+
+        if cooldown_start > 0:
+            elapsed = now - cooldown_start
+            if elapsed < cooldown_secs:
+                # 静默等待: 不重启不告警,日志一行即可,避免刷屏
+                remaining = int(cooldown_secs - elapsed)
+                log(f"⏸  {name} 仍在 cooldown (剩余 {remaining}s)，跳过本轮")
                 continue
-            log(f"💀 检测到异常: {proc['name']} (第 {proc['retry_count']} 次)")
-            restart_process(proc)
-            time.sleep(2)
-            notify_manager(proc["name"])
-        else:
-            if proc.get("retry_count", 0) > 0:
-                proc["retry_count"] = 0  # 恢复正常，重置计数
+            # cooldown 结束: 重置状态,当作全新开始 burst
+            log(f"🔁 {name} cooldown 结束 ({cooldown_secs}s)，重新开始重启 burst")
+            proc["retry_count"] = 0
+            proc["cooldown_start_ts"] = 0
+            # 掉落到下面的 burst 逻辑
+
+        # burst 逻辑: max_retries 配额内的快速重启
+        proc["retry_count"] = proc.get("retry_count", 0) + 1
+        max_retries = proc.get("max_retries", 3)
+
+        if proc["retry_count"] > max_retries:
+            # burst 耗尽,进 cooldown,告警发且仅发一次
+            log(f"🚨 {name} 连续 {max_retries} 次重启失败，进入 cooldown ({cooldown_secs}s)")
+            # 直接走自定义文案,不走 notify_manager 的默认 "已崩溃并自动重启" 模板,
+            # 避免两段文案拼在一起自相矛盾(reviewer CR#1)
+            _send_manager_alert(
+                f"[watchdog] {name} 连续 {max_retries} 次重启失败，已进入 "
+                f"{cooldown_secs}s cooldown，期间 watchdog 不会重试。"
+                f"cooldown 结束后自动重新尝试。",
+                log_label=f"{name} 进入 cooldown",
+            )
+            proc["cooldown_start_ts"] = now
+            continue
+
+        log(f"💀 检测到异常: {name} (第 {proc['retry_count']} 次)")
+        restart_process(proc)
+        time.sleep(2)
+        notify_manager(name)
+
     if all_ok:
         log("✅ 所有守护进程运行正常")
 
@@ -238,6 +350,12 @@ signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 def main():
     _acquire_pid_lock()
     log("🐕 Watchdog 启动")
+    if TESTING:
+        # 显眼警告: production 绝不应该看到这一行。如果线上看到了,立刻查
+        # 这个环境变量是哪里设的并拿掉。ADR watchdog_testing_env_guard 对
+        # 应的 belt 层被意外打开 = watchdog 告警彻底失效 = 静默故障。
+        log("🚨🚨🚨 WATCHDOG_TESTING=1 已启用 — 所有 manager 告警将被吞掉!")
+        log("        这不应该出现在 production,请检查启动脚本 env。")
     log(f"   监控对象: {', '.join(p['name'] for p in PROCS)}")
     log(f"   检查间隔: {CHECK_INTERVAL}s")
     log("=" * 55)

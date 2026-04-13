@@ -76,10 +76,18 @@ def file_hash(abs_path):
 # ── lark-cli 文档操作 ────────────────────────────────────────
 
 def lark_create_folder(name):
-    """在飞书 Drive 根目录创建文件夹，返回 folder_token。"""
+    """在飞书 Drive 根目录创建文件夹，返回 folder_token。
+
+    P2-3 修复: 原版用 `--name <name> --folder_token ""` 这两个 flag,但
+    `lark-cli drive files create_folder` 根本不认这些 flag(跑 --help 可验证,
+    只接受 --as/--data/--dry-run/--format/--params 等通用 flag)。正确用法
+    是把 name + folder_token 塞进 `--data` 的 JSON body 里。folder_token=""
+    表示在 Drive 根目录创建。
+    """
+    payload = json.dumps({"name": name, "folder_token": ""}, ensure_ascii=False)
     r = subprocess.run(
         LARK_CLI + ["drive", "files", "create_folder",
-                    "--name", name, "--folder_token", "", "--as", "bot"],
+                    "--data", payload, "--as", "bot"],
         capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
         print(f"❌ 创建文件夹失败: {r.stderr}")

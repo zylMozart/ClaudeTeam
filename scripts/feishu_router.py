@@ -215,35 +215,45 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
 # ── 处理单条事件 ──────────────────────────────────────────────
 
 def handle_event(event):
-    """处理一条 --compact 格式的事件 JSON。"""
-    # Bug 16: 记录首事件时间,给 _event_watchdog 用。
+    """处理一条 --compact 格式的事件 JSON。
+
+    ADR: feishu_router_dedup_order.md — 严格两阶段契约。
+    阶段 1 必须在任何 return 之前无条件运行,阶段 2 才允许 early return。
+    """
+    # ─── 阶段 1: 无条件 liveness 证明 ─────────────────────────────
+    # 任何从 WebSocket / stdin / catchup 到达的事件都要在这里刷心跳,
+    # 包括会被 dedup / chat_id filter / bot 自发消息 filter / 无效 msg_id
+    # 早退的事件。原因: router 的心跳是"最后一次从输入流读到东西的时间"
+    # 而不是"最后一次路由成功的时间"—— watchdog 只判断 router 有没有卡死,
+    # 跟事件是否命中业务逻辑完全无关。如果把心跳刷新放在 dedup 之后,
+    # 重复事件不会刷心跳,群聊冷清 + catchup 轮询 replay 的场景下,
+    # router 每 30 分钟会被 watchdog 误杀一次。
+    # first_event_at 同理 — 任何事件到达都证明订阅活着,用于 _event_watchdog
+    # 的"启动 45 秒内是否收到事件"判断。
     if _state.first_event_at is None:
         _state.first_event_at = time.time()
-
-    msg_id = event.get("message_id", "")
-    if not msg_id or msg_id in _state.seen_ids:
-        return
-    _state.seen_ids.add(msg_id)
-
-    # WebSocket 还在推事件 — 刷新心跳 mtime。必须在 chat_id 过滤和 bot 自发
-    # 消息过滤"之前"调用:多团队共用同一个 Feishu App 时,我们收到的大部分
-    # 事件都属于其他团队的 chat,如果只在成功路由后才刷新心跳,那么一个长期
-    # 只跑后台没对外发言的团队会被 watchdog 误判为"WebSocket 静默死亡"并
-    # 被反复重启。
     _refresh_heartbeat()
 
-    # 过滤非本团队 chat 的事件。多团队共用同一个 Feishu App 时,WebSocket
-    # 会把 bot 可见的所有群的消息都推过来;不做这一步会导致一个团队的消息
-    # 被另一个团队的 router 投递(跨团队串台)。
+    # ─── 阶段 2: 内容过滤(允许 early return) ──────────────────────
+    # 以下所有检查都可能 return,不影响心跳。
+    # 2a. 无效 msg_id — 放最前,便宜且挡掉损坏事件
+    msg_id = event.get("message_id", "")
+    if not msg_id:
+        return
+    # 2b. 去重(seen_ids) — 查完立即 add,避免未来并发下 TOCTOU
+    if msg_id in _state.seen_ids:
+        return
+    _state.seen_ids.add(msg_id)
+    # 2c. 跨团队 chat 过滤 — 多团队共用同一 Feishu App 时必须做
     event_chat_id = event.get("chat_id", "")
     if _state.chat_id and event_chat_id and event_chat_id != _state.chat_id:
         return
-
-    # 过滤 bot 自己的消息
+    # 2d. bot 自发消息过滤
     sender_id = event.get("sender_id", "")
     if _state.is_bot_message(sender_id):
         return
 
+    # ─── 阶段 3: 内容解析与路由 ──────────────────────────────────
     # --compact 模式下 text 字段已解析好
     text = event.get("text", event.get("content", ""))
     msg_type = event.get("message_type", "text")
@@ -383,7 +393,12 @@ def _catchup_from_history(chat_id):
             print("  ⚠️ 历史补抓超时,放弃剩余页")
             break
         if data is None:
-            print("  ⚠️ 历史补抓 API 失败,停止")
+            # ADR silent_swallow_remaining P1 ⑥: 格式对齐 _check_lark_result
+            # 的 '⚠️ lark-cli 调用失败: <action>' grep pattern,方便未来统一
+            # 监控抓吞错点。逻辑保留原样: catchup 是 best-effort,单页失败不
+            # 致命,break 让调用方从上次 cursor 重试。
+            print(f"  ⚠️ lark-cli 调用失败: 历史补抓 {chat_id} (停止本轮)",
+                  file=sys.stderr)
             break
         for m in data.get("messages", []):
             fetched += 1
@@ -496,8 +511,26 @@ def main():
     # 推迟到 800 秒之后,期间 bash pipeline 的 stdin buffer(~64KB)会被
     # 新流入的事件写爆,造成二次丢失。daemon 线程让 catchup 和实时流
     # 并行跑,重复消息由 _state.seen_ids 去重。
-    threading.Thread(target=_catchup_from_history, args=(chat_id,),
-                     daemon=True).start()
+    #
+    # 额外的轮询模式(ClaudeTeam shared-profile 容器部署专用):
+    # 如果 App 服务端没订阅 im.message.receive_v1 事件(这是共享宿主机
+    # profile 最常见的症状), WebSocket 永远收不到事件。这里开一个后台线程
+    # 每 5 秒再跑一次 catchup,相当于把 WebSocket 退化成 HTTP 轮询。
+    # seen_ids 保证重复消息不会被路由两次, cursor 保证只拉新消息,所以
+    # 即使 WebSocket 后来恢复也不会冲突。代价是延迟 ≤ 5s、chat-messages-list
+    # 调用频率上升。
+    def _poll_catchup_loop():
+        while True:
+            try:
+                _catchup_from_history(chat_id)
+                # 轮询模式下 WebSocket 永远不会触发 _refresh_heartbeat,
+                # 但 watchdog 通过 health_file mtime 判活。每轮都刷一下,
+                # 避免被误判为"30 分钟无事件=静默死亡"而重启。
+                _refresh_heartbeat()
+            except Exception as e:
+                print(f"  ⚠️ 轮询 catchup 异常: {e}")
+            time.sleep(5)
+    threading.Thread(target=_poll_catchup_loop, daemon=True).start()
 
     # Bug 16 防御:启动后 45 秒内如果一条事件都没到,打印醒目警告。
     # 最常见的根因是 App 的 im.message.receive_v1 事件订阅没配(config init

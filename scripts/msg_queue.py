@@ -88,17 +88,26 @@ def dequeue_pending(agent_name):
 
 
 def check_manager_unread(last_check_time):
-    """检查 manager 是否有积压的未读用户消息。返回更新后的 check 时间。"""
+    """检查 manager 是否有积压的未读用户消息。返回更新后的 check 时间。
+
+    P1-2 修复: 原版读 manager.json 未加锁,并发下可能读到 enqueue/dequeue
+    写一半的 JSON,抛 JSONDecodeError,router 后台线程 try/except 吞掉但日志
+    留下神秘 warning。这里把读取段包进 _queue_lock 里,和其他 queue 操作的
+    并发语义对齐。
+    dequeue_pending() 本身持有 _queue_lock,必须在 with 块外调用,否则会
+    因为 _queue_lock 不可重入(默认 threading.Lock)而死锁。
+    """
     now = time.time()
     if now - last_check_time < UNREAD_CHECK_INTERVAL:
         return last_check_time
 
     queue_file = os.path.join(PENDING_DIR, "manager.json")
-    if not os.path.exists(queue_file):
-        return now
 
-    with open(queue_file) as f:
-        queue = json.load(f)
+    with _queue_lock:
+        if not os.path.exists(queue_file):
+            return now
+        with open(queue_file) as f:
+            queue = json.load(f)
 
     user_msgs = [m for m in queue if m["is_user_msg"]]
     if not user_msgs:
@@ -107,7 +116,7 @@ def check_manager_unread(last_check_time):
     oldest_wait = now - min(m["queued_at"] for m in user_msgs)
     if oldest_wait > 60:
         if is_agent_idle(TMUX_SESSION, "manager"):
-            dequeue_pending("manager")
+            dequeue_pending("manager")   # 自己持锁,必须在 with 块外
         else:
             print(f"  ⚠️ Manager 有 {len(user_msgs)} 条用户消息积压 {int(oldest_wait)}s")
 

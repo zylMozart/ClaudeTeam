@@ -25,7 +25,15 @@
 services:
   team:
     build: .
-    container_name: claudeteam
+    # 故意不写 container_name —— 硬编码的 container_name 是全局唯一的,
+    # 同一台机器跑第二个 ClaudeTeam 部署时会和第一个撞名字,Docker 会把旧容器
+    # recreate 掉,等于把前一个团队整个干掉。
+    # 省略后 Compose 自动按 "<project>-<service>-<idx>" 命名 (例 test5-team-1),
+    # project 默认取当前目录 basename, 也可以通过 COMPOSE_PROJECT_NAME 环境变量
+    # 显式指定。scripts/docker-deploy.sh 会自动 export
+    # COMPOSE_PROJECT_NAME=claudeteam-<session> 以获得 claudeteam-<session>-team-1
+    # 这种一眼看得出团队身份的容器名。多团队部署细节见 README.md 的
+    # "Running Multiple Teams on One Host" 章节。
     restart: unless-stopped
     env_file:
       - .env

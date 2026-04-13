@@ -6,7 +6,7 @@ Agent 团队定义从项目根目录 team.json 读取。
 飞书认证由 lark-cli 管理（lark-cli config init）。
 每个项目使用独立的 lark-cli profile，避免多项目部署冲突。
 """
-import sys as _sys, os as _os, json as _json, subprocess as _subprocess
+import sys as _sys, os as _os, json as _json
 
 # 项目根目录
 PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))

@@ -140,12 +140,20 @@ def cmd_setup_feishu(agent_name):
     if not tid:
         print(f"❌ 创建工作空间表失败: {d}")
         sys.exit(1)
+    # ADR silent_swallow_remaining P1 ⑤: 字段创建失败必须 loud 退出,
+    # 避免表只有一半字段却被当作成功 —— /hire 完成后 agent 用 ws_log 时才
+    # 发现字段缺失,代价远高于现在 sys.exit 回退。
     for field in ws_fields:
         time.sleep(1)
-        _lark(["base", "+field-create", "--base-token", bt,
-               "--table-id", tid,
-               "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
-              label=f"添加字段 {field['name']}")
+        fd = _lark(["base", "+field-create", "--base-token", bt,
+                    "--table-id", tid,
+                    "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
+                   label=f"添加字段 {field['name']}")
+        if fd is None:
+            print(f"❌ 字段 {field['name']} 创建失败,{agent_name} 的工作空间表 "
+                  f"({tid}) 残缺。请手动 drop table 后重跑 /hire {agent_name}.",
+                  file=sys.stderr)
+            sys.exit(1)
     ws_tables[agent_name] = tid
     cfg["workspace_tables"] = ws_tables
     save_cfg(cfg)
@@ -158,10 +166,16 @@ def cmd_setup_feishu(agent_name):
             "fields": ["Agent名称", "状态", "当前任务"],
             "rows": [[agent_name, "待命", "刚入职，等待初始化"]]
         }, ensure_ascii=False)
-        _lark(["base", "+record-batch-create", "--base-token", bt,
-               "--table-id", st, "--json", payload, "--as", "bot"],
-              label="写入初始状态")
-        print(f"✅ 状态表已添加 {agent_name} 初始记录")
+        d_init = _lark(["base", "+record-batch-create", "--base-token", bt,
+                        "--table-id", st, "--json", payload, "--as", "bot"],
+                       label="写入初始状态")
+        if d_init is None:
+            # 初始状态行不是致命的(agent 首次 status 调用会自动 create),
+            # 但要 loud 告警让用户知道状态表暂时空了一行。
+            print(f"   ⚠️ 状态表初始行写入失败,{agent_name} 首次 status "
+                  f"调用会自动补写", file=sys.stderr)
+        else:
+            print(f"✅ 状态表已添加 {agent_name} 初始记录")
 
 # ── 命令：start-tmux ─────────────────────────────────────────
 
