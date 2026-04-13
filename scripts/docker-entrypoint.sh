@@ -205,6 +205,51 @@ if not app.get("hasTrustDialogAccepted"):
     print("✅ 已为 /app 写入信任标记")
 PY
 
+# 预置 settings.local.json —— 绕过 "sensitive file" 权限弹窗。
+# 背景 (Bug 12): 即使启动参数带了 --dangerously-skip-permissions,Claude Code
+# 仍会对自己状态目录下的路径(~/.claude/projects/<escaped>/** 等) 执行硬编码的
+# "敏感文件" 检查。agent 只要跑 `mkdir -p ~/.claude/projects/-app/memory` 这种
+# auto-memory 初始化命令,就会被拦下弹确认框,tmux 窗口直接卡死 ——
+# 没人按方向键+Enter,manager 就永远派不下去任务,群里消息表现为"无人响应"。
+#
+# 修法是给容器写一份 settings.local.json,permissions.allow 里加一条
+# 全量 Bash 白名单 (`Bash(*)`) + 所有 Edit/Write/Read 白名单,这样 Claude
+# 在检查阶段就认定"用户已经永久允许",直接跳过弹窗。
+#
+# 文件不入镜像、仅容器运行时生成 —— 宿主机 ~/.claude/settings.local.json
+# 不受影响(我们只 bind mount 了 .credentials.json 和 .claude.json 两个顶层
+# 文件,settings.local.json 落在容器自己的 rootfs 层)。
+mkdir -p /home/claudeteam/.claude
+python3 - <<'PY'
+import json, os
+p = "/home/claudeteam/.claude/settings.local.json"
+existing = {}
+if os.path.exists(p):
+    try:
+        with open(p) as f:
+            existing = json.load(f)
+    except Exception:
+        existing = {}
+perms = existing.setdefault("permissions", {})
+allow = perms.setdefault("allow", [])
+# 幂等: 已有就不重复加
+wanted = [
+    "Bash(*)",
+    "Write(/home/claudeteam/.claude/**)",
+    "Edit(/home/claudeteam/.claude/**)",
+    "Read(/home/claudeteam/.claude/**)",
+    "Write(/app/**)",
+    "Edit(/app/**)",
+    "Read(/app/**)",
+]
+for rule in wanted:
+    if rule not in allow:
+        allow.append(rule)
+with open(p, "w") as f:
+    json.dump(existing, f, indent=2)
+print(f"✅ 已写入 {p} (permissions.allow={len(allow)} 条)")
+PY
+
 # ── init 模式：跑 setup.py 创建飞书资源,然后退出 ────────────
 if [ "$MODE" = "init" ]; then
   echo ""
