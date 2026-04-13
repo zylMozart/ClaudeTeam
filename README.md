@@ -65,6 +65,8 @@ Feishu Bitable (message storage, status board, kanban)
 
 ## Prerequisites
 
+For the **Quick Start** path (host-native, guided by `claude`):
+
 | Requirement     | Version    | Check                                    |
 | --------------- | ---------- | ---------------------------------------- |
 | macOS or Linux  | —          | —                                        |
@@ -73,6 +75,16 @@ Feishu Bitable (message storage, status board, kanban)
 | tmux            | any        | `tmux -V`                                |
 | Claude Code CLI | latest     | `claude --version`                       |
 | Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
+
+For the **Docker Deployment** path, you only need:
+
+| Requirement     | Version    | Check                                    |
+| --------------- | ---------- | ---------------------------------------- |
+| Docker          | 20.10+     | `docker --version`                       |
+| Docker Compose  | v2         | `docker compose version`                 |
+| Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
+
+Python / Node.js / tmux / Claude Code CLI all live inside the image and don't need to be on the host.
 
 ---
 
@@ -92,6 +104,58 @@ That's it. Claude Code reads this file and auto-guides you through:
 4. **Launching the team** — fully automatic
 
 The whole process takes about 5 minutes.
+
+> **Heads up.** The "fully automatic" claim only holds when Phase 1 uses `npx @larksuite/cli config init --new`, which scans a QR code, *creates* a fresh Feishu App, AND pushes event subscriptions to the server in one shot. If you instead supply an existing App's `App ID` / `App Secret` directly (e.g. you already created it via the Feishu web console), you must complete two extra manual steps in the Feishu developer console: **batch-import the scopes** and **add the `im.message.receive_v1` event subscription**, then publish a new version. Both are covered in [Phase 1](#phase-1-configure-feishu-app) below — read those steps if `claude` doesn't auto-handle them for you.
+
+---
+
+## Docker Deployment (alternative, hands-off)
+
+If you want a fully containerized deploy with no shared state on the host, use this flow instead of `claude`:
+
+```bash
+git clone https://github.com/zylMozart/ClaudeTeam.git
+cd ClaudeTeam
+
+# 1. Credentials live in project-local .env (gitignored).
+cp .env.example .env
+$EDITOR .env                        # fill FEISHU_APP_ID / FEISHU_APP_SECRET
+
+# 2. Define the team you want.
+$EDITOR team.json                   # session name + agents (see templates/)
+
+# 3. Bind-mount target must exist before first run, otherwise Docker turns it
+#    into a directory.
+touch scripts/runtime_config.json
+
+# 4. Build the image.
+docker compose build
+
+# 5. One-shot init: container creates the Bitable / group chat / inbox tables
+#    and writes scripts/runtime_config.json. Exits when done.
+docker compose run --rm team init
+
+# 6. Start the team for real (manager + workers + router + watchdog).
+docker compose up -d
+```
+
+Why this flow:
+
+- **Feishu credentials never touch the host.** They live in `.env` and only get materialized inside the container's writable layer at startup. Nothing is written to `~/.lark-cli` on the host. Multiple ClaudeTeam deployments on the same host can't see each other's Feishu identities.
+- **Claude Code credentials are shared via bind mount** (`~/.claude/.credentials.json` + `~/.claude.json`). Same Anthropic account in multiple deployments is the normal case, so this is fine. If you'd rather use an API key, set `ANTHROPIC_API_KEY` in `.env` — the bind mounts become optional.
+- **The whole `scripts/` directory is bind-mounted** so you can edit Python scripts on the host and they take effect on container restart, no rebuild needed.
+
+**Before this works** you still have to do the two manual Feishu console steps once (scopes batch-import + event subscription). See [Phase 1](#phase-1-configure-feishu-app) below — those steps apply to both Quick Start and Docker Deployment.
+
+To interact with the team:
+
+```bash
+docker compose logs -f                                  # follow startup logs
+docker compose exec team tmux attach -t <session>       # attach to tmux
+docker compose down                                     # stop
+```
+
+The Feishu group chat invite link is printed at the end of `docker compose run --rm team init` — open it on your phone, join the group, and chat with the manager.
 
 ---
 
@@ -336,7 +400,33 @@ Tell the user:
 cat config/feishu_scopes.json
 ```
 
-**⚠️ Don't forget to publish.** After adding the scopes, click **"Create version & Publish"** in the top-right corner of the developer console. Without publishing, `auth login` in the next step will fail with `no permission`.
+The shipped file is intentionally minimal: 4 umbrella scopes (`bitable:app`, `im:chat`, `im:message`, `im:resource`) plus three explicit record-level scopes (`base:record:read/create/update`). Why mix umbrellas and fine-grained? Because Feishu's umbrellas are inconsistent: `im:message` does cover its sub-permissions like `im:message:send_as_bot`, but `bitable:app` does **NOT** cover `base:record:*` operations — record CRUD has to be granted explicitly. If you ever see `99991672 Access denied. One of the following scopes is required: [some:scope]` at runtime, add `some:scope` to `feishu_scopes.json`, re-import, and re-publish.
+
+**⚠️ Don't forget to publish.** After adding the scopes, click **"Create version & Publish"** in the top-right corner of the developer console. Without publishing, every API call will keep failing with `99991672`.
+
+### Step 2.5: Subscribe to events (only if you didn't use `config init --new`)
+
+If Phase 1 Step 1 used `npx @larksuite/cli config init --new` and you scanned the QR code, **skip this step** — the CLI already pushed event subscriptions to the Feishu server side as part of app creation.
+
+If instead you supplied an existing `App ID` + `App Secret` (e.g. via `config init --app-id ... --app-secret-stdin`, or you created the App manually in the Feishu web console), then your App **does not yet have any events subscribed on the server side**. Symptom: router starts fine, `chat-search --as bot` returns `ok: true`, but the router's "45 seconds 0 events" warning fires and messages from your group never reach any agent.
+
+**To fix in the Feishu developer console:**
+
+```bash
+APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
+open "https://open.feishu.cn/app/${APP_ID}/event" 2>/dev/null \
+  || echo "Open: https://open.feishu.cn/app/${APP_ID}/event"
+```
+
+In the page that opens:
+
+1. Sidebar → **"事件与回调" → "事件订阅"**
+2. Set **传输方式 / Transport** to **"长连接" (long-polling / WebSocket)**, NOT webhook (ClaudeTeam's router uses `lark-cli event +subscribe` over WebSocket)
+3. Click **"添加事件" / Add Event**, search for `im.message.receive_v1` (display name: "**接收消息 v2.0**" or "**Receive Message**") → Add
+4. Save
+5. **Re-publish a new version** (top-right corner). Without re-publishing, the new event subscription is staged but not live.
+
+**To verify it actually works:** restart the router (or the whole container) and watch for the "45 seconds 0 events" warning. If it stays silent past 45 seconds and you can see incoming messages flowing through, you're good.
 
 ### Step 3: User login (enables calendar, docs, tasks, contacts)
 
