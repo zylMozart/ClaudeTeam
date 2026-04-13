@@ -469,6 +469,12 @@ def main():
     print("🚀 Router Daemon 启动")
     acquire_pid_lock()
 
+    # 给新进程一个 grace period: 立刻刷新心跳文件 mtime,避免 WebSocket 静默
+    # 期(群聊冷清)时新 router 启动后 60s 内没收到事件就被 watchdog 二次误判
+    # 重启,形成连锁。_refresh_heartbeat 会在文件缺失时自动 _advance_cursor 初
+    # 始化,不会漏补抓。
+    _refresh_heartbeat()
+
     cfg = load_runtime_config()
     chat_id = cfg.get("chat_id", "")
     if not chat_id:

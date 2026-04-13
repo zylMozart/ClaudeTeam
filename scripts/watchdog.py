@@ -41,8 +41,13 @@ PROCS = [
         # mtime 是"最后收到任何 WebSocket 事件的时间"。watchdog 只看 mtime。
         "health_file": os.path.join(os.path.dirname(__file__), ".router.cursor"),
         "health_stale_secs": 1800,
+        # 刚重启完的 grace period:距离上次重启 < grace_secs 时只查 PID 存活,
+        # 不查 health_file 新鲜度。避免 router 新进程还没来得及 touch cursor
+        # 就被 watchdog 再次误判为"心跳超时"连锁重启。
+        "restart_grace_secs": 120,
         "max_retries": 3,
         "retry_count": 0,
+        "last_restart_ts": 0,
     },
     {
         "name":  "kanban_sync.py",
@@ -146,6 +151,7 @@ def restart_process(proc):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    proc["last_restart_ts"] = time.time()
     log(f"🔄 已重启: {proc['name']}")
 
 def notify_manager(proc_name):
@@ -166,6 +172,12 @@ def is_healthy(proc):
             return False
     elif not is_running(proc["match"]):
         return False
+    # 刚重启完的冷却期:只查 PID 存活,跳过 health_file 新鲜度检查。
+    grace_secs = proc.get("restart_grace_secs", 0)
+    if grace_secs > 0:
+        since_restart = time.time() - proc.get("last_restart_ts", 0)
+        if since_restart < grace_secs:
+            return True
     health_file = proc.get("health_file")
     if health_file and os.path.exists(health_file):
         age = time.time() - os.path.getmtime(health_file)
