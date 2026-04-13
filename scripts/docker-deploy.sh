@@ -74,6 +74,20 @@ fi
 green "✓ 所有前置条件满足"
 echo ""
 
+# Compose project name = claudeteam-<session>。故意不用 directory basename,
+# 因为用户可能把两个团队都放在叫 ClaudeTeam 的目录里 (git clone 默认就这个名),
+# directory basename 会撞。绑到 team.json 的 session 之后,同机多团队天然隔离:
+# 容器叫 claudeteam-teamA-team-1 / claudeteam-teamB-team-1,看一眼就知道谁是谁。
+# 下面所有 `docker compose` 子命令都会继承这个环境变量。
+SESSION=$(python3 -c 'import json; print(json.load(open("team.json"))["session"])')
+if [ -z "$SESSION" ]; then
+  red "❌ team.json 缺少 session 字段"
+  exit 1
+fi
+export COMPOSE_PROJECT_NAME="claudeteam-${SESSION}"
+echo "📛 COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}"
+echo ""
+
 # runtime_config.json — 缺失就在宿主机跑 setup.py
 if [ ! -f scripts/runtime_config.json ]; then
   yellow "⚠️  scripts/runtime_config.json 不存在,准备在宿主机运行 setup.py..."
@@ -98,22 +112,27 @@ echo "🚀 启动容器..."
 docker compose up -d
 echo ""
 
-# 等 healthcheck 变绿
-CONTAINER=claudeteam
+# 等 healthcheck 变绿。用 `docker compose ps -q team` 解析容器 ID 而不是硬编码
+# 名字 —— compose 的 service 名 (team) 是这里唯一稳定的标识符,container_name
+# 已故意省略以避免多团队部署时的名字冲突。
 echo "⏳ 等待容器 healthy (最多 120s)..."
+CONTAINER_ID=""
 for i in $(seq 1 24); do
-  STATUS=$(docker inspect "$CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null || echo "unknown")
-  if [ "$STATUS" = "healthy" ]; then
-    green "✓ 容器 healthy"
-    break
+  CONTAINER_ID=$(docker compose ps -q team 2>/dev/null | head -1)
+  if [ -n "$CONTAINER_ID" ]; then
+    STATUS=$(docker inspect "$CONTAINER_ID" --format '{{.State.Health.Status}}' 2>/dev/null || echo "unknown")
+    if [ "$STATUS" = "healthy" ]; then
+      green "✓ 容器 healthy (id=${CONTAINER_ID:0:12})"
+      break
+    fi
   fi
   sleep 5
 done
 
-# 打印 tmux 状态快照
+# 打印 tmux 状态快照 (用 service 名, 不依赖容器名)
 echo ""
 echo "📊 tmux 窗口状态:"
-docker exec "$CONTAINER" tmux list-windows -t "$(python3 -c 'import json; print(json.load(open("team.json"))["session"])')" 2>&1 | sed 's/^/   /'
+docker compose exec -T team tmux list-windows -t "$SESSION" 2>&1 | sed 's/^/   /'
 
 # 打印飞书群邀请链接
 LINK=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json')).get('share_link',''))" 2>/dev/null)
@@ -124,7 +143,11 @@ if [ -n "$LINK" ]; then
 fi
 
 echo ""
-green "✅ 部署完成。常用命令:"
-echo "   docker compose logs -f        # 查看日志"
-echo "   docker exec -it $CONTAINER tmux attach -t \$(python3 -c 'import json; print(json.load(open(\"team.json\"))[\"session\"])')"
-echo "   docker compose down           # 停止"
+green "✅ 部署完成。常用命令 (COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}):"
+echo "   docker compose logs -f                       # 查看日志"
+echo "   docker compose exec team tmux attach -t $SESSION   # 进 tmux (Ctrl+B d 退出)"
+echo "   docker compose down                          # 停止"
+echo ""
+echo "   ⚠️ 以上命令必须在本项目目录下执行, 或者先"
+echo "      export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}"
+echo "      否则 compose 会找不到本部署的容器。"
