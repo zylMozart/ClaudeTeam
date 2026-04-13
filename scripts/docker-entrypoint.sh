@@ -101,13 +101,20 @@ except Exception:
 " 2>/dev/null)
   fi
   if [ -n "$EXISTING_APP_ID" ] && [ "$EXISTING_APP_ID" != "$FEISHU_APP_ID" ]; then
-    echo "❌ 检测到 /home/claudeteam/.lark-cli/config.json 已经指向另一个 App:"
+    echo "❌ 检测到 /home/claudeteam/.lark-cli/config.json 已指向另一个 App:"
     echo "     现有 appId: $EXISTING_APP_ID"
     echo "     .env 里的:  $FEISHU_APP_ID"
-    echo "   这通常意味着 docker-compose.yml 正在 bind mount 宿主机 ~/.lark-cli。"
-    echo "   覆盖会修改你宿主机的 lark-cli 配置。请二选一:"
-    echo "     (a) 在 docker-compose.yml 注释掉 ~/.lark-cli bind mount (推荐)"
-    echo "     (b) 在 .env 里清空 FEISHU_APP_ID / FEISHU_APP_SECRET,走 bind mount 复用宿主机凭证"
+    echo ""
+    echo "   可能的原因:"
+    echo "     1) docker-compose.yml 里的 ~/.lark-cli bind mount 被取消注释,"
+    echo "        容器正在看到宿主机的 lark-cli 配置。"
+    echo "     2) 之前的容器实例通过 named volume / docker exec 写入了 config.json"
+    echo "        并残留在当前 volume 里。"
+    echo ""
+    echo "   请二选一:"
+    echo "     (a) 若为情况 1: 重新注释掉 docker-compose.yml 里的 ~/.lark-cli mount"
+    echo "     (b) 若为情况 2 且确定可覆盖: docker compose down -v && docker compose up"
+    echo "     (c) 或者清空 .env 里的 FEISHU_APP_ID/SECRET, 走 bind mount 路径"
     exit 1
   fi
 
@@ -203,9 +210,13 @@ if [ "$MODE" = "init" ]; then
   echo ""
   echo "🏗  init 模式: 创建飞书 Bitable / 群聊 / 工作空间表..."
 
-  # 把 inline 模式写的 profile 名字透给 setup.py,避免它自己去猜默认 profile
-  PROFILE_NAME=$(python3 -c "import json; print(json.load(open('team.json')).get('session','default'))")
-  export LARK_CLI_PROFILE="$PROFILE_NAME"
+  # 把 inline 模式写的 profile 名字透给 setup.py,避免它自己去猜默认 profile。
+  # bind-mount 模式(没填 FEISHU_APP_ID)下宿主机 profile 名不等于 session,
+  # 不要覆盖,让 setup.py 通过 `lark-cli config show` 自行探测。
+  if [ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ]; then
+    PROFILE_NAME=$(python3 -c "import json; print(json.load(open('team.json')).get('session','default'))")
+    export LARK_CLI_PROFILE="$PROFILE_NAME"
+  fi
 
   python3 scripts/setup.py
   RC=$?
@@ -284,11 +295,33 @@ fi
 tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
 tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
+# ── Claude UI 启动探测 (Bug 11 防御) ─────────────────────────
+# 共享库见 scripts/lib/tmux_team_bringup.sh,宿主机 start-team.sh 也用同一份。
+#
+# 关键差异: 容器版 probe 失败时 *不* exit 1。
+# restart: unless-stopped 会把失败的容器无限快速重启,每次都把 tmux session
+# 干掉,诊断输出被新实例刷掉,人根本来不及 docker exec 进来看。
+# 正确做法: 设 HALT_INIT=1 跳过 init 消息循环,保留 tmux session,
+# 让下面的 "while tmux has-session" 主循环把容器存活着,方便
+# `docker exec -it <container> tmux attach -t $SESSION` 查原始错误输出。
+source "$ROOT/scripts/lib/tmux_team_bringup.sh"
+
+if ! probe_claude_agents 15; then
+  diagnose_failed_agents
+  echo ""
+  echo "⚠️  Claude UI 启动失败。保留 tmux session 便于诊断:"
+  echo "     docker exec -it <container> tmux attach -t $SESSION"
+  echo ""
+  echo "   修复启动问题后,重启容器: docker compose restart team"
+  HALT_INIT=1
+fi
+
 sleep 2
 
-# 发送初始化消息
-for agent in "${AGENTS[@]}"; do
-  INIT_MSG="你是团队的 ${agent}。
+# 发送初始化消息(仅在 probe 通过时)
+if [ "${HALT_INIT:-0}" != "1" ]; then
+  for agent in "${AGENTS[@]}"; do
+    INIT_MSG="你是团队的 ${agent}。
 
 【必读】请读取：agents/${agent}/identity.md — 了解你的角色和通讯规范
 【然后立即执行】
@@ -297,14 +330,19 @@ for agent in "${AGENTS[@]}"; do
 
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
-  tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
-  sleep 1
-done
+    tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
+    sleep 1
+  done
 
-echo ""
-echo "✅ 团队已在容器内启动！"
-echo "   进入 tmux: docker exec -it <container> tmux attach -t $SESSION"
-echo ""
+  echo ""
+  echo "✅ 团队已在容器内启动！"
+  echo "   进入 tmux: docker exec -it <container> tmux attach -t $SESSION"
+  echo ""
+else
+  echo ""
+  echo "⚠️  已跳过 init 消息循环(HALT_INIT=1),容器将保持运行以便诊断。"
+  echo ""
+fi
 
 # ── 保持容器前台运行 ──────────────────────────────────────────
 # 监听 tmux session，session 结束则容器退出

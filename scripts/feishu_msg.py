@@ -62,6 +62,35 @@ def _lark_run(args, timeout=30):
         return None
 
 
+def _check_lark_result(result, action, *, fatal=True):
+    """统一校验 _lark_* 调用返回值（ADR: lark_result_check）。
+
+    参数
+    ----
+    result : _lark_run / _lark_im_send / _lark_base_* 的返回值
+             约定 None = lark-cli 侧失败，其他 (含 {}) = 成功
+    action : 人类可读的动作描述，形如 "<动作> <from>→<to>"
+             例如 "状态写入 manager→进行中"、"群通知 coder→*"
+    fatal  : True  → 失败时打印 ❌ 错误 + sys.exit(1)
+             False → 失败时打印 ⚠️ 警告，返回 False
+
+    返回
+    ----
+    True  : 成功（result is not None）
+    False : 失败且 fatal=False
+
+    调用方如需 "已写入 A 但 B 失败" 的 exit 2 等混合语义，应 fatal=False
+    拿到返回值后自行 sys.exit(2)。helper 不负责自定义退出码。
+    """
+    if result is not None:
+        return True
+    prefix = "❌" if fatal else "⚠️"
+    print(f"{prefix} lark-cli 调用失败: {action}", file=sys.stderr)
+    if fatal:
+        sys.exit(1)
+    return False
+
+
 def _lark_im_send(chat_id, content=None, markdown=None, image=None, card=None):
     """通过 lark-cli 向群组发送消息。"""
     args = ["im", "+messages-send", "--chat-id", chat_id, "--as", "bot"]
@@ -140,21 +169,34 @@ def build_card(from_agent, to_agent, content, priority="中"):
 # ── 群组发消息 ─────────────────────────────────────────────────
 
 def post_to_group(from_agent, to_agent, content, priority="中"):
-    """向飞书群组发一条消息卡片"""
+    """向飞书群组发一条消息卡片。返回 True 表示发送成功。
+
+    失败非致命 —— 调用方（cmd_send / cmd_direct）根据返回值决定是否升级
+    为 exit 2（"收件箱已写但群通知失败"）。
+    """
     chat_id = CHAT()
     if not chat_id:
-        return
+        print("  ⚠️ chat_id 未配置，跳过群通知", file=sys.stderr)
+        return False
     card = build_card(from_agent, to_agent, content, priority)
-    _lark_im_send(chat_id, card=card)
+    d = _lark_im_send(chat_id, card=card)
+    return _check_lark_result(d, f"群通知 {from_agent}→{to_agent or '*'}", fatal=False)
 
 # ── 工作空间日志 ───────────────────────────────────────────────
 
 def ws_log(agent, log_type, content, ref=""):
+    """写工作空间审计日志（非致命：失败仅 stderr 警告，主命令继续）。
+
+    限流期间如果强行退出会让所有命令连锁挂掉；丢几条审计记录的代价
+    可接受，丢可观测性不行。
+    """
     tid = WS(agent)
-    if not tid: return
-    _lark_base_create(BT(), tid,
-                      {"类型": log_type, "内容": content,
-                       "时间": now_ms(), "关联对象": ref})
+    if not tid:
+        return
+    d = _lark_base_create(BT(), tid,
+                          {"类型": log_type, "内容": content,
+                           "时间": now_ms(), "关联对象": ref})
+    _check_lark_result(d, f"ws_log {agent}/{log_type}", fatal=False)
 
 # ── 命令：say（直接发群消息，用于回复用户）──────────────────────
 
@@ -168,8 +210,7 @@ def cmd_say(from_agent, message="", image_path=""):
     if message:
         card = build_card(from_agent, None, message)
         d = _lark_im_send(chat_id, card=card)
-        if d is None:
-            print("❌ 发送失败"); sys.exit(1)
+        _check_lark_result(d, f"群聊发言 {from_agent}→*")
         ws_log(from_agent, "消息发出", f"→ 群聊：{message[:10000]}")
         print(f"✅ 已发送到群聊")
 
@@ -177,8 +218,7 @@ def cmd_say(from_agent, message="", image_path=""):
         if not os.path.exists(image_path):
             print(f"❌ 图片文件不存在: {image_path}"); sys.exit(1)
         d = _lark_im_send(chat_id, image=image_path)
-        if d is None:
-            print("❌ 图片消息发送失败"); sys.exit(1)
+        _check_lark_result(d, f"群聊图片 {from_agent}→* ({os.path.basename(image_path)})")
         ws_log(from_agent, "消息发出",
                f"→ 群聊图片：{os.path.basename(image_path)}")
         print(f"✅ 图片已发送到群聊: {os.path.basename(image_path)}")
@@ -219,12 +259,23 @@ def _notify_agent_tmux(to_agent, from_agent, message):
 def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
     actual_message = f"[{task_id}] {message}" if task_id else message
     rid = bitable_insert_message(to_agent, from_agent, actual_message, priority)
-    if not rid:
-        print(f"❌ 发送失败"); sys.exit(1)
+    # 主写入失败 → fatal exit 1。`rid or None` 把空串也归一到 None。
+    _check_lark_result(rid or None, f"收件箱写入 {from_agent}→{to_agent}")
     ref_str = f"{rid} | task:{task_id}" if task_id else rid
-    post_to_group(from_agent, to_agent, actual_message, priority)
+
+    group_ok = post_to_group(from_agent, to_agent, actual_message, priority)
+    # 主写入已完成（Bitable 有记录），所以无论群通知是否成功都要写 ws_log，
+    # 保证审计链路完整。
     ws_log(from_agent, "消息发出", f"→ {to_agent}：{actual_message[:10000]}", ref_str)
     ws_log(to_agent, "消息收到", f"← {from_agent}：{actual_message[:10000]}", ref_str)
+
+    if not group_ok:
+        # 收件箱已写 + 群通知失败 → exit 2 让上游（watchdog / 调用脚本）
+        # 感知"部分成功"，不重试（重试会复制消息到 Bitable）。
+        print(f"⚠️ 收件箱已写但群通知失败 [rid: {rid}]")
+        _notify_agent_tmux(to_agent, from_agent, actual_message)
+        sys.exit(2)
+
     print(f"✅ 消息已发送 → {to_agent}  [rid: {rid}]")
     _notify_agent_tmux(to_agent, from_agent, actual_message)
 
@@ -233,17 +284,23 @@ def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
 def cmd_direct(to_agent, from_agent, message):
     """直连发消息：写入收件箱，自动抄送 manager。"""
     rid = bitable_insert_message(to_agent, from_agent, message, "中")
-    if not rid:
-        print(f"❌ 发送失败"); sys.exit(1)
+    _check_lark_result(rid or None, f"直连写入 {from_agent}→{to_agent}")
 
     cc_rid = None
     if to_agent != "manager" and from_agent != "manager":
         cc_content = f"[抄送] {from_agent}→{to_agent}: {message}"
         cc_rid = bitable_insert_message("manager", from_agent, cc_content, "低")
+        # 抄送失败不致命：主消息已写入，manager 仍可从 to_agent inbox 追查
+        if not cc_rid:
+            print(f"⚠️ lark-cli 调用失败: 抄送 {from_agent}→manager", file=sys.stderr)
 
-    # 群通知（带 [直连] 标记）
+    # 群通知（带 [直连] 标记）非致命，失败走 exit 2
+    group_ok = True
     chat_id = CHAT()
-    if chat_id:
+    if not chat_id:
+        print("  ⚠️ chat_id 未配置，跳过群通知", file=sys.stderr)
+        group_ok = False
+    else:
         info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})
         title = f"{info['emoji']} {from_agent} · {info['role']} → @{to_agent} [直连]"
         card = {
@@ -252,10 +309,17 @@ def cmd_direct(to_agent, from_agent, message):
                        "title": {"tag": "plain_text", "content": title}},
             "elements": [{"tag": "markdown", "content": message}]
         }
-        _lark_im_send(chat_id, card=card)
+        d = _lark_im_send(chat_id, card=card)
+        group_ok = _check_lark_result(
+            d, f"直连群通知 {from_agent}→{to_agent}", fatal=False)
 
     ws_log(from_agent, "消息发出", f"→ {to_agent}[直连]：{message[:10000]}", rid)
     ws_log(to_agent,   "消息收到", f"← {from_agent}[直连]：{message[:10000]}", rid)
+
+    if not group_ok:
+        print(f"⚠️ 直连已写但群通知失败 [rid: {rid}]")
+        _notify_agent_tmux(to_agent, from_agent, message)
+        sys.exit(2)
 
     print(f"✅ 消息已直发 → {to_agent}  [rid: {rid}]")
     if cc_rid:
@@ -265,31 +329,67 @@ def cmd_direct(to_agent, from_agent, message):
 # ── 命令：inbox ───────────────────────────────────────────────
 
 def _search_records(base_token, table_id, keyword, search_fields):
-    """用 +record-search 搜索记录，返回 [{record_id, fields}, ...]。"""
-    d = _lark_base_search(base_token, table_id, {
-        "keyword": keyword,
-        "search_fields": search_fields
-    })
-    if not d:
-        return []
-    # +record-search 返回 {data: [[row...]], fields: [...], record_id_list: [...]}
-    rows = d.get("data", [])
-    field_names = d.get("fields", [])
-    rid_list = d.get("record_id_list", [])
+    """用 +record-search 翻页搜索全部匹配记录。
+
+    返回
+    ----
+    list[{record_id, fields}] — 查询成功，可能为空列表（真的没匹配）
+    None                      — 查询失败（lark-cli 侧报错，上游应走 fatal 分支）
+
+    **重要**：调用方在使用返回值之前必须先走 _check_lark_result(result, action)。
+    直接对 None 做迭代会抛 TypeError。
+
+    翻页机制（Base v3 record-search 真实契约，reviewer 2026-04-13 已跑 --help +
+    dry-run 验证）：
+      - 请求体用 offset + limit，limit 上限 200
+      - 响应**不返回** page_token / has_more
+      - 退出条件 len(rows) < PAGE
+    MAX_PAGES=50 硬兜底 10000 条，正常 agent 收件箱不可能到这量级；
+    真触底说明系统另有问题，调用方看到部分结果再排查。
+    """
     results = []
-    for i, row in enumerate(rows):
-        fields = {}
-        for j, val in enumerate(row):
-            if j < len(field_names):
-                fields[field_names[j]] = val
-        rid = rid_list[i] if i < len(rid_list) else ""
-        results.append({"record_id": rid, "fields": fields})
+    offset = 0
+    PAGE = 200
+    MAX_PAGES = 50
+    for page in range(MAX_PAGES):
+        d = _lark_base_search(base_token, table_id, {
+            "keyword": keyword,
+            "search_fields": search_fields,
+            "offset": offset,
+            "limit": PAGE,
+        })
+        if d is None:
+            # 任意一页失败都返回 None —— 和 ADR 契约对齐，调用方会走 fatal。
+            # 首页失败 vs 中途失败都视为"查询失败"，不留半成品给上游。
+            if page == 0:
+                print(f"  ⚠️ _search_records 首页失败: table={table_id} "
+                      f"keyword={keyword!r}", file=sys.stderr)
+            else:
+                print(f"  ⚠️ _search_records 第 {page+1} 页失败 (已抓 "
+                      f"{len(results)} 条，整体视为失败)", file=sys.stderr)
+            return None
+        # +record-search 返回 {data: [[row...]], fields: [...], record_id_list: [...]}
+        rows = d.get("data", [])
+        field_names = d.get("fields", [])
+        rid_list = d.get("record_id_list", [])
+        for i, row in enumerate(rows):
+            fields = {}
+            for j, val in enumerate(row):
+                if j < len(field_names):
+                    fields[field_names[j]] = val
+            rid = rid_list[i] if i < len(rid_list) else ""
+            results.append({"record_id": rid, "fields": fields})
+        if len(rows) < PAGE:
+            break
+        offset += len(rows)
     return results
 
 
 def cmd_inbox(agent_name):
     records = _search_records(BT(), MT(), agent_name, ["收件人"])
-    # 本地过滤未读消息
+    # ADR lark_read_error_propagation: records 可能为 None(失败) 或 list(成功)
+    _check_lark_result(records, f"inbox 查询 {agent_name}")
+    # 到这里 records 一定是 list（可能空），可以安全迭代
     unread = [r for r in records if not r["fields"].get("已读")]
     if not unread:
         print(f"📭 {agent_name} 暂无未读消息")
@@ -312,8 +412,7 @@ def cmd_inbox(agent_name):
 
 def cmd_read(record_id):
     d = _lark_base_update(BT(), MT(), [record_id], {"已读": True})
-    if d is None:
-        print(f"❌ 标记失败"); sys.exit(1)
+    _check_lark_result(d, f"已读标记 {record_id}")
     print(f"✅ 已标记已读: {record_id}")
 
 # ── 命令：status ──────────────────────────────────────────────
@@ -321,12 +420,18 @@ def cmd_read(record_id):
 def cmd_status(agent_name, status, task, blocker=""):
     # 先搜索是否已有记录
     records = _search_records(BT(), ST(), agent_name, ["Agent名称"])
+    # ADR lark_read_error_propagation: 失败时 fatal exit，避免误走 create 分支
+    # 创建重复记录（原 bug：查询失败 → records=[] → 重复 create）。
+    _check_lark_result(records, f"状态查询 {agent_name}")
     fields = {"Agent名称": agent_name, "状态": status, "当前任务": task,
               "阻塞原因": blocker, "更新时间": now_ms()}
     if records:
-        _lark_base_update(BT(), ST(), [records[0]["record_id"]], fields)
+        d = _lark_base_update(BT(), ST(), [records[0]["record_id"]], fields)
+        _check_lark_result(d, f"状态写入 {agent_name}→{status}")
     else:
-        _lark_base_create(BT(), ST(), fields)
+        d = _lark_base_create(BT(), ST(), fields)
+        _check_lark_result(d, f"状态新建 {agent_name}→{status}")
+    # 到这里要么主写入成功，要么已 sys.exit(1)
     content = f"状态：{status} | {task}"
     if blocker: content += f" | ⛔ {blocker}"
     ws_log(agent_name, "阻塞上报" if status == "阻塞" else "状态更新", content)
@@ -341,8 +446,7 @@ def cmd_log(agent_name, log_type, content, ref=""):
     d = _lark_base_create(BT(), tid,
                           {"类型": log_type, "内容": content,
                            "时间": now_ms(), "关联对象": ref})
-    if d is None:
-        print(f"❌ 写入失败"); sys.exit(1)
+    _check_lark_result(d, f"工作空间日志 {agent_name}/{log_type}")
     print(f"✅ [{log_type}] 已写入 {agent_name} 工作空间")
 
 # ── 命令：workspace ────────────────────────────────────────────
@@ -352,7 +456,10 @@ def cmd_workspace(agent_name):
     if not tid:
         print(f"❌ 找不到 {agent_name} 的工作空间"); sys.exit(1)
     d = _lark_base_list(BT(), tid, limit=20)
-    items = (d or {}).get("items", [])
+    # ADR lark_read_error_propagation: 原版 (d or {}).get("items", []) 会把
+    # 失败折叠成"最近 0 条"，让人以为工作空间是空的。改为 fatal 校验。
+    _check_lark_result(d, f"工作空间查询 {agent_name}")
+    items = d.get("items", [])
     print(f"📁 {agent_name} 工作空间 (最近 {len(items)} 条):\n")
     for rec in items:
         f = rec.get("fields", {})

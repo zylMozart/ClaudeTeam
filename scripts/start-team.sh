@@ -45,6 +45,19 @@ if [ "$ORPHAN_COUNT" -gt 0 ]; then
   sleep 1
 fi
 
+# ── npx warm-up (P1-12) ────────────────────────────────────────
+# 首次运行 npx @larksuite/cli 会从 npm registry 拉取 ~80MB 的包, 期间 stdout
+# 基本静默, 慢网下用户会误以为脚本卡死。如果不在这里 warm-up, 下载会发生在
+# 后面 router 窗口的 `npx event +subscribe` 里 —— 那在 tmux pane 内, 终端用户
+# 完全看不到, 更糟糕: probe 的 15 秒轮询会在 router 还没下载完时误判失败。
+# 所以先在宿主 shell 里同步跑一次 `--version`, 让用户对这段等待有预期。
+echo "📦 预热 lark-cli (npx 首次使用会下载约 80MB, 慢网可能需 1-2 分钟)..."
+if npx --yes @larksuite/cli --version >/dev/null 2>&1; then
+  echo "   ✓ lark-cli ready"
+else
+  echo "   ⚠️ warm-up 失败, router 启动阶段可能仍会尝试下载 (请 tmux attach -t router 观察)"
+fi
+
 echo "🚀 启动 Agent 团队..."
 echo "   tmux session: ${SESSION}"
 echo "   Agents: ${AGENTS[*]}"
@@ -86,51 +99,12 @@ tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 # 如果窗口里只剩 bash,后续 init 消息会被当成 shell 命令跑,看起来"启动了"
 # 实际全员死亡。所以先 probe 每个窗口,没进 Claude UI 的直接 abort。
 #
-# Claude 冷启动在繁忙机器上可能需要 10+ 秒,固定 sleep+one-shot probe 会把
-# 正常但慢的启动误判为失败。改成轮询: 每秒检查一次,最多 15 次,任一次全绿
-# 就 break,大多数情况下不到 5 秒就跳出。
-MAX_PROBE_ATTEMPTS=15
-FAILED_AGENTS=()
-for attempt in $(seq 1 "$MAX_PROBE_ATTEMPTS"); do
-  FAILED_AGENTS=()
-  for agent in "${AGENTS[@]}"; do
-    PANE=$(tmux capture-pane -t "$SESSION:$agent" -p -S -60 2>/dev/null)
-    if echo "$PANE" | grep -q "bypass permissions on\|? for shortcuts"; then
-      :
-    else
-      FAILED_AGENTS+=("$agent")
-    fi
-  done
-  if [ ${#FAILED_AGENTS[@]} -eq 0 ]; then
-    break
-  fi
-  # 最后一次不 sleep,直接进入诊断分支
-  if [ "$attempt" -lt "$MAX_PROBE_ATTEMPTS" ]; then
-    sleep 1
-  fi
-done
+# 探测/诊断逻辑抽在 scripts/lib/tmux_team_bringup.sh,和 docker-entrypoint.sh 共享。
+# 宿主机入口失败时直接 exit 1(退出决策留给调用方,不在库里调 exit)。
+source "$ROOT/scripts/lib/tmux_team_bringup.sh"
 
-if [ ${#FAILED_AGENTS[@]} -gt 0 ]; then
-  echo ""
-  echo "❌ 以下 agent 的 Claude UI 未能启动: ${FAILED_AGENTS[*]}"
-  # 从第一个失败的 agent 抓诊断信息
-  DIAG_AGENT="${FAILED_AGENTS[0]}"
-  DIAG_PANE=$(tmux capture-pane -t "$SESSION:$DIAG_AGENT" -p -S -30 2>/dev/null)
-  echo "   窗口最后几行内容 ($DIAG_AGENT):"
-  echo "$DIAG_PANE" | tail -6 | sed 's/^/     | /'
-  if echo "$DIAG_PANE" | grep -q "root/sudo privileges"; then
-    echo ""
-    echo "   ↳ 根因: Claude Code 拒绝以 root 启动 --dangerously-skip-permissions。"
-    echo "     本脚本已在命令前加了 IS_SANDBOX=1,如果仍失败检查:"
-    echo "     1) shell 是否有 alias/function 拦截了环境变量传递"
-    echo "     2) Claude Code 版本是否太老,不识别 IS_SANDBOX"
-  elif echo "$DIAG_PANE" | grep -q "command not found\|No such file"; then
-    echo ""
-    echo "   ↳ 根因: PATH 里没找到 claude。在当前 shell 跑 'which claude' 确认。"
-  else
-    echo ""
-    echo "   ↳ 未识别的启动失败。tmux attach -t $SESSION:$DIAG_AGENT 手动查看。"
-  fi
+if ! probe_claude_agents 15; then
+  diagnose_failed_agents
   echo ""
   echo "⚠️  中止:不向死掉的 agent 窗口发送 init 消息,以免污染 bash 历史。"
   echo "   修好启动问题后,tmux kill-session -t $SESSION && bash scripts/start-team.sh"
