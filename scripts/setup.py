@@ -172,14 +172,68 @@ def _extract_table_id(d):
     return d.get("table_id", "")
 
 
+def _find_table_id_by_name(base_token, table_name):
+    """用 +table-list 查找指定名字的表,返回 table_id 或空串。"""
+    d = _lark(["base", "+table-list", "--base-token", base_token, "--as", "bot"],
+              label=f"查找表 {table_name}")
+    if not d:
+        return ""
+    items = d.get("items") or d.get("tables") or []
+    for t in items:
+        if t.get("name") == table_name:
+            return t.get("table_id") or t.get("id") or ""
+    return ""
+
+
+def _list_existing_field_names(base_token, table_id):
+    """用 +field-list 返回表中已存在的字段名集合。"""
+    d = _lark(["base", "+field-list", "--base-token", base_token,
+               "--table-id", table_id, "--as", "bot"],
+              label="查列字段")
+    if not d:
+        return set()
+    items = d.get("items") or d.get("fields") or []
+    return {f.get("field_name") or f.get("name") for f in items if f.get("field_name") or f.get("name")}
+
+
+def _add_field_with_backoff(base_token, table_id, field, attempts=4):
+    """逐字段加字段,遇到 OpenAPIAddField limited (800004135) 指数退避重试。
+
+    退避序列: 0s, 8s, 20s, 45s (总计最多等 73s)。再不行就 sys.exit。
+    """
+    backoffs = [0, 8, 20, 45][:attempts]
+    for i, wait in enumerate(backoffs):
+        if wait > 0:
+            print(f"   ⏳ AddField 限流, 等 {wait}s 后重试字段 {field['name']} ({i+1}/{attempts})")
+            time.sleep(wait)
+        r = subprocess.run(
+            LARK_CLI + ["base", "+field-create", "--base-token", base_token,
+                        "--table-id", table_id,
+                        "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            return True
+        err = (r.stderr or "") + (r.stdout or "")
+        if "800004135" in err or "OpenAPIAddField limited" in err:
+            continue  # 限流重试
+        print(f"   ⚠️ 字段 {field['name']} 创建失败: {err.strip()[:200]}")
+        return False
+    print(f"   ⚠️ 字段 {field['name']} 反复限流,放弃")
+    return False
+
+
 def _create_table_with_fields(base_token, table_name, fields, label=""):
     """用 `+table-create --fields` 一次性创建表和字段，返回 table_id。
 
     P1-6 修复: 原版先建空表再逐字段 sleep(1) 添加,一张 6 字段的表要 6 秒,
     初始化 3 核心表 + N 个 workspace 会堆积到 >30 秒。kanban_sync.py:135 已经
     在用 `--fields` 一次建完的写法,这里迁移过来对齐,消除 sleep 环节。
-    失败走兜底: 如果 --fields 批量创建失败,回退到老的"逐字段 +field-create"
-    路径,保持向后兼容。
+
+    P0 自愈 (本地 patch): 一次性 create-with-fields 在新 Bitable 冷启动时
+    容易触发 800004135 "OpenAPIAddField limited",此时表已建出来但字段只加了
+    一半。原 fallback 会再试一次 +table-create,直接撞上 800010102 名字冲突。
+    新路径: 失败后 +table-list 定位已存在的半成品表,+field-list 算出缺的字段,
+    对每个缺字段用 _add_field_with_backoff 单独退避重试。
     """
     fields_json = json.dumps(fields, ensure_ascii=False)
     d = _lark(["base", "+table-create", "--base-token", base_token,
@@ -187,27 +241,38 @@ def _create_table_with_fields(base_token, table_name, fields, label=""):
               label=label or f"创建表 {table_name}")
     tid = _extract_table_id(d)
     if tid:
+        # 一次性成功不代表所有字段都加上了 (Feishu 有时静默只加部分)。
+        # 仍然跑一次字段补齐,幂等的。
+        existing = _list_existing_field_names(base_token, tid)
+        missing = [f for f in fields if f["name"] not in existing]
+        if missing:
+            print(f"   🩹 一次性建表返回 ok 但缺 {len(missing)}/{len(fields)} 个字段, 补齐中")
+            for f in missing:
+                if not _add_field_with_backoff(base_token, tid, f):
+                    print(f"❌ 表 {table_name} ({tid}) 补字段失败,请手动删表重跑",
+                          file=sys.stderr)
+                    sys.exit(1)
         return tid
 
-    # ── 兜底: 一次性建表失败,回退到先建空表再逐字段添加 ──
-    print(f"   ↩️  一次性建表失败,回退到逐字段 +field-create 模式")
-    d = _lark(["base", "+table-create", "--base-token", base_token,
-               "--name", table_name, "--as", "bot"],
-              label=(label or f"创建表 {table_name}") + " (fallback)")
-    tid = _extract_table_id(d)
+    # ── 自愈路径: 一次性建表失败 (通常是 AddField 限流) ──
+    print(f"   🩹 一次性建表失败, 尝试自愈: 查找半成品表 + 补字段")
+    tid = _find_table_id_by_name(base_token, table_name)
     if not tid:
-        return ""
-    # ADR silent_swallow_remaining P1 ⑤: 逐字段检查返回值,任一失败立即
-    # sys.exit(1)。原版丢弃返回值 → 工作空间表只有一半字段 → 后续 ws_log
-    # 写不进去但看起来创建成功,用户下次 log 才发现。
-    for field in fields:
-        time.sleep(1)
-        fd = _lark(["base", "+field-create", "--base-token", base_token,
-                    "--table-id", tid,
-                    "--json", json.dumps(field, ensure_ascii=False), "--as", "bot"],
-                   label=f"添加字段 {field['name']}")
-        if fd is None:
-            print(f"❌ 字段 {field['name']} 创建失败,表 {table_name} "
+        # 表根本没建出来 (纯网络 / 权限错误), 回退到老的空表+逐字段
+        print(f"   ↩️  未发现半成品表, 回退到空表+逐字段模式")
+        d = _lark(["base", "+table-create", "--base-token", base_token,
+                   "--name", table_name, "--as", "bot"],
+                  label=(label or f"创建表 {table_name}") + " (fallback)")
+        tid = _extract_table_id(d)
+        if not tid:
+            return ""
+
+    existing = _list_existing_field_names(base_token, tid)
+    missing = [f for f in fields if f["name"] not in existing]
+    print(f"   🩹 表 {tid}: 现存字段 {len(existing)}, 缺 {len(missing)}/{len(fields)}")
+    for f in missing:
+        if not _add_field_with_backoff(base_token, tid, f):
+            print(f"❌ 字段 {f['name']} 创建失败,表 {table_name} "
                   f"({tid}) 处于残缺状态,请手动删除后重跑 setup.py",
                   file=sys.stderr)
             sys.exit(1)
@@ -615,7 +680,7 @@ def main():
     lark_profile = _check_profile_conflict(lark_profile, default_name)
 
     base_token = create_bitable()
-    time.sleep(2)  # 等待 Bitable 初始化完成，避免后续建表报 OpenAPIAddField limited
+    time.sleep(10)  # 等待 Bitable 初始化完成，避免后续建表报 OpenAPIAddField limited (原版 sleep(2) 被观察到不够)
     msg_table = create_inbox_table(base_token)
     sta_table = create_status_table(base_token)
     kanban_table = create_kanban_table(base_token)
