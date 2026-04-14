@@ -14,17 +14,93 @@
 #   3. UI 特征串 'bypass permissions on' / '? for shortcuts' 和 15 秒上限
 #      是现有 baseline,两个入口都经过验证,这里保持一致。
 
-# probe_claude_agents [max_attempts]
-# 轮询检查 $AGENTS 中所有 agent 窗口里的 Claude UI 是否已就绪。
+# ── lazy-mode 白名单决策 (lazy_wake_v2 §A.2) ───────────────────
+# 由 start-team.sh / docker-entrypoint.sh 共享,保证宿主与容器对"哪些 agent
+# 真跑 claude / 哪些做 💤 占位"的判断完全一致。新增白名单角色只改这一处。
+#
+# 调用方约定:
+#   - 在 source 本库之前已设置 LAZY_MODE 变量 (on/off)。未设视为 off。
+#   - 业务策略: lazy-mode = on 且 agent 不在 LAZY_WHITELIST_AGENTS → 应跳过
+#     spawn claude,只建窗口留 💤 banner,等 router::wake_on_deliver 唤醒。
+
+LAZY_WHITELIST_AGENTS=(manager supervisor)
+
+is_lazy_whitelist() {
+  local name="$1" w
+  for w in "${LAZY_WHITELIST_AGENTS[@]}"; do
+    [[ "$name" == "$w" ]] && return 0
+  done
+  return 1
+}
+
+# should_skip_agent_in_lazy_mode <agent>
+#   返回 0 = 应跳过 spawn (lazy-mode on 且非白名单)
+#   返回 1 = 应正常 spawn (lazy off 或在白名单)
+should_skip_agent_in_lazy_mode() {
+  local agent="$1"
+  [[ "${LAZY_MODE:-off}" = "on" ]] && ! is_lazy_whitelist "$agent"
+}
+
+# ── per-role 模型预解析 (lazy_wake_v2 §B) ─────────────────────
+# resolve_all_agent_models
+# 前置条件: 调用方已填充 bash array $AGENTS (来自 team.json)。
+# 效果:
+#   填充全局关联数组 AGENT_MODELS[agent]=model_id,基于
+#   scripts/config.py resolve-model 的 fallback 链 + 白名单校验。
+#   任一 agent 解析失败立即返回,保证"起了一半才发现非法 model"不会发生。
 # 返回:
-#   0 — 所有 agent 窗口都出现了 Claude UI 特征串
+#   0 — 全部解析成功,AGENT_MODELS 可直接用于 claude --model $...
+#   1 — 至少一个失败,失败的 agent 名写入全局 FAILED_MODEL_AGENT,
+#       错误详情已打到 stderr。调用方应据此 exit(库不自行 exit)。
+resolve_all_agent_models() {
+  local agent model
+  FAILED_MODEL_AGENT=""
+  unset AGENT_MODELS
+  declare -gA AGENT_MODELS
+  for agent in "${AGENTS[@]}"; do
+    if ! model=$(python3 scripts/config.py resolve-model "$agent" 2>&1); then
+      echo "❌ 解析 $agent 的模型失败: $model" >&2
+      echo "   请检查 team.json 中 $agent 的 model 字段,或 CLAUDETEAM_DEFAULT_MODEL 环境变量。" >&2
+      FAILED_MODEL_AGENT="$agent"
+      return 1
+    fi
+    AGENT_MODELS[$agent]=$model
+  done
+  return 0
+}
+
+# print_agent_models_table
+# 打印 '📋 模型分配' 表。调用方在 bring-up 前展示一遍,方便排错时一眼
+# 看到每个 agent 实际用的是哪个 model。
+print_agent_models_table() {
+  local agent
+  echo "📋 模型分配:"
+  for agent in "${AGENTS[@]}"; do
+    echo "     $agent → ${AGENT_MODELS[$agent]}"
+  done
+}
+
+# probe_claude_agents [max_attempts]
+# 轮询检查 agent 窗口里的 Claude UI 是否已就绪。默认遍历 $AGENTS;
+# 若调用方 export 了 PROBE_AGENTS="name1 name2 ..." 则只 probe 该子集。
+# lazy-mode 下只有白名单 agent 真正跑 claude,需要通过 PROBE_AGENTS 缩圈,
+# 否则占位窗口 (💤 待 wake) 会被误判为启动失败。
+# 返回:
+#   0 — 所有被 probe 的 agent 窗口都出现了 Claude UI 特征串
 #   1 — 至少一个 agent 失败,名单写入全局 FAILED_AGENTS 数组
 probe_claude_agents() {
   local max_attempts="${1:-15}"
   local attempt agent pane
+  local -a agents_to_probe
+  if [ -n "${PROBE_AGENTS:-}" ]; then
+    # shellcheck disable=SC2206
+    agents_to_probe=( ${PROBE_AGENTS} )
+  else
+    agents_to_probe=( "${AGENTS[@]}" )
+  fi
   for attempt in $(seq 1 "$max_attempts"); do
     FAILED_AGENTS=()
-    for agent in "${AGENTS[@]}"; do
+    for agent in "${agents_to_probe[@]}"; do
       pane=$(tmux capture-pane -t "$SESSION:$agent" -p -S -60 2>/dev/null)
       if echo "$pane" | grep -q "bypass permissions on\|? for shortcuts"; then
         :

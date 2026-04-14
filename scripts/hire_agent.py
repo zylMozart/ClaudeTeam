@@ -19,7 +19,9 @@
 import sys, os, json, time, re, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import PROJECT_ROOT, load_runtime_config, save_runtime_config, LARK_CLI
+from config import (PROJECT_ROOT, load_runtime_config, save_runtime_config,
+                    LARK_CLI, resolve_model_for_agent, InvalidModelError,
+                    ALLOWED_MODELS)
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
@@ -94,11 +96,43 @@ def ensure_color(agent_name):
         json.dump(team, f, indent=2, ensure_ascii=False)
     print(f"🎨 为 {agent_name} 分配卡片颜色: {pick}")
 
+def set_agent_model(agent_name, model):
+    """把 --model 参数写到 team.json agents.<name>.model。
+
+    在 setup-feishu 里调用,这样 start-tmux 之后 resolve_model_for_agent
+    读 team.json 直接就有值。非法 model 在这里先 raise,避免先写了一半
+    团队元数据再报错回滚。白名单检查和 config.py 保持一致。
+    """
+    if model not in ALLOWED_MODELS:
+        allowed = ", ".join(sorted(ALLOWED_MODELS))
+        print(f"❌ --model {model!r} 不在白名单内; 允许: {allowed}")
+        sys.exit(1)
+    team_file = os.path.join(PROJECT_ROOT, "team.json")
+    with open(team_file) as f:
+        team = json.load(f)
+    info = team.get("agents", {}).get(agent_name)
+    if not info:
+        print(f"❌ {agent_name} 不在 team.json 中, 无法设置 model")
+        sys.exit(1)
+    old = info.get("model")
+    if old == model:
+        return
+    info["model"] = model
+    with open(team_file, "w") as f:
+        json.dump(team, f, indent=2, ensure_ascii=False)
+    print(f"🤖 {agent_name} 模型: {old or '(未设置)'} → {model}")
+
 # ── 命令：setup-feishu ───────────────────────────────────────
 
-def cmd_setup_feishu(agent_name):
+def cmd_setup_feishu(agent_name, model=None):
     """在飞书 Bitable 中创建该 Agent 的工作空间表，并更新 runtime_config.json。"""
     validate_name(agent_name)
+
+    # --model 传入时先持久化进 team.json,后面 start-tmux 会通过
+    # resolve_model_for_agent 读到它。非法值在 set_agent_model 里立刻
+    # sys.exit,不会污染后面的 ensure_color / Bitable 创建流程。
+    if model:
+        set_agent_model(agent_name, model)
 
     # 兜底:skill 忘记写 color 时自动补一个独立色
     ensure_color(agent_name)

@@ -289,18 +289,54 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   tmux kill-session -t "$SESSION"
 fi
 
+# lazy-mode 与白名单决策共享 lib (lazy_wake_v2 §A.2)。宿主 start-team.sh 走同一份。
+# 容器场景默认 on,与宿主默认对齐;可被 docker run -e CLAUDETEAM_LAZY_MODE=off 覆盖。
+LAZY_MODE="${CLAUDETEAM_LAZY_MODE:-on}"
+case "$LAZY_MODE" in
+  on|off) ;;
+  *) echo "❌ CLAUDETEAM_LAZY_MODE 取值非法: '$LAZY_MODE' (期望 on 或 off)"; exit 2 ;;
+esac
+source "$ROOT/scripts/lib/tmux_team_bringup.sh"
+
+# ── per-role 模型预解析 (lazy_wake_v2 §B) ────────────────────
+# 走和 start-team.sh 完全同一份 helper。非法 model / 解析失败时 loud-fail:
+# 容器入口这里直接 exit 1 —— init 消息阶段的 HALT_INIT 不适用于模型解析,
+# 因为非法 model 是配置错而不是 Claude UI 启动错,restart 循环救不了。
+if ! resolve_all_agent_models; then
+  echo "   中止容器启动 (失败的 agent: ${FAILED_MODEL_AGENT})"
+  exit 1
+fi
+
 echo "🚀 启动 Agent 团队..."
 echo "   tmux session: $SESSION"
 echo "   Agents: ${AGENTS[*]}"
+echo "   lazy-mode: $LAZY_MODE"
+print_agent_models_table
 
-# 创建 tmux session + agent 窗口
-tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$ROOT"
-tmux send-keys -t "$SESSION:${AGENTS[0]}" "IS_SANDBOX=1 claude --dangerously-skip-permissions --name ${AGENTS[0]}" Enter
+# spawn_one <agent> [--first]
+#  --first → 用 new-session,否则 new-window
+#  lazy-mode on 且非白名单 → pane 留 bash + 💤 banner,等 router 唤醒
+#  其它情况 → 老路径直接拉 claude,带 --model (reviewer H 阻塞修复)
+spawn_one() {
+  local agent="$1" first="${2:-}"
+  if [ "$first" = "--first" ]; then
+    tmux new-session -d -s "$SESSION" -n "$agent" -c "$ROOT"
+  else
+    tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
+  fi
+  if should_skip_agent_in_lazy_mode "$agent"; then
+    tmux send-keys -t "$SESSION:$agent" \
+      "clear && echo '💤 待 wake  (agent=$agent, model=${AGENT_MODELS[$agent]}, lazy-mode)' && echo '   router 收到业务消息后会唤醒本窗口'" Enter
+  else
+    tmux send-keys -t "$SESSION:$agent" \
+      "IS_SANDBOX=1 claude --dangerously-skip-permissions --model ${AGENT_MODELS[$agent]} --name $agent" Enter
+  fi
+}
+
+spawn_one "${AGENTS[0]}" --first
 sleep 2
-
 for agent in "${AGENTS[@]:1}"; do
-  tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
-  tmux send-keys -t "$SESSION:$agent" "IS_SANDBOX=1 claude --dangerously-skip-permissions --name $agent" Enter
+  spawn_one "$agent"
   sleep 2
 done
 
@@ -341,7 +377,7 @@ tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
 tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
 # ── Claude UI 启动探测 (Bug 11 防御) ─────────────────────────
-# 共享库见 scripts/lib/tmux_team_bringup.sh,宿主机 start-team.sh 也用同一份。
+# 共享库 scripts/lib/tmux_team_bringup.sh 已在文件上方 source。
 #
 # 关键差异: 容器版 probe 失败时 *不* exit 1。
 # restart: unless-stopped 会把失败的容器无限快速重启,每次都把 tmux session
@@ -349,7 +385,13 @@ tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 # 正确做法: 设 HALT_INIT=1 跳过 init 消息循环,保留 tmux session,
 # 让下面的 "while tmux has-session" 主循环把容器存活着,方便
 # `docker exec -it <container> tmux attach -t $SESSION` 查原始错误输出。
-source "$ROOT/scripts/lib/tmux_team_bringup.sh"
+
+# lazy-mode 下只 probe 真跑了 claude 的 agent,占位窗口跳过 (与 start-team.sh 对齐)。
+ACTIVE_AGENTS=()
+for a in "${AGENTS[@]}"; do
+  should_skip_agent_in_lazy_mode "$a" || ACTIVE_AGENTS+=("$a")
+done
+export PROBE_AGENTS="${ACTIVE_AGENTS[*]}"
 
 if ! probe_claude_agents 15; then
   diagnose_failed_agents
@@ -364,8 +406,9 @@ fi
 sleep 2
 
 # 发送初始化消息(仅在 probe 通过时)
+# lazy-mode 下占位窗口里只有 bash,发 init 会被当 shell 命令跑 (Bug 11),只发给 ACTIVE_AGENTS。
 if [ "${HALT_INIT:-0}" != "1" ]; then
-  for agent in "${AGENTS[@]}"; do
+  for agent in "${ACTIVE_AGENTS[@]}"; do
     INIT_MSG="你是团队的 ${agent}。
 
 【必读】请读取：agents/${agent}/identity.md — 了解你的角色和通讯规范
@@ -376,7 +419,10 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
     tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
-    sleep 1
+    # Bug 15 防御: feishu_msg.py status → Bitable record-batch-create 并发写
+    # 会撞限流,错峰 2.5s 与 start-team.sh 对齐。lazy-mode 下 ACTIVE_AGENTS
+    # 通常只有 manager+supervisor,2.5s 对启动总耗时的影响可忽略。
+    sleep 2.5
   done
 
   echo ""
