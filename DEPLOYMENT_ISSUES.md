@@ -261,3 +261,140 @@ Router 的 45 秒警告硬编码建议：
 5. **R6 需要复现才能修**，先在 watchdog 日志里加 stderr 捕获
 
 想先从哪个开始？或者你有其他优先级？
+
+---
+
+# 2026-04-15 补遗：lazy-wake-v2 首次实盘部署记录
+
+> 场景：`maintain` 容器，`feat/lazy-wake-v2` 分支代码已写完 58/58 测试 GREEN，第一次在生产容器上启用
+> 启用方式：修改 `docker-entrypoint.sh` 增加 `supervisor_ticker` tmux 窗口跑 `while sleep N; do bash scripts/supervisor_tick.sh; done`，然后 `docker restart maintain`
+> 结果：lazy-mode 主流程跑通（manager + supervisor 2 个 claude，其他 9 个业务 agent 💤 占位），但发现一个真 bug
+
+## 🔴 Bug B4：`feishu_msg.py _notify_agent_tmux` 缺少 wake-before-inject
+
+### 症状
+`maintain` 重启后进入 lazy-mode。manager 启动后处理 router replay 的老消息，决定给 writer 派 AI 短剧调研任务，调了：
+
+```bash
+python3 scripts/feishu_msg.py send writer manager "<任务描述>" 高
+```
+
+命令返回成功（Bitable 收件箱写入 OK），但 writer 窗口里出现这样的乱码：
+
+```
+💤 待 wake  (agent=writer, model=opus, lazy-mode)
+   router 收到业务消息后会唤醒本窗口
+root@c19bfb2ddfbc:/app# g.py inbox writer:/app# ager 的新消息。请执行: python3 scripts/feishu_msg
+-bash: ager: command not found
+-bash: g.py: command not found
+```
+
+### 根因
+`feishu_msg.py` 的 `cmd_send()` 在写完 Bitable 后调 `_notify_agent_tmux()`，后者直接 `inject_when_idle → tmux send-keys` 目标窗口。这套假设窗口里是 claude REPL，没想到在 lazy-mode 下业务 agent 窗口里是 **bash prompt**。tmux send-keys 的通知文本（"你有来自 manager 的新消息。请执行: python3 scripts/feishu_msg.py inbox writer"）被 bash 按行拆成了若干"命令"执行：
+
+1. `你有来自` → bash 找不到命令
+2. `请执行:` → 冒号结尾被当 no-op
+3. `python3 scripts/feishu_msg.py inbox writer` → **真的跑起来**，读了 writer 的 inbox（side effect！）
+
+更糟的是：在后续 tab 补全 / 历史回滚的交互中，某次 `IS_SANDBOX=1 claude --dangerously-skip-permissions` 也被 bash 真的 exec 了，结果 writer 非计划地被"启动"出 claude，从 💤 状态糊里糊涂变成了 wake 状态。看起来像是成功，其实路径是坏的。
+
+这跟已经在 docker-entrypoint.sh 里写着的 "Bug 11" 评论是同一类事故：
+> 如果窗口里只剩 bash,后续 init 消息会被当成 shell 命令跑,看起来"启动了" 实际全员死亡
+
+设计规定 wake 必须走 `scripts/lib/agent_lifecycle.sh wake <agent>`（resume saved session + 正确的 model + 白名单检查），直接撞大运让 bash 执行消息文本是完全不同的语义。
+
+### feat/lazy-wake-v2 的整合盲点
+分支里 `feishu_router.py` 的 `wake_agent()` 确实调了 `wake_on_deliver()`（lazy-wake 设计 §C），路径是对的。但 agent-to-agent 投递走的是 `feishu_msg.py send`，**这条路径里完全没有 wake 调用**。设计文档只覆盖了"群聊消息 → router → agent"路径，漏了"agent → agent via bitable"路径。
+
+### 我的修复（commit 在本次部署里打上）
+给 `_notify_agent_tmux` 加了一个 wake-before-inject：
+
+```python
+def _notify_agent_tmux(to_agent, from_agent, message):
+    """向目标 agent 的 tmux 窗口注入收件通知（best-effort）。
+
+    lazy-wake-v2 适配:
+      - 目标窗口若还是 💤 占位 (pane 里没有 claude 进程) → 先调 agent_lifecycle.sh wake
+      - lifecycle wake 幂等: 已活则立即返回, 所以对非 lazy-mode 也安全
+    """
+    try:
+        import subprocess as _sp
+        lifecycle = os.path.join(os.path.dirname(__file__), "lib",
+                                 "agent_lifecycle.sh")
+        if os.path.exists(lifecycle):
+            try:
+                _sp.run(["bash", lifecycle, "wake", to_agent],
+                        capture_output=True, timeout=25, check=False)
+            except Exception:
+                pass
+
+        notify_text = (
+            f"你有来自 {from_agent} 的新消息。"
+            f"请执行: python3 scripts/feishu_msg.py inbox {to_agent}"
+        )
+        inject_when_idle(TMUX_SESSION, to_agent, notify_text, wait_secs=5)
+    except Exception:
+        pass
+```
+
+关键决策：**无条件调 lifecycle wake**，不先检测睡没睡。`agent_lifecycle.sh wake` 自己是幂等的（第一件事就是 `_lifecycle_pids_for_agent` 扫 comm=claude 的子进程，非空直接 `ℹ️ wake_agent: <agent> 已活,跳过`），所以对非 lazy-mode、对 wake 过的 agent 都是 no-op。把 "是否该 wake" 的判断收口到单一真相源（lifecycle），不让 feishu_msg.py 另开一个状态机。
+
+### 验证
+修完后在容器里跑：
+
+```bash
+docker exec maintain python3 /app/scripts/feishu_msg.py send coder manager "【lazy-wake 验收测试】..." 高
+```
+
+观察 coder 窗口：
+1. `agent_lifecycle.sh wake coder` 被调 → 无 saved session 时走冷启动 `IS_SANDBOX=1 claude ... --name coder`
+2. claude UI 起来
+3. tmux send-keys 注入的 notify 文本在 claude REPL 里被当 user prompt 接收
+4. coder 读 inbox → 看到任务 → 执行 `feishu_msg.py say coder "💻 coder ready (wake test passed)"`
+5. 标记消息已读，Worked for 1m 11s 后回到 idle
+
+完整路径跑通。
+
+## 🟡 Bug R7：`supervisor_tick.sh` 没有外部调度器（已在本次部署一并补齐）
+
+### 症状
+lazy-wake v2 依赖 supervisor 周期性扫 agent 证据做 SUSPEND/KEEP 判断。`supervisor_tick.sh` 文件在，但容器里没 cron / 没 systemd timer / 没 nohup 循环，所以它**从来没被触发过**。整个决策引擎处于 "代码就绪但没人叫它" 的状态。
+
+### 根因
+lazy-wake v2 原设计是 "由宿主 cron / docker-compose / systemd timer 驱动"（supervisor_tick.sh 注释里写了），但 docker-entrypoint.sh 没写到谁来装这个调度器。Dockerfile 也没装 cron 包。部署文档和代码之间的 handoff 漏了。
+
+### 我的修复
+`docker-entrypoint.sh` 末尾在 watchdog 后面新开一个 tmux 窗口 `supervisor_ticker`，跑 while-sleep：
+
+```bash
+if [ "$LAZY_MODE" = "on" ]; then
+  tmux new-window -t "$SESSION" -n "supervisor_ticker" -c "$ROOT"
+  tmux send-keys -t "$SESSION:supervisor_ticker" \
+    "while sleep \${CLAUDETEAM_SUPERVISOR_INTERVAL:-900}; do echo \"[\$(date '+%F %T')] ⏰ tick start\"; bash scripts/supervisor_tick.sh || echo \"[\$(date '+%F %T')] ⚠️  tick exit=\$?\"; done" \
+    Enter
+fi
+```
+
+为什么不用 cron：容器用的是 debian-slim，没装 cron；装 cron 要加 Dockerfile 一层；cron 里的 env/cwd/tmux socket 还得专门处理。tmux 窗口简单直接，attach 进来能实时看 tick 输出，watchdog 监控也好挂。
+
+## 📋 本次部署清单（其他无 bug 但必须说明的步骤）
+
+| 步骤 | 文件 | 说明 |
+|---|---|---|
+| 1 | `team.json` | 新增 `supervisor` agent，role=监工，emoji=🛡️，color=yellow。白名单里必须有 supervisor 才能做决策 |
+| 2 | `agents/supervisor/identity.md` + `core_memory.md` | 新建，写明决策员的安全底线（默认 KEEP / 白名单跳过 / suspend 严格顺序 / overrides 优先级）|
+| 3 | `agents/supervisor/workspace/{decisions,incidents}/` | 决策落盘目录 |
+| 4 | `scripts/docker-entrypoint.sh` | 加 supervisor_ticker 窗口，lazy-mode=off 时跳过 |
+| 5 | `scripts/feishu_msg.py` | 修 Bug B4：_notify_agent_tmux 加 wake-before-inject |
+
+`team.json` 和 `agents/supervisor/` 是 gitignore 掉的（运行时生成），所以本地部署侧的改动不进 commit，只有 scripts/*.sh / scripts/*.py 进 `feat/lazy-wake-v2` 分支。
+
+## 🎯 本次验收结果
+
+- ✅ lazy-mode 启动后只拉起 **2 个 claude**（manager + supervisor），其他 9 个 💤 占位
+- ✅ 内存 574 MB → 启动瞬间 608 MB（claude 冷启动峰值）→ 稳定态预计 200-300 MB（受 manager 补做老任务影响暂时偏高）
+- ✅ `agent_lifecycle.sh wake` 幂等正确
+- ✅ 修 B4 后 `feishu_msg.py send` 对 💤 agent 的投递跑通（coder 验收样例已在群里回 "coder ready"）
+- ⚠️ supervisor_tick.sh 的首轮调度还没到（`CLAUDETEAM_SUPERVISOR_INTERVAL` 默认 900s），第一次 tick 要等 15 分钟才出结果
+- ❓ 老板真实群聊消息 → router → manager → 全员回应 的完整 E2E 还没跑（需要有一个\"非 maintain bot\"的身份往群里发消息，暂无现成路径）
+
