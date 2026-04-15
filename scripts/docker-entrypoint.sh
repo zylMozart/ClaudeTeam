@@ -376,6 +376,17 @@ fi
 tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
 tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
+# supervisor_ticker: 周期性触发 supervisor_tick.sh (lazy_wake_v2 §A.3)
+# 用独立 tmux 窗口跑 while-sleep 循环: 比 cron 简单, 比 nohup 可见,
+# attach 进来就能看到每次 tick 的输出。间隔由 CLAUDETEAM_SUPERVISOR_INTERVAL 控制
+# (默认 900s = 15 分钟)。lazy-mode=off 时跳过,避免空转调用 Haiku。
+if [ "$LAZY_MODE" = "on" ]; then
+  tmux new-window -t "$SESSION" -n "supervisor_ticker" -c "$ROOT"
+  tmux send-keys -t "$SESSION:supervisor_ticker" \
+    "while sleep \${CLAUDETEAM_SUPERVISOR_INTERVAL:-900}; do echo \"[\$(date '+%F %T')] ⏰ tick start\"; bash scripts/supervisor_tick.sh || echo \"[\$(date '+%F %T')] ⚠️  tick exit=\$?\"; done" \
+    Enter
+fi
+
 # ── Claude UI 启动探测 (Bug 11 防御) ─────────────────────────
 # 共享库 scripts/lib/tmux_team_bringup.sh 已在文件上方 source。
 #
