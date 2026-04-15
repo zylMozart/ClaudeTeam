@@ -116,12 +116,41 @@ def _lark_base_create(base_token, table_id, fields_json):
     return d
 
 
+# 服务器侧 /records/search 状态码:
+#   800080303 "unsafe_operation_blocked" = 端点在当前品牌(目前仅国际版 Lark)
+#   还未放出,再多重试也没用,必须走客户端过滤兜底。
+_BITABLE_SEARCH_PATH_BLOCKED_CODE = 800080303
+
+
 def _lark_base_search(base_token, table_id, search_json):
-    """搜索 Bitable 记录。"""
-    return _lark_run(["base", "+record-search",
-                      "--base-token", base_token, "--table-id", table_id,
-                      "--json", json.dumps(search_json, ensure_ascii=False),
-                      "--as", "bot"])
+    """单次调用 +record-search。返回三元 status:
+
+        ("ok", data_dict)    成功,data_dict 形如 {data, fields, record_id_list}
+        ("blocked", None)    服务器返回 800080303 (端点未放出,仅国际版 Lark)
+        ("error",   msg)     其他失败,msg 是 stderr 截断后的文本
+
+    刻意**不**走 _lark_run —— 调用方需要区分"端点被平台屏蔽"和"一般失败"
+    来决定是否 fallback 到 _lark_base_list + 客户端过滤,而 _lark_run 把
+    所有失败都归并成 None,无从辨别。
+    """
+    args = LARK_CLI + ["base", "+record-search",
+                       "--base-token", base_token, "--table-id", table_id,
+                       "--json", json.dumps(search_json, ensure_ascii=False),
+                       "--as", "bot"]
+    r = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    if r.returncode == 0:
+        try:
+            return "ok", json.loads(r.stdout).get("data", {})
+        except json.JSONDecodeError:
+            return "error", (r.stdout or "")[:200]
+    try:
+        err = json.loads(r.stderr).get("error") or {}
+        if err.get("code") == _BITABLE_SEARCH_PATH_BLOCKED_CODE:
+            return "blocked", None
+        msg = err.get("message") or r.stderr.strip()
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        msg = r.stderr.strip()
+    return "error", msg[:200]
 
 
 def _lark_base_update(base_token, table_id, record_ids, patch):
@@ -133,11 +162,14 @@ def _lark_base_update(base_token, table_id, record_ids, patch):
                       "--json", payload, "--as", "bot"])
 
 
-def _lark_base_list(base_token, table_id, limit=20):
-    """列出 Bitable 记录。"""
-    return _lark_run(["base", "+record-list",
-                      "--base-token", base_token, "--table-id", table_id,
-                      "--limit", str(limit), "--as", "bot"])
+def _lark_base_list(base_token, table_id, limit=20, offset=0):
+    """列出 Bitable 记录（支持 offset 翻页）。"""
+    args = ["base", "+record-list",
+            "--base-token", base_token, "--table-id", table_id,
+            "--limit", str(limit), "--as", "bot"]
+    if offset:
+        args += ["--offset", str(offset)]
+    return _lark_run(args)
 
 # ── 消息卡片构建 ──────────────────────────────────────────────
 
@@ -328,8 +360,35 @@ def cmd_direct(to_agent, from_agent, message):
 
 # ── 命令：inbox ───────────────────────────────────────────────
 
+# 进程内缓存:首次看到 800080303 后置 True,后续调用直接走 list 兜底,
+# 避免每次 inbox/status 都为同一个平台限制多跑一次 RTT。
+_bitable_search_blocked = False
+
+
+def _parse_record_rows(d, keep):
+    """解析 +record-search / +record-list 返回的 {data, fields, record_id_list}。
+
+    `keep(fields_dict)` 返回 True 的记录被收集;传 None 等价于全收。
+    返回 (results, page_rows) —— page_rows 是本页原始行数(用于翻页推进)。
+    """
+    rows = d.get("data", [])
+    field_names = d.get("fields", [])
+    rid_list = d.get("record_id_list", [])
+    out = []
+    for i, row in enumerate(rows):
+        fields = {}
+        for j, val in enumerate(row):
+            if j < len(field_names):
+                fields[field_names[j]] = val
+        if keep is not None and not keep(fields):
+            continue
+        rid = rid_list[i] if i < len(rid_list) else ""
+        out.append({"record_id": rid, "fields": fields})
+    return out, len(rows)
+
+
 def _search_records(base_token, table_id, keyword, search_fields):
-    """用 +record-search 翻页搜索全部匹配记录。
+    """翻页拉取所有匹配 keyword 的记录。
 
     返回
     ----
@@ -339,49 +398,84 @@ def _search_records(base_token, table_id, keyword, search_fields):
     **重要**：调用方在使用返回值之前必须先走 _check_lark_result(result, action)。
     直接对 None 做迭代会抛 TypeError。
 
-    翻页机制（Base v3 record-search 真实契约，reviewer 2026-04-13 已跑 --help +
-    dry-run 验证）：
-      - 请求体用 offset + limit，limit 上限 200
-      - 响应**不返回** page_token / has_more
-      - 退出条件 len(rows) < PAGE
-    MAX_PAGES=50 硬兜底 10000 条，正常 agent 收件箱不可能到这量级；
-    真触底说明系统另有问题，调用方看到部分结果再排查。
+    两条路径
+    --------
+    快路径 (+record-search,服务器侧按 keyword 过滤):
+      - 中国版飞书支持,行为等同老实现。
+      - 翻页契约 (reviewer 2026-04-13 已用 --help + dry-run 验证):
+        offset + limit 请求,响应不返回 has_more,用 len(rows) < PAGE 退出。
+      - limit 上限 200,MAX_PAGES=50 硬兜底 10000 条。
+
+    兜底路径 (+record-list + 客户端子串过滤):
+      - 国际版 Lark 触发 800080303 "unsafe_operation_blocked" 后切到这条,
+        路径见 `_BITABLE_SEARCH_PATH_BLOCKED_CODE`。
+      - +record-list 返回 has_more,据此翻页。
+      - 客户端过滤语义:keyword 出现在任一 search_fields 的文本值里即命中。
+        对当前调用方 (cmd_inbox/cmd_status 查 agent 名) 是精确匹配退化,等价。
     """
+    global _bitable_search_blocked
+
+    # ── 快路径: +record-search ─────────────────────────────────
+    if not _bitable_search_blocked:
+        results = []
+        offset = 0
+        PAGE = 200
+        MAX_PAGES = 50
+        hit_block = False
+        for page in range(MAX_PAGES):
+            status, d = _lark_base_search(base_token, table_id, {
+                "keyword": keyword,
+                "search_fields": search_fields,
+                "offset": offset,
+                "limit": PAGE,
+            })
+            if status == "blocked":
+                _bitable_search_blocked = True
+                print("ℹ️  Bitable +record-search 被平台屏蔽(800080303),"
+                      "切到 +record-list 客户端过滤兜底 (进程内缓存,后续直接走兜底)",
+                      file=sys.stderr)
+                hit_block = True
+                break
+            if status == "error":
+                if page == 0:
+                    print(f"  ⚠️ _search_records 首页失败: table={table_id} "
+                          f"keyword={keyword!r}: {d}", file=sys.stderr)
+                else:
+                    print(f"  ⚠️ _search_records 第 {page+1} 页失败 "
+                          f"(已抓 {len(results)} 条,整体视为失败): {d}",
+                          file=sys.stderr)
+                return None
+            parsed, page_rows = _parse_record_rows(d, keep=None)
+            results.extend(parsed)
+            if page_rows < PAGE:
+                break
+            offset += page_rows
+        if not hit_block:
+            return results
+
+    # ── 兜底路径: +record-list + 客户端 substring 过滤 ─────────
+    def _match(fields):
+        return any(keyword in extract_text(fields.get(f, "")) for f in search_fields)
+
     results = []
     offset = 0
     PAGE = 200
     MAX_PAGES = 50
     for page in range(MAX_PAGES):
-        d = _lark_base_search(base_token, table_id, {
-            "keyword": keyword,
-            "search_fields": search_fields,
-            "offset": offset,
-            "limit": PAGE,
-        })
+        d = _lark_base_list(base_token, table_id, limit=PAGE, offset=offset)
         if d is None:
-            # 任意一页失败都返回 None —— 和 ADR 契约对齐，调用方会走 fatal。
-            # 首页失败 vs 中途失败都视为"查询失败"，不留半成品给上游。
             if page == 0:
-                print(f"  ⚠️ _search_records 首页失败: table={table_id} "
-                      f"keyword={keyword!r}", file=sys.stderr)
+                print(f"  ⚠️ _search_records (list 兜底) 首页失败: table={table_id}",
+                      file=sys.stderr)
             else:
-                print(f"  ⚠️ _search_records 第 {page+1} 页失败 (已抓 "
-                      f"{len(results)} 条，整体视为失败)", file=sys.stderr)
+                print(f"  ⚠️ _search_records (list 兜底) 第 {page+1} 页失败 "
+                      f"(已抓 {len(results)} 条)", file=sys.stderr)
             return None
-        # +record-search 返回 {data: [[row...]], fields: [...], record_id_list: [...]}
-        rows = d.get("data", [])
-        field_names = d.get("fields", [])
-        rid_list = d.get("record_id_list", [])
-        for i, row in enumerate(rows):
-            fields = {}
-            for j, val in enumerate(row):
-                if j < len(field_names):
-                    fields[field_names[j]] = val
-            rid = rid_list[i] if i < len(rid_list) else ""
-            results.append({"record_id": rid, "fields": fields})
-        if len(rows) < PAGE:
+        parsed, page_rows = _parse_record_rows(d, keep=_match)
+        results.extend(parsed)
+        if not d.get("has_more", False) or page_rows == 0:
             break
-        offset += len(rows)
+        offset += page_rows
     return results
 
 
