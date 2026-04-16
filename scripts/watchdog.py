@@ -18,6 +18,13 @@ from config import PROJECT_ROOT, LARK_CLI
 
 CHECK_INTERVAL = 60  # 秒
 
+# ADR watchdog_startup_grace: 冷启动时 router pipeline (lark-cli 冷 npm 解
+# 析 + feishu_router.py import) 可能 ≥ 30s 才 touch .router.pid。watchdog 若
+# 立刻跑首轮 check,会把还没写 pid 的合法 router 误判为死,进 _kill_orphan_
+# lark_subscribers 把正在 spawn 的子进程半杀掉。加 startup grace 等 router
+# 进入稳态。设 WATCHDOG_STARTUP_GRACE_SECS=0 可关闭(测试/紧急场景)。
+STARTUP_GRACE_SECS = int(os.environ.get("WATCHDOG_STARTUP_GRACE_SECS", "60"))
+
 # ── 测试隔离开关 (ADR watchdog_testing_env_guard) ──────────────
 # 设 WATCHDOG_TESTING=1 会让 _send_manager_alert 跳过真实 subprocess 调用,
 # 只打本地日志。这是 belt-and-suspenders 的 belt 层 —— 防止新测试作者忘记
@@ -151,30 +158,78 @@ def _kill_by_pid_file(pid_file, label):
         pass
 
 
-def _kill_orphan_lark_subscribers():
-    """Scan /proc and SIGKILL any `lark-cli event +subscribe` processes.
-    These don't live in any pid_file — they're the left half of the
-    `lark-cli ... | feishu_router.py` bash pipeline, so when we kill the
-    router we must also kill them, otherwise the new pipeline spawns a
-    second lark-cli and two WebSocket subscriptions race.
+def _is_lark_subscribe(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            c = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return False
+    return "lark-cli" in c and "event" in c and "+subscribe" in c
 
-    Walks /proc instead of shelling out to pkill so we don't depend on
-    procps-ng being in the container base image.
+
+def _kill_orphan_lark_subscribers():
+    """SIGKILL `lark-cli event +subscribe` 进程, 收窄作用域版 (ADR
+    watchdog_startup_grace).
+
+    老语义 (全 /proc 盲杀) 在 watchdog 首轮 startup race 里会把 tmux pipe
+    正在 spawn 的合法 lark-cli 子进程一起杀掉, 造成半 kill 孤儿 + re-spawn
+    双 pipeline. 新语义:
+      - router pid 文件存在 + 活 → 只杀 router 进程树的 lark-cli 后代
+        (正常应为空集, 作为 defense-in-depth)
+      - router 死 / pid 文件缺 → 扫 /proc 但只杀 ppid==1 的真孤儿
+    搭配 main() 的 STARTUP_GRACE_SECS 双层防御.
     """
     my_pid = os.getpid()
-    for proc_dir in glob.glob("/proc/[0-9]*"):
-        try:
-            with open(f"{proc_dir}/cmdline", "rb") as f:
-                cmdline = f.read().decode("utf-8", errors="ignore")
-        except OSError:
-            continue
-        if "lark-cli" in cmdline and "event" in cmdline and "+subscribe" in cmdline:
+    try:
+        with open(os.path.join(os.path.dirname(__file__), ".router.pid")) as f:
+            router_pid = int(f.read().strip())
+        os.kill(router_pid, 0)
+    except (OSError, ValueError):
+        router_pid = None
+
+    if router_pid:
+        tree, frontier = {router_pid}, [router_pid]
+        while frontier:
+            for cf in glob.glob(f"/proc/{frontier.pop()}/task/*/children"):
+                try:
+                    kids = open(cf).read().split()
+                except OSError:
+                    continue
+                for tok in kids:
+                    try:
+                        cpid = int(tok)
+                    except ValueError:
+                        continue
+                    if cpid not in tree:
+                        tree.add(cpid)
+                        frontier.append(cpid)
+        victims = [p for p in tree if p != router_pid and _is_lark_subscribe(p)]
+    else:
+        victims = []
+        for proc_dir in glob.glob("/proc/[0-9]*"):
             try:
                 pid = int(os.path.basename(proc_dir))
-                if pid != my_pid:
-                    os.kill(pid, signal.SIGKILL)
-            except (OSError, ValueError):
-                pass
+            except ValueError:
+                continue
+            if pid == my_pid or not _is_lark_subscribe(pid):
+                continue
+            try:
+                with open(f"/proc/{pid}/status") as f:
+                    for line in f:
+                        if line.startswith("PPid:"):
+                            if line.split()[1] == "1":
+                                victims.append(pid)
+                            break
+            except OSError:
+                continue
+
+    for pid in victims:
+        if pid == my_pid:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
     time.sleep(0.5)
 
 
@@ -369,6 +424,9 @@ signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 def main():
     _acquire_pid_lock()
     log("🐕 Watchdog 启动")
+    if STARTUP_GRACE_SECS > 0:
+        log(f"⏳ Startup grace {STARTUP_GRACE_SECS}s，避免和 router 冷启动抢 race")
+        time.sleep(STARTUP_GRACE_SECS)
     if TESTING:
         # 显眼警告: production 绝不应该看到这一行。如果线上看到了,立刻查
         # 这个环境变量是哪里设的并拿掉。ADR watchdog_testing_env_guard 对
