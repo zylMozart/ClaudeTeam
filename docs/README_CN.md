@@ -120,6 +120,30 @@ Ctrl+B, d                        # 分离（保持后台运行）
 
 ---
 
+## 同机多团队部署（Docker）
+
+`docker-compose.yml` **故意不设** `container_name:`。固定的容器名是 Docker 全局唯一的,同一台机器上的第二次 `docker compose up` 会看到"`claudeteam` 已存在"并把它 recreate 掉,第一个团队会整个被干掉。省略后 Compose 会自动按 `<project>-team-1` 命名,`<project>` 由 `COMPOSE_PROJECT_NAME` 决定,未设置时取当前目录 basename。
+
+为了让多团队在 `docker ps` 里一眼可辨,把 project name 和 `team.json` 的 `session` 绑定:
+
+```bash
+# 推荐: 使用 scripts/docker-deploy.sh, 里面自动 export COMPOSE_PROJECT_NAME=claudeteam-<session>
+bash scripts/docker-deploy.sh
+
+# 手动路径: 每次 docker compose 前显式 export
+cd ~/project/teamA
+export COMPOSE_PROJECT_NAME=claudeteam-$(python3 -c 'import json; print(json.load(open("team.json"))["session"])')
+docker compose up -d
+docker compose exec team tmux attach -t "$(python3 -c 'import json; print(json.load(open("team.json"))["session"])')"
+docker compose down
+```
+
+同一个 shell 里后续所有 `docker compose ...` 调用都得带着这个 `COMPOSE_PROJECT_NAME`,否则 Compose 找不到你这次部署的容器和 volume。频繁在多团队间切换时,可以考虑把 `export COMPOSE_PROJECT_NAME=claudeteam-<session>` 写进对应团队的 `.env` 再 source。
+
+`docker-compose.yml` 顶层的 `volumes:` 和 `networks:` 本来就被 Compose 按 project name 自动加前缀,所以去掉 `container_name:` 这一个开关就把所有东西一起隔离了。
+
+---
+
 ## 常见问题
 
 **Q：能用其他大模型吗？**
