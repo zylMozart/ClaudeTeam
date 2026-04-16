@@ -205,6 +205,51 @@ if not app.get("hasTrustDialogAccepted"):
     print("✅ 已为 /app 写入信任标记")
 PY
 
+# 预置 settings.local.json —— 绕过 "sensitive file" 权限弹窗。
+# 背景 (Bug 12): 即使启动参数带了 --dangerously-skip-permissions,Claude Code
+# 仍会对自己状态目录下的路径(~/.claude/projects/<escaped>/** 等) 执行硬编码的
+# "敏感文件" 检查。agent 只要跑 `mkdir -p ~/.claude/projects/-app/memory` 这种
+# auto-memory 初始化命令,就会被拦下弹确认框,tmux 窗口直接卡死 ——
+# 没人按方向键+Enter,manager 就永远派不下去任务,群里消息表现为"无人响应"。
+#
+# 修法是给容器写一份 settings.local.json,permissions.allow 里加一条
+# 全量 Bash 白名单 (`Bash(*)`) + 所有 Edit/Write/Read 白名单,这样 Claude
+# 在检查阶段就认定"用户已经永久允许",直接跳过弹窗。
+#
+# 文件不入镜像、仅容器运行时生成 —— 宿主机 ~/.claude/settings.local.json
+# 不受影响(我们只 bind mount 了 .credentials.json 和 .claude.json 两个顶层
+# 文件,settings.local.json 落在容器自己的 rootfs 层)。
+mkdir -p /home/claudeteam/.claude
+python3 - <<'PY'
+import json, os
+p = "/home/claudeteam/.claude/settings.local.json"
+existing = {}
+if os.path.exists(p):
+    try:
+        with open(p) as f:
+            existing = json.load(f)
+    except Exception:
+        existing = {}
+perms = existing.setdefault("permissions", {})
+allow = perms.setdefault("allow", [])
+# 幂等: 已有就不重复加
+wanted = [
+    "Bash(*)",
+    "Write(/home/claudeteam/.claude/**)",
+    "Edit(/home/claudeteam/.claude/**)",
+    "Read(/home/claudeteam/.claude/**)",
+    "Write(/app/**)",
+    "Edit(/app/**)",
+    "Read(/app/**)",
+]
+for rule in wanted:
+    if rule not in allow:
+        allow.append(rule)
+with open(p, "w") as f:
+    json.dump(existing, f, indent=2)
+print(f"✅ 已写入 {p} (permissions.allow={len(allow)} 条)")
+PY
+
 # ── init 模式：跑 setup.py 创建飞书资源,然后退出 ────────────
 if [ "$MODE" = "init" ]; then
   echo ""
@@ -244,18 +289,54 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   tmux kill-session -t "$SESSION"
 fi
 
+# lazy-mode 与白名单决策共享 lib (lazy_wake_v2 §A.2)。宿主 start-team.sh 走同一份。
+# 容器场景默认 on,与宿主默认对齐;可被 docker run -e CLAUDETEAM_LAZY_MODE=off 覆盖。
+LAZY_MODE="${CLAUDETEAM_LAZY_MODE:-on}"
+case "$LAZY_MODE" in
+  on|off) ;;
+  *) echo "❌ CLAUDETEAM_LAZY_MODE 取值非法: '$LAZY_MODE' (期望 on 或 off)"; exit 2 ;;
+esac
+source "$ROOT/scripts/lib/tmux_team_bringup.sh"
+
+# ── per-role 模型预解析 (lazy_wake_v2 §B) ────────────────────
+# 走和 start-team.sh 完全同一份 helper。非法 model / 解析失败时 loud-fail:
+# 容器入口这里直接 exit 1 —— init 消息阶段的 HALT_INIT 不适用于模型解析,
+# 因为非法 model 是配置错而不是 Claude UI 启动错,restart 循环救不了。
+if ! resolve_all_agent_models; then
+  echo "   中止容器启动 (失败的 agent: ${FAILED_MODEL_AGENT})"
+  exit 1
+fi
+
 echo "🚀 启动 Agent 团队..."
 echo "   tmux session: $SESSION"
 echo "   Agents: ${AGENTS[*]}"
+echo "   lazy-mode: $LAZY_MODE"
+print_agent_models_table
 
-# 创建 tmux session + agent 窗口
-tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$ROOT"
-tmux send-keys -t "$SESSION:${AGENTS[0]}" "IS_SANDBOX=1 claude --dangerously-skip-permissions --name ${AGENTS[0]}" Enter
+# spawn_one <agent> [--first]
+#  --first → 用 new-session,否则 new-window
+#  lazy-mode on 且非白名单 → pane 留 bash + 💤 banner,等 router 唤醒
+#  其它情况 → 老路径直接拉 claude,带 --model (reviewer H 阻塞修复)
+spawn_one() {
+  local agent="$1" first="${2:-}"
+  if [ "$first" = "--first" ]; then
+    tmux new-session -d -s "$SESSION" -n "$agent" -c "$ROOT"
+  else
+    tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
+  fi
+  if should_skip_agent_in_lazy_mode "$agent"; then
+    tmux send-keys -t "$SESSION:$agent" \
+      "clear && echo '💤 待 wake  (agent=$agent, model=${AGENT_MODELS[$agent]}, lazy-mode)' && echo '   router 收到业务消息后会唤醒本窗口'" Enter
+  else
+    tmux send-keys -t "$SESSION:$agent" \
+      "IS_SANDBOX=1 claude --dangerously-skip-permissions --model ${AGENT_MODELS[$agent]} --name $agent" Enter
+  fi
+}
+
+spawn_one "${AGENTS[0]}" --first
 sleep 2
-
 for agent in "${AGENTS[@]:1}"; do
-  tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
-  tmux send-keys -t "$SESSION:$agent" "IS_SANDBOX=1 claude --dangerously-skip-permissions --name $agent" Enter
+  spawn_one "$agent"
   sleep 2
 done
 
@@ -295,8 +376,19 @@ fi
 tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
 tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
+# supervisor_ticker: 周期性触发 supervisor_tick.sh (lazy_wake_v2 §A.3)
+# 用独立 tmux 窗口跑 while-sleep 循环: 比 cron 简单, 比 nohup 可见,
+# attach 进来就能看到每次 tick 的输出。间隔由 CLAUDETEAM_SUPERVISOR_INTERVAL 控制
+# (默认 900s = 15 分钟)。lazy-mode=off 时跳过,避免空转调用 Haiku。
+if [ "$LAZY_MODE" = "on" ]; then
+  tmux new-window -t "$SESSION" -n "supervisor_ticker" -c "$ROOT"
+  tmux send-keys -t "$SESSION:supervisor_ticker" \
+    "while sleep \${CLAUDETEAM_SUPERVISOR_INTERVAL:-900}; do echo \"[\$(date '+%F %T')] ⏰ tick start\"; bash scripts/supervisor_tick.sh || echo \"[\$(date '+%F %T')] ⚠️  tick exit=\$?\"; done" \
+    Enter
+fi
+
 # ── Claude UI 启动探测 (Bug 11 防御) ─────────────────────────
-# 共享库见 scripts/lib/tmux_team_bringup.sh,宿主机 start-team.sh 也用同一份。
+# 共享库 scripts/lib/tmux_team_bringup.sh 已在文件上方 source。
 #
 # 关键差异: 容器版 probe 失败时 *不* exit 1。
 # restart: unless-stopped 会把失败的容器无限快速重启,每次都把 tmux session
@@ -304,7 +396,13 @@ tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 # 正确做法: 设 HALT_INIT=1 跳过 init 消息循环,保留 tmux session,
 # 让下面的 "while tmux has-session" 主循环把容器存活着,方便
 # `docker exec -it <container> tmux attach -t $SESSION` 查原始错误输出。
-source "$ROOT/scripts/lib/tmux_team_bringup.sh"
+
+# lazy-mode 下只 probe 真跑了 claude 的 agent,占位窗口跳过 (与 start-team.sh 对齐)。
+ACTIVE_AGENTS=()
+for a in "${AGENTS[@]}"; do
+  should_skip_agent_in_lazy_mode "$a" || ACTIVE_AGENTS+=("$a")
+done
+export PROBE_AGENTS="${ACTIVE_AGENTS[*]}"
 
 if ! probe_claude_agents 15; then
   diagnose_failed_agents
@@ -319,8 +417,9 @@ fi
 sleep 2
 
 # 发送初始化消息(仅在 probe 通过时)
+# lazy-mode 下占位窗口里只有 bash,发 init 会被当 shell 命令跑 (Bug 11),只发给 ACTIVE_AGENTS。
 if [ "${HALT_INIT:-0}" != "1" ]; then
-  for agent in "${AGENTS[@]}"; do
+  for agent in "${ACTIVE_AGENTS[@]}"; do
     INIT_MSG="你是团队的 ${agent}。
 
 【必读】请读取：agents/${agent}/identity.md — 了解你的角色和通讯规范
@@ -331,7 +430,10 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
     tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
-    sleep 1
+    # Bug 15 防御: feishu_msg.py status → Bitable record-batch-create 并发写
+    # 会撞限流,错峰 2.5s 与 start-team.sh 对齐。lazy-mode 下 ACTIVE_AGENTS
+    # 通常只有 manager+supervisor,2.5s 对启动总耗时的影响可忽略。
+    sleep 2.5
   done
 
   echo ""

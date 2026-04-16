@@ -38,3 +38,4 @@ __pycache__/
 # ── 其他 ──
 .playwright-mcp/
 tools/
+docker-compose.override.yml

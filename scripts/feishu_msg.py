@@ -277,8 +277,25 @@ def bitable_insert_message(to, frm, content, priority):
 # ── 命令：send ────────────────────────────────────────────────
 
 def _notify_agent_tmux(to_agent, from_agent, message):
-    """向目标 agent 的 tmux 窗口注入收件通知（best-effort）。"""
+    """向目标 agent 的 tmux 窗口注入收件通知（best-effort）。
+
+    lazy-wake-v2 适配:
+      - 目标窗口若还是 💤 占位 (pane 里没有 claude 进程) → 先调 agent_lifecycle.sh wake
+      - lifecycle wake 幂等: 已活则立即返回, 所以对非 lazy-mode 也安全
+      - wake 失败时退化为老行为 (尝试直接 inject), 不阻塞主发送流程
+    """
     try:
+        # lazy-wake: 检测 💤 → wake before inject
+        import subprocess as _sp
+        lifecycle = os.path.join(os.path.dirname(__file__), "lib",
+                                 "agent_lifecycle.sh")
+        if os.path.exists(lifecycle):
+            try:
+                _sp.run(["bash", lifecycle, "wake", to_agent],
+                        capture_output=True, timeout=25, check=False)
+            except Exception:
+                pass  # best-effort, 继续走 inject
+
         notify_text = (
             f"你有来自 {from_agent} 的新消息。"
             f"请执行: python3 scripts/feishu_msg.py inbox {to_agent}"

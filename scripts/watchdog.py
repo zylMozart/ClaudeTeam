@@ -86,17 +86,35 @@ PROCS = [
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
-def is_running_by_pid_file(pid_file):
-    """通过 PID 锁文件检测进程是否存活（精确匹配本项目）"""
+def is_running_by_pid_file(pid_file, match_str=None):
+    """通过 PID 锁文件检测进程是否存活。
+
+    Bug 14 修复: 只做 `kill -0` 检查会被 PID 复用误导 —— 原进程死亡后,
+    同一个 PID 被系统分配给别的 (比如一个 claude agent), kill -0 仍然返回
+    存活,watchdog 就认为目标进程健康,永远不重启。表现: router 死 18 分钟
+    也无人救。
+
+    修法: 传入 match_str 时,额外读 /proc/<pid>/cmdline 验证命令行包含
+    预期子串。找不到 /proc (非 Linux) 或 cmdline 不匹配都算进程已死。
+    match_str=None 时保留老行为,仅做 kill -0 检查。
+    """
     if not os.path.exists(pid_file):
         return False
     try:
         with open(pid_file) as f:
             pid = int(f.read().strip())
         os.kill(pid, 0)
-        return True
     except (ValueError, OSError):
         return False
+    if match_str:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="ignore").replace("\0", " ")
+            if match_str not in cmdline:
+                return False
+        except (FileNotFoundError, PermissionError):
+            return False
+    return True
 
 def is_running(match_str):
     """降级方案：pgrep 匹配（用于没有 PID 文件的进程）"""
@@ -233,7 +251,8 @@ def is_healthy(proc):
     """进程存在 + 健康检查通过"""
     pid_file = proc.get("pid_file")
     if pid_file:
-        if not is_running_by_pid_file(pid_file):
+        # 传 match 防 PID 复用误判 (Bug 14)
+        if not is_running_by_pid_file(pid_file, proc.get("match")):
             return False
     elif not is_running(proc["match"]):
         return False
