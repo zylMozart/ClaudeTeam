@@ -289,6 +289,11 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   tmux kill-session -t "$SESSION"
 fi
 
+# 清理上一个容器残留的 PID 锁文件。bind-mount 的 scripts/ 跨 compose down/up
+# 持久化,旧容器的 PID 可能被新容器内不相关进程复用,导致 _acquire_pid_lock
+# 误判"已在运行"而 sys.exit(1)。
+rm -f scripts/.*.pid
+
 # lazy-mode 与白名单决策共享 lib (lazy_wake_v2 §A.2)。宿主 start-team.sh 走同一份。
 # 容器场景默认 on,与宿主默认对齐;可被 docker run -e CLAUDETEAM_LAZY_MODE=off 覆盖。
 LAZY_MODE="${CLAUDETEAM_LAZY_MODE:-on}"

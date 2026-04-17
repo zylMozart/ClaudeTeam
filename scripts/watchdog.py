@@ -401,6 +401,15 @@ def _acquire_pid_lock():
             with open(_PID_FILE) as f:
                 old_pid = int(f.read().strip())
             os.kill(old_pid, 0)
+            # PID 复用校验 (同 074a7dc 给 router 加的 match_str):
+            # compose down/up 后旧 PID 可能被不相关进程复用,kill -0 仍返回存活。
+            try:
+                with open(f"/proc/{old_pid}/cmdline", "rb") as f:
+                    cmdline = f.read().decode("utf-8", errors="ignore")
+                if "watchdog.py" not in cmdline:
+                    raise OSError("PID reuse: not watchdog")
+            except (FileNotFoundError, PermissionError):
+                raise OSError("proc gone")
             log(f"❌ Watchdog 已在运行 (PID {old_pid})")
             sys.exit(1)
         except (ValueError, OSError):
