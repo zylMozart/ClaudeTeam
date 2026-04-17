@@ -17,6 +17,7 @@ from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK
 from tmux_utils import inject_when_idle, is_agent_idle, capture_pane
 from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
 from feishu_msg import _lark_run
+from cli_adapters import adapter_for_agent
 
 _LIFECYCLE_SH = os.path.join(PROJECT_ROOT, "scripts", "lib", "agent_lifecycle.sh")
 
@@ -210,21 +211,20 @@ _wake_lock = threading.Lock()
 _wake_state = {}  # agent_name -> {"started_at": ts, "ready_event": Event}
 
 
-def _agent_has_live_claude(agent_name):
-    """判断该 agent 的 tmux 窗口里是否有活的 claude 进程。
+def _agent_has_live_cli(agent_name):
+    """判断该 agent 的 tmux 窗口里是否有活的 CLI 进程。
 
-    实测发现 claude 的 /proc/<pid>/cmdline 在容器里只显示 'claude' (无 argv),
-    无法靠 grep cmdline 区分不同 agent 的 claude 实例。改用 tmux pane PID +
-    /proc PPid 关系来定位:
+    通过 adapter.process_name() 获取进程名（CC="claude", Kimi="kimi"），
+    用 tmux pane PID + /proc PPid 关系定位:
       1. tmux display-message → 拿到该 agent pane 的前台 bash PID
-      2. 扫 /proc 找 PPid == 该 bash PID 且 comm == 'claude' 的子进程
+      2. 扫 /proc 找 PPid == 该 bash PID 且 comm == process_name 的子进程
 
     使用物理事实(进程是否存在)而不是状态表"休眠"字段,避免:
       - 状态表写入失败留下不一致状态
       - supervisor 写"休眠"和实际 kill 之间的窗口期
       - 老板手动 kill 之后状态表来不及刷新
     """
-    pids = _claude_pids_in_pane(agent_name)
+    pids = _cli_pids_in_pane(agent_name)
     return len(pids) > 0
 
 
@@ -243,11 +243,12 @@ def _pane_bash_pid(agent_name):
         return None
 
 
-def _claude_pids_in_pane(agent_name):
-    """返回该 agent pane 下所有 claude 进程的 PID 列表。"""
+def _cli_pids_in_pane(agent_name):
+    """返回该 agent pane 下所有 CLI 进程的 PID 列表。"""
     bash_pid = _pane_bash_pid(agent_name)
     if bash_pid is None:
         return []
+    proc_name = adapter_for_agent(agent_name).process_name()
     result = []
     for proc_dir in glob.glob("/proc/[0-9]*"):
         try:
@@ -262,7 +263,7 @@ def _claude_pids_in_pane(agent_name):
                 comm = f.read().strip()
         except OSError:
             continue
-        if comm == "claude":
+        if comm == proc_name:
             try:
                 result.append(int(os.path.basename(proc_dir)))
             except ValueError:
@@ -270,12 +271,13 @@ def _claude_pids_in_pane(agent_name):
     return result
 
 
-def _wait_claude_ui_ready(agent_name, timeout_s=WAKE_READY_TIMEOUT_S):
-    """轮询 tmux pane,等 Claude UI 出现特征字符串(和 tmux_team_bringup.sh 对齐)。"""
+def _wait_cli_ui_ready(agent_name, timeout_s=WAKE_READY_TIMEOUT_S):
+    """轮询 tmux pane,等 CLI UI 出现 adapter 定义的 ready 特征串。"""
+    markers = adapter_for_agent(agent_name).ready_markers()
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         pane = capture_pane(TMUX_SESSION, agent_name)
-        if "bypass permissions on" in pane or "? for shortcuts" in pane:
+        if any(m in pane for m in markers):
             return True
         time.sleep(0.5)
     return False
@@ -293,7 +295,7 @@ def wake_on_deliver(agent_name):
       True  — agent 已 ready (或本来就活着)
       False — wake 失败 / UI 未在 timeout 内出现
     """
-    if _agent_has_live_claude(agent_name):
+    if _agent_has_live_cli(agent_name):
         return True
 
     now = time.time()
@@ -322,7 +324,7 @@ def wake_on_deliver(agent_name):
                         print(f"  ⚠️ wake_on_deliver: lifecycle wake "
                               f"{agent_name} 退出 {r.returncode}: "
                               f"{(r.stderr or '').strip()[:200]}")
-                    if not _wait_claude_ui_ready(agent_name):
+                    if not _wait_cli_ui_ready(agent_name):
                         print(f"  ⚠️ wake_on_deliver: {agent_name} "
                               f"UI 未在 {WAKE_READY_TIMEOUT_S}s 内 ready")
             except subprocess.TimeoutExpired:

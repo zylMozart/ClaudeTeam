@@ -145,16 +145,15 @@ spawn_agent_window() {
   fi
 
   if should_skip_agent_in_lazy_mode "$agent"; then
-    # 占位: 留 bash prompt,不 spawn claude。router 唤醒时会覆盖这条。
-    # 两行 echo 足够 —— 目标是让 attach 进来的人立刻看懂这不是"启动失败"。
+    # 占位: 留 bash prompt,不 spawn cli。router 唤醒时会覆盖这条。
     local banner="💤 待 wake  (agent=$agent, model=${AGENT_MODELS[$agent]}, lazy-mode)"
     tmux send-keys -t "$SESSION:$agent" \
       "clear && echo '$banner' && echo '   router 收到业务消息后会唤醒本窗口'" \
       Enter
   else
-    tmux send-keys -t "$SESSION:$agent" \
-      "IS_SANDBOX=1 claude --dangerously-skip-permissions --model ${AGENT_MODELS[$agent]} --name $agent" \
-      Enter
+    local spawn_cmd
+    spawn_cmd=$(python3 scripts/cli_adapters/resolve.py "$agent" spawn_cmd "${AGENT_MODELS[$agent]}")
+    tmux send-keys -t "$SESSION:$agent" "$spawn_cmd" Enter
   fi
 }
 
@@ -211,7 +210,7 @@ else
 fi
 export PROBE_AGENTS="${ACTIVE_AGENTS[*]}"
 
-if ! probe_claude_agents 15; then
+if ! probe_agents 15; then
   diagnose_failed_agents
   echo ""
   echo "⚠️  中止:不向死掉的 agent 窗口发送 init 消息,以免污染 bash 历史。"

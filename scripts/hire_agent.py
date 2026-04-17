@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import (PROJECT_ROOT, load_runtime_config, save_runtime_config,
                     LARK_CLI, resolve_model_for_agent, InvalidModelError,
                     ALLOWED_MODELS)
+from cli_adapters import adapter_for_agent
 
 # ── 基础工具 ──────────────────────────────────────────────────
 
@@ -237,13 +238,12 @@ def cmd_start_tmux(agent_name):
                     "-c", PROJECT_ROOT], capture_output=True)
     print(f"✅ tmux 窗口 {agent_name} 已创建")
 
-    # IS_SANDBOX=1 绕过 Claude Code 对 root/sudo 身份的启动检查。ClaudeTeam
-    # 的主流部署环境是容器或 VM root，用户已明确接受 --dangerously-skip-permissions
-    # 的风险。不加这个变量,root 下裸跑会被拒,agent 窗口只剩 bash shell。
+    adapter = adapter_for_agent(agent_name)
+    model = resolve_model_for_agent(agent_name)
     subprocess.run(["tmux", "send-keys", "-t", f"{session}:{agent_name}",
-                    f"IS_SANDBOX=1 claude --dangerously-skip-permissions --name {agent_name}", "Enter"],
+                    adapter.spawn_cmd(agent_name, model), "Enter"],
                    capture_output=True)
-    print(f"⏳ 等待 Claude 启动...")
+    print(f"⏳ 等待 CLI 启动...")
     time.sleep(3)
 
     # 验证 Claude UI 确实起来了 (Bug 11 的后续防御)。
@@ -252,15 +252,15 @@ def cmd_start_tmux(agent_name):
     probe = subprocess.run(
         ["tmux", "capture-pane", "-t", f"{session}:{agent_name}", "-p", "-S", "-60"],
         capture_output=True, text=True)
-    if "bypass permissions on" not in probe.stdout and "? for shortcuts" not in probe.stdout:
-        print(f"❌ {agent_name}: Claude 未能在 3 秒内进入 UI,窗口当前内容:")
+    if not any(m in probe.stdout for m in adapter.ready_markers()):
+        print(f"❌ {agent_name}: CLI 未能在 3 秒内进入 UI,窗口当前内容:")
         for line in probe.stdout.strip().splitlines()[-8:]:
             print(f"     | {line}")
         if "root/sudo privileges" in probe.stdout:
             print("   ↳ Claude 拒绝以 root 启动 --dangerously-skip-permissions。")
             print("     检查 IS_SANDBOX=1 是否被 shell 过滤,或改用非 root 用户。")
         else:
-            print("   ↳ 可能 PATH 里没有 claude,或 --name 等参数被 shell 吞掉。")
+            print(f"   ↳ 可能 PATH 里没有 {adapter.process_name()},或参数被 shell 吞掉。")
         print(f"   ↳ 已中止 {agent_name} 的初始化,请修好后手动重试。")
         return
 

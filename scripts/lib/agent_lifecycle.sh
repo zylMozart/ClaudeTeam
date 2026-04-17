@@ -96,20 +96,23 @@ print(best_sid)
 PY
 }
 
-# 找出某 agent tmux 窗口里所有 claude 子进程的 PID (空格分隔)。
+# 找出某 agent tmux 窗口里所有 CLI 子进程的 PID (空格分隔)。
 #
-# 容器里 claude 的 /proc/<pid>/cmdline 只有 'claude' (无 argv),没法靠 grep
-# 区分不同 agent。改走 tmux pane_pid → /proc PPid 父子关系定位。
+# 通过 adapter.process_name() 获取进程名 (CC="claude", Kimi="kimi"),
+# 走 tmux pane_pid → /proc PPid 父子关系定位。
 # 不依赖 procps (alpine/distroless 没有 pgrep / pstree)。
 _lifecycle_pids_for_agent() {
   local agent="$1"
-  local session bash_pid
+  local session bash_pid proc_name
   session=$(_lifecycle_tmux_session)
   bash_pid=$(tmux display-message -t "$session:$agent" -p '#{pane_pid}' 2>/dev/null)
   [[ -z "$bash_pid" ]] && return 0
-  BASH_PID="$bash_pid" python3 - <<'PY' 2>/dev/null
+  proc_name=$(python3 "$_LC_SCRIPTS_DIR/cli_adapters/resolve.py" "$agent" process_name 2>/dev/null)
+  [[ -z "$proc_name" ]] && proc_name="claude"
+  BASH_PID="$bash_pid" PROC_NAME="$proc_name" python3 - <<'PY' 2>/dev/null
 import os, glob
 ppid = os.environ["BASH_PID"]
+proc_name = os.environ["PROC_NAME"]
 needle = f"\nPPid:\t{ppid}\n"
 out = []
 for d in glob.glob("/proc/[0-9]*"):
@@ -122,7 +125,7 @@ for d in glob.glob("/proc/[0-9]*"):
         continue
     try:
         with open(f"{d}/comm") as f:
-            if f.read().strip() == "claude":
+            if f.read().strip() == proc_name:
                 out.append(os.path.basename(d))
     except OSError:
         continue
@@ -150,8 +153,9 @@ spawn_agent() {
     sleep 0.5
   fi
 
-  tmux send-keys -t "$session:$agent" \
-    "IS_SANDBOX=1 claude --dangerously-skip-permissions --model $model --name $agent" Enter
+  local spawn_cmd
+  spawn_cmd=$(python3 "$_LC_SCRIPTS_DIR/cli_adapters/resolve.py" "$agent" spawn_cmd "$model")
+  tmux send-keys -t "$session:$agent" "$spawn_cmd" Enter
   echo "🟢 spawn_agent: $agent (model=$model)"
   return 0
 }
@@ -235,16 +239,15 @@ wake_agent() {
     sleep 0.5
   fi
 
-  local sid
+  local sid resume_cmd spawn_cmd
   sid=$(_lifecycle_get_session "$agent")
-  if [[ -n "$sid" ]]; then
-    tmux send-keys -t "$session:$agent" \
-      "IS_SANDBOX=1 claude --dangerously-skip-permissions --model $model --name $agent --resume $sid" Enter
+  if [[ -n "$sid" ]] && resume_cmd=$(python3 "$_LC_SCRIPTS_DIR/cli_adapters/resolve.py" "$agent" resume_cmd "$model" "$sid" 2>/dev/null); then
+    tmux send-keys -t "$session:$agent" "$resume_cmd" Enter
     echo "🌅 wake_agent: $agent resume sid=${sid:0:8} (model=$model)"
   else
-    tmux send-keys -t "$session:$agent" \
-      "IS_SANDBOX=1 claude --dangerously-skip-permissions --model $model --name $agent" Enter
-    echo "🌅 wake_agent: $agent 冷启动 — 无 saved session (model=$model)"
+    spawn_cmd=$(python3 "$_LC_SCRIPTS_DIR/cli_adapters/resolve.py" "$agent" spawn_cmd "$model")
+    tmux send-keys -t "$session:$agent" "$spawn_cmd" Enter
+    echo "🌅 wake_agent: $agent 冷启动 — 无 saved session 或 adapter 不支持 resume (model=$model)"
   fi
 
   # 状态从"休眠"挪到"待命",router 投递业务消息后会刷成"进行中"

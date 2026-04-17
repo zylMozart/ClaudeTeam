@@ -41,17 +41,19 @@ def capture_pane(session, window):
     except Exception:
         return ""
 
-def is_agent_idle(session, window):
+def is_agent_idle(session, window, busy_markers=None):
     """
     反转策略：默认认为空闲，只有检测到明确的忙碌标记才返回 False。
     只检查 pane 最后 3 行（避免历史输出中的 spinner 残留干扰）。
+    busy_markers=None 时使用内置 _BUSY_MARKERS (CC 默认值)。
     """
     content = capture_pane(session, window)
     if not content:
         return False  # 窗口不存在
+    markers = busy_markers if busy_markers is not None else _BUSY_MARKERS
     # 只看最后 3 行，避免历史输出中的 spinner 残留
     last_lines = "\n".join(content.rstrip().split("\n")[-3:])
-    for busy in _BUSY_MARKERS:
+    for busy in markers:
         if busy in last_lines:
             return False
     return True  # 默认空闲
