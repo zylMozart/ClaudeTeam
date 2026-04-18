@@ -19,6 +19,7 @@ from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, ch
 from feishu_msg import _lark_run, cmd_say
 from cli_adapters import adapter_for_agent
 import tmux_command
+import team_command
 
 _LIFECYCLE_SH = os.path.join(PROJECT_ROOT, "scripts", "lib", "agent_lifecycle.sh")
 
@@ -457,6 +458,18 @@ def handle_event(event):
             cmd_say("tmux", f"```\n{body}\n```")
         except Exception as e:
             print(f"  \u26a0\ufe0f /tmux 回显失败: {e}")
+        _advance_cursor()
+        return
+
+    # /team 本地拦截 — 零 LLM,采集团队状态回群
+    if team_command.parse(text):
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[{ts}] /team msg_id={msg_id} → 群聊回显(无 agent 介入)")
+        body = team_command.collect_and_format(TMUX_SESSION)
+        try:
+            cmd_say("team", f"```\n{body}\n```")
+        except Exception as e:
+            print(f"  \u26a0\ufe0f /team 回显失败: {e}")
         _advance_cursor()
         return
 
