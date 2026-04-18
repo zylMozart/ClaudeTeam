@@ -5,10 +5,16 @@ import os
 from .base import CliAdapter
 from .claude_code import ClaudeCodeAdapter
 from .kimi_code import KimiCodeAdapter
+from .gemini_cli import GeminiCliAdapter
+from .codex_cli import CodexCliAdapter
+from .qwen_code import QwenCodeAdapter
 
 _REGISTRY: dict[str, CliAdapter] = {
     "claude-code": ClaudeCodeAdapter(),
     "kimi-code": KimiCodeAdapter(),
+    "gemini-cli": GeminiCliAdapter(),
+    "codex-cli": CodexCliAdapter(),
+    "qwen-code": QwenCodeAdapter(),
 }
 
 
