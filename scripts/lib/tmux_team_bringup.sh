@@ -88,9 +88,9 @@ print_agent_models_table() {
 # 返回:
 #   0 — 所有被 probe 的 agent 窗口都出现了 Claude UI 特征串
 #   1 — 至少一个 agent 失败,名单写入全局 FAILED_AGENTS 数组
-probe_claude_agents() {
+probe_agents() {
   local max_attempts="${1:-15}"
-  local attempt agent pane
+  local attempt agent pane ready_pattern
   local -a agents_to_probe
   if [ -n "${PROBE_AGENTS:-}" ]; then
     # shellcheck disable=SC2206
@@ -98,11 +98,14 @@ probe_claude_agents() {
   else
     agents_to_probe=( "${AGENTS[@]}" )
   fi
+  local _bringup_scripts_dir
+  _bringup_scripts_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   for attempt in $(seq 1 "$max_attempts"); do
     FAILED_AGENTS=()
     for agent in "${agents_to_probe[@]}"; do
       pane=$(tmux capture-pane -t "$SESSION:$agent" -p -S -60 2>/dev/null)
-      if echo "$pane" | grep -q "bypass permissions on\|? for shortcuts"; then
+      ready_pattern=$(python3 "$_bringup_scripts_dir/cli_adapters/resolve.py" "$agent" ready_markers 2>/dev/null)
+      if echo "$pane" | grep -q "$ready_pattern"; then
         :
       else
         FAILED_AGENTS+=("$agent")
@@ -111,13 +114,15 @@ probe_claude_agents() {
     if [ ${#FAILED_AGENTS[@]} -eq 0 ]; then
       return 0
     fi
-    # 最后一次不 sleep,让调用方立刻拿到结果
     if [ "$attempt" -lt "$max_attempts" ]; then
       sleep 1
     fi
   done
   return 1
 }
+
+# 向后兼容别名
+probe_claude_agents() { probe_agents "$@"; }
 
 # diagnose_failed_agents
 # 打印首个失败 agent 的 tmux pane 尾部 + 常见根因分析。

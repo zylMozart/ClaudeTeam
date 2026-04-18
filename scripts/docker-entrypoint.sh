@@ -289,6 +289,11 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   tmux kill-session -t "$SESSION"
 fi
 
+# 清理上一个容器残留的 PID 锁文件。bind-mount 的 scripts/ 跨 compose down/up
+# 持久化,旧容器的 PID 可能被新容器内不相关进程复用,导致 _acquire_pid_lock
+# 误判"已在运行"而 sys.exit(1)。
+rm -f scripts/.*.pid
+
 # lazy-mode 与白名单决策共享 lib (lazy_wake_v2 §A.2)。宿主 start-team.sh 走同一份。
 # 容器场景默认 on,与宿主默认对齐;可被 docker run -e CLAUDETEAM_LAZY_MODE=off 覆盖。
 LAZY_MODE="${CLAUDETEAM_LAZY_MODE:-on}"
@@ -328,8 +333,9 @@ spawn_one() {
     tmux send-keys -t "$SESSION:$agent" \
       "clear && echo '💤 待 wake  (agent=$agent, model=${AGENT_MODELS[$agent]}, lazy-mode)' && echo '   router 收到业务消息后会唤醒本窗口'" Enter
   else
-    tmux send-keys -t "$SESSION:$agent" \
-      "IS_SANDBOX=1 claude --dangerously-skip-permissions --model ${AGENT_MODELS[$agent]} --name $agent" Enter
+    local spawn_cmd
+    spawn_cmd=$(python3 scripts/cli_adapters/resolve.py "$agent" spawn_cmd "${AGENT_MODELS[$agent]}")
+    tmux send-keys -t "$SESSION:$agent" "$spawn_cmd" Enter
   fi
 }
 
@@ -404,7 +410,7 @@ for a in "${AGENTS[@]}"; do
 done
 export PROBE_AGENTS="${ACTIVE_AGENTS[*]}"
 
-if ! probe_claude_agents 15; then
+if ! probe_agents 15; then
   diagnose_failed_agents
   echo ""
   echo "⚠️  Claude UI 启动失败。保留 tmux session 便于诊断:"
