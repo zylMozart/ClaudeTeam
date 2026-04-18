@@ -265,6 +265,7 @@ def cmd_start_tmux(agent_name):
         return
 
     from tmux_utils import inject_when_idle
+    from config import resolve_thinking_for_agent
     init_msg = (
         f"你是团队的 {agent_name}。\n\n"
         f"【必读】请读取：agents/{agent_name}/identity.md — 了解你的角色和通讯规范\n"
@@ -273,6 +274,13 @@ def cmd_start_tmux(agent_name):
         f"2. python3 scripts/feishu_msg.py status {agent_name} 进行中 \"初始化完成，待命中\"\n\n"
         f"准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
     )
+    try:
+        thinking = resolve_thinking_for_agent(agent_name)
+        hint = adapter.thinking_init_hint(thinking)
+        if hint:
+            init_msg += f"\n\n【Thinking 指引】{hint}"
+    except Exception:
+        pass
     ok = inject_when_idle(session, agent_name, init_msg, wait_secs=15)
     if ok:
         print(f"✅ 初始化消息已发送到 {agent_name}")

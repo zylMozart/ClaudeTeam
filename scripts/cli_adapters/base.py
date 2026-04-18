@@ -26,3 +26,7 @@ class CliAdapter(ABC):
     def env_overrides(self, agent: str) -> dict:
         """adapter 级别的额外环境变量。"""
         return {}
+
+    def thinking_init_hint(self, thinking: str):
+        """根据 thinking level 返回 init 消息追加的 hint,或 None。"""
+        return None

@@ -40,6 +40,12 @@ def main():
         print(r"\|".join(adapter.busy_markers()))
     elif attr == "process_name":
         print(adapter.process_name())
+    elif attr == "thinking_init_hint":
+        thinking = sys.argv[3] if len(sys.argv) > 3 else "default"
+        hint = adapter.thinking_init_hint(thinking)
+        if hint is None:
+            sys.exit(1)
+        print(hint)
     else:
         print(f"Unknown attribute: {attr}", file=sys.stderr)
         sys.exit(2)

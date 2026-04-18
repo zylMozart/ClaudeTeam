@@ -191,6 +191,56 @@ def resolve_model_for_agent(agent_name):
     return _validate_model(DEFAULT_MODEL, "hardcoded DEFAULT_MODEL")
 
 
+# ── Thinking level 解析 ────────────────────────────────────────────
+
+ALLOWED_THINKING = frozenset({"high", "default", "low", "off"})
+DEFAULT_THINKING = "default"
+
+
+class InvalidThinkingError(ValueError):
+    """team.json 或环境变量里指定了非法的 thinking level。"""
+
+
+def resolve_thinking_for_agent(agent_name):
+    """解析 agent 的 thinking level。
+
+    fallback 链(同 model):
+      1. team.json agents.<agent_name>.thinking
+      2. 环境变量 CLAUDETEAM_DEFAULT_THINKING
+      3. team.json 顶层 default_thinking
+      4. DEFAULT_THINKING 常量 ("default")
+    """
+    team = _read_team_fresh()
+
+    agent_info = team.get("agents", {}).get(agent_name, {}) or {}
+    thinking = agent_info.get("thinking")
+    if thinking:
+        if thinking not in ALLOWED_THINKING:
+            raise InvalidThinkingError(
+                f"非法 thinking {thinking!r} (来自 team.json agents.{agent_name}.thinking); "
+                f"允许: {', '.join(sorted(ALLOWED_THINKING))}"
+            )
+        return thinking
+
+    env_val = _os.environ.get("CLAUDETEAM_DEFAULT_THINKING", "").strip()
+    if env_val:
+        if env_val not in ALLOWED_THINKING:
+            raise InvalidThinkingError(
+                f"非法 thinking {env_val!r} (来自 env CLAUDETEAM_DEFAULT_THINKING)"
+            )
+        return env_val
+
+    team_default = team.get("default_thinking")
+    if team_default:
+        if team_default not in ALLOWED_THINKING:
+            raise InvalidThinkingError(
+                f"非法 thinking {team_default!r} (来自 team.json default_thinking)"
+            )
+        return team_default
+
+    return DEFAULT_THINKING
+
+
 # ── CLI 入口:让 bash (start-team.sh) 取单个 agent 的模型 ──────────
 # 用法: python3 scripts/config.py resolve-model <agent_name>
 #   成功 → stdout 打印模型 ID, 退出码 0
@@ -209,7 +259,16 @@ if __name__ == "__main__":
         except Exception as _e:
             print(f"❌ 解析 {_argv[1]} 模型失败: {_e}", file=_sys.stderr)
             _sys.exit(1)
+    elif len(_argv) == 2 and _argv[0] == "resolve-thinking":
+        try:
+            print(resolve_thinking_for_agent(_argv[1]))
+        except InvalidThinkingError as _e:
+            print(f"❌ {_e}", file=_sys.stderr)
+            _sys.exit(1)
+        except Exception as _e:
+            print(f"❌ 解析 {_argv[1]} thinking 失败: {_e}", file=_sys.stderr)
+            _sys.exit(1)
     else:
-        print("用法: python3 scripts/config.py resolve-model <agent_name>",
+        print("用法: python3 scripts/config.py {resolve-model|resolve-thinking} <agent_name>",
               file=_sys.stderr)
         _sys.exit(2)

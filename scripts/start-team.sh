@@ -232,6 +232,13 @@ for agent in "${ACTIVE_AGENTS[@]}"; do
 
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
+  # thinking init hint (F2: per-agent thinking level)
+  THINKING_HINT=$(python3 scripts/cli_adapters/resolve.py "$agent" thinking_init_hint \
+    "$(python3 scripts/config.py resolve-thinking "$agent" 2>/dev/null)" 2>/dev/null) && \
+    INIT_MSG="${INIT_MSG}
+
+【Thinking 指引】${THINKING_HINT}"
+
   tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
   # 每个 agent init 会同时调用 feishu_msg.py status → Bitable record-batch-create
   # 撞到飞书限流。错峰 2.5s 避免 Bug 15 的并发写入失败。

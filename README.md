@@ -266,10 +266,51 @@ Top-level `volumes:` and `networks:` declared in `docker-compose.yml` are alread
 
 ---
 
+## Multi-CLI Adapter
+
+ClaudeTeam supports **heterogeneous teams** — different agents can run different CLI tools (Claude Code, Kimi, Gemini CLI, Codex CLI, Qwen Code) in the same team.
+
+### How it works
+
+`scripts/cli_adapters/` contains a Python ABC (`CliAdapter`) with per-CLI implementations. Each adapter defines:
+- `spawn_cmd` — the shell command to start the CLI in a tmux pane
+- `ready_markers` — strings that indicate the CLI UI is ready
+- `busy_markers` — strings that indicate the agent is busy (spinner, "Thinking", etc.)
+- `process_name` — the `/proc/<pid>/comm` name for liveness checks
+
+### Supported CLIs
+
+| CLI | Adapter name | Install |
+|---|---|---|
+| Claude Code | `claude-code` (default) | `npm i -g @anthropic-ai/claude-code` |
+| Kimi Code | `kimi-code` | `uv tool install kimi-cli` |
+| Gemini CLI | `gemini-cli` | `npm i -g @anthropic-ai/gemini-cli` |
+| Codex CLI | `codex-cli` | `npm i -g @openai/codex` |
+| Qwen Code | `qwen-code` | `npm i -g qwen-code` |
+
+### Configuring per-agent CLI
+
+Add a `"cli"` field to `team.json` (omit for default `claude-code`):
+
+```json
+{
+  "agents": {
+    "manager":  { "role": "Team Lead", "cli": "claude-code" },
+    "writer":   { "role": "Writer",    "cli": "kimi-code" }
+  }
+}
+```
+
+### Adding a new adapter
+
+Create `scripts/cli_adapters/my_cli.py` (~40 lines), implement the 4 abstract methods, and register it in `__init__.py`.
+
+---
+
 ## FAQ
 
 **Q: Does this work with other LLMs?**
-A: Currently built for Claude Code. The harness could theoretically work with other CLI LLM tools.
+A: Yes! The multi-CLI adapter system supports Claude Code, Kimi, Gemini CLI, Codex CLI, and Qwen Code. See the "Multi-CLI Adapter" section above.
 
 **Q: Can I use Slack/Discord instead of Feishu?**
 A: Not out of the box. The messaging layer is Feishu-specific.
