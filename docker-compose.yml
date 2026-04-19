@@ -96,6 +96,11 @@ services:
       - ~/.claude/.credentials.json:/home/claudeteam/.claude/.credentials.json
       - ~/.claude.json:/home/claudeteam/.claude.json
 
+      # Kimi Code 凭证持久化 — 避免每次容器重建都要手动 /login
+      # kimi-cli 把 OAuth token + config + sessions 存在 $HOME/.kimi/
+      # 首次 /login 后凭证会同步到宿主机 .kimi-credentials/，后续容器重建自动复用。
+      - ./.kimi-credentials:/home/claudeteam/.kimi
+
     # ── 资源限制 ──────────────────────────────────────────────
     # 默认值针对 2C/4G 的小机器；大机器上可在 .env 里改 CLAUDETEAM_CPUS/CLAUDETEAM_MEM
     deploy:

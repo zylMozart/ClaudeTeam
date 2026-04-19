@@ -39,3 +39,4 @@ __pycache__/
 .playwright-mcp/
 tools/
 docker-compose.override.yml
+.kimi-credentials/
