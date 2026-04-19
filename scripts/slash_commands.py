@@ -24,6 +24,7 @@ BJ_TZ = timezone(timedelta(hours=8))
 
 AGENT_WINDOWS = [
     "manager", "pm", "architect", "techlead", "devops", "security",
+    "toolsmith", "researcher",
     "backend1", "backend2", "mobile1", "mobile2", "designer", "qa1", "qa2",
 ]
 AGENT_SET = set(AGENT_WINDOWS)
