@@ -23,7 +23,7 @@ CASES = [
     "/help",
     "/team",          # 现在应走卡片
     "/usage",         # 现在应走卡片
-    "/server-load",   # 走卡片:主机+容器+员工
+    "/health",        # 走卡片:主机+容器+员工
     "/tmux",
     "/tmux devops 5",
     "/send",          # 不带参,走用法提示
