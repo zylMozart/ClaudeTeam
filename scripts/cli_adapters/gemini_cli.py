@@ -11,7 +11,7 @@ from .base import CliAdapter
 class GeminiCliAdapter(CliAdapter):
     def spawn_cmd(self, agent, model):
         # Gemini CLI 无 --name; 用 env 标注 agent 身份供日志识别
-        return f"GEMINI_AGENT={agent} gemini"
+        return f"GEMINI_AGENT={agent} gemini --approval-mode=yolo"
 
     def ready_markers(self):
         # TODO: 实测校准 — Gemini CLI TUI 的 ready 特征串

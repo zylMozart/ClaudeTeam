@@ -11,8 +11,8 @@ from .base import CliAdapter
 class CodexCliAdapter(CliAdapter):
     def spawn_cmd(self, agent, model):
         if model:
-            return f"CODEX_AGENT={agent} codex --model {model}"
-        return f"CODEX_AGENT={agent} codex"
+            return f"CODEX_AGENT={agent} codex --full-auto --model {model}"
+        return f"CODEX_AGENT={agent} codex --full-auto"
 
     def ready_markers(self):
         # TODO: 实测校准 — Codex CLI TUI 的 ready 特征串

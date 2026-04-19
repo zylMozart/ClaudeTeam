@@ -11,7 +11,7 @@ from .base import CliAdapter
 
 class KimiCodeAdapter(CliAdapter):
     def spawn_cmd(self, agent, model):
-        return f"KIMI_AGENT={agent} kimi"
+        return f"KIMI_AGENT={agent} kimi --yolo"
 
     def ready_markers(self):
         # TODO: 实测校准 — kimi CLI technical preview, UI 特征串未稳定
