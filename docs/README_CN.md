@@ -144,10 +144,51 @@ docker compose down
 
 ---
 
+## 异构 CLI 支持
+
+ClaudeTeam 支持**异构团队** — 同一团队里不同 agent 可以跑不同的 CLI 工具。
+
+### 架构
+
+`scripts/cli_adapters/` 下有一个 Python ABC（`CliAdapter`），每种 CLI 实现 4 个方法：
+- `spawn_cmd` — tmux 窗口里启动 CLI 的命令
+- `ready_markers` — CLI UI 就绪的特征串
+- `busy_markers` — agent 忙碌的特征串（spinner、"Thinking" 等）
+- `process_name` — `/proc/<pid>/comm` 里的进程名
+
+### 已支持的 CLI
+
+| CLI | adapter 名 | 安装方式 |
+|---|---|---|
+| Claude Code | `claude-code`（默认） | `npm i -g @anthropic-ai/claude-code` |
+| Kimi Code | `kimi-code` | `uv tool install kimi-cli` |
+| Gemini CLI | `gemini-cli` | `npm i -g @anthropic-ai/gemini-cli` |
+| Codex CLI | `codex-cli` | `npm i -g @openai/codex` |
+| Qwen Code | `qwen-code` | `npm i -g qwen-code` |
+
+### 配置
+
+在 `team.json` 里给 agent 加 `"cli"` 字段（省略则默认 `claude-code`）：
+
+```json
+{
+  "agents": {
+    "manager": { "role": "主管", "cli": "claude-code" },
+    "writer":  { "role": "写作", "cli": "kimi-code" }
+  }
+}
+```
+
+### 新增 adapter
+
+创建 `scripts/cli_adapters/my_cli.py`（约 40 行），实现 4 个抽象方法，然后在 `__init__.py` 注册。
+
+---
+
 ## 常见问题
 
 **Q：能用其他大模型吗？**
-A：目前专为 Claude Code 构建。
+A：支持！异构 CLI 系统已支持 Claude Code、Kimi、Gemini CLI、Codex CLI 和 Qwen Code。详见上方"异构 CLI 支持"章节。
 
 **Q：能用 Slack/Discord 替代飞书吗？**
 A：开箱不支持，需要重写消息层。

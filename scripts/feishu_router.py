@@ -16,8 +16,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
 from tmux_utils import inject_when_idle, is_agent_idle, capture_pane
 from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
-from feishu_msg import _lark_run
+from feishu_msg import _lark_run, cmd_say
 from cli_adapters import adapter_for_agent
+import tmux_command
+import team_command
 
 _LIFECYCLE_SH = os.path.join(PROJECT_ROOT, "scripts", "lib", "agent_lifecycle.sh")
 
@@ -434,6 +436,42 @@ def handle_event(event):
         return
 
     print(f"[{time.strftime('%H:%M:%S')}] 新消息: {text[:500]}")
+
+    # /tmux 本地拦截 — 不路由任何 agent,不走 LLM。
+    # 飞书入口补丁：.claude/hooks 里的 tmux_intercept.py 只覆盖 Claude Code 本机
+    # 输入,群消息会被默认派给 manager 变相触发模型。两处入口共享 tmux_command
+    # 模块,行为一致：/tmux→manager 10 / /tmux <agent> / /tmux <agent> <lines>。
+    tmux_args = tmux_command.parse(text)
+    if tmux_args:
+        t_agent, t_lines = tmux_args
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        line = f"[{ts}] /tmux {t_agent} {t_lines} msg_id={msg_id} → 群聊回显(无 agent 介入)"
+        print(line)
+        try:
+            with open(os.path.join(os.path.dirname(__file__),
+                                   ".tmux_intercept.log"), "a") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+        body = tmux_command.capture(TMUX_SESSION, t_agent, t_lines)
+        try:
+            cmd_say("tmux", f"```\n{body}\n```")
+        except Exception as e:
+            print(f"  \u26a0\ufe0f /tmux 回显失败: {e}")
+        _advance_cursor()
+        return
+
+    # /team 本地拦截 — 零 LLM,采集团队状态回群
+    if team_command.parse(text):
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[{ts}] /team msg_id={msg_id} → 群聊回显(无 agent 介入)")
+        body = team_command.collect_and_format(TMUX_SESSION)
+        try:
+            cmd_say("team", f"```\n{body}\n```")
+        except Exception as e:
+            print(f"  \u26a0\ufe0f /team 回显失败: {e}")
+        _advance_cursor()
+        return
 
     # 图片处理
     image_key = event.get("image_key", "")

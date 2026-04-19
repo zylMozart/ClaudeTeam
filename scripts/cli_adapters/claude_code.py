@@ -23,3 +23,10 @@ class ClaudeCodeAdapter(CliAdapter):
     def resume_cmd(self, agent, model, sid):
         return (f"IS_SANDBOX=1 claude --dangerously-skip-permissions"
                 f" --model {model} --name {agent} --resume {sid}")
+
+    def thinking_init_hint(self, thinking):
+        return {
+            "high": "Use extended thinking for complex tasks.",
+            "low": "Keep thinking concise.",
+            "off": "Do not use extended thinking.",
+        }.get(thinking)  # "default" → None

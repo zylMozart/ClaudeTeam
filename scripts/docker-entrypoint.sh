@@ -435,6 +435,13 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
+    # thinking init hint (F2: per-agent thinking level)
+    THINKING_HINT=$(python3 scripts/cli_adapters/resolve.py "$agent" thinking_init_hint \
+      "$(python3 scripts/config.py resolve-thinking "$agent" 2>/dev/null)" 2>/dev/null) && \
+      INIT_MSG="${INIT_MSG}
+
+【Thinking 指引】${THINKING_HINT}"
+
     tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
     # Bug 15 防御: feishu_msg.py status → Bitable record-batch-create 并发写
     # 会撞限流,错峰 2.5s 与 start-team.sh 对齐。lazy-mode 下 ACTIVE_AGENTS
