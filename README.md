@@ -307,6 +307,16 @@ Create `scripts/cli_adapters/my_cli.py` (~40 lines), implement the 4 abstract me
 
 ---
 
+## Community
+
+Join our WeChat group for discussions, feedback, and feature requests!
+
+<img src="docs/media/wechat-community-qr.png" width="300" alt="WeChat Group QR Code" />
+
+> Note: The QR code refreshes every 7 days. If expired, please open an Issue to request a new one.
+
+---
+
 ## FAQ
 
 **Q: Does this work with other LLMs?**
