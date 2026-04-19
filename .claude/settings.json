@@ -29,7 +29,7 @@
           },
           {
             "type": "command",
-            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/server_load_intercept.py"
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/health_intercept.py"
           },
           {
             "type": "command",

@@ -9,7 +9,7 @@ HELP_TEXT = """🆘 **ClaudeTeam 自定义斜杠命令**（零 LLM，hook 直拦
 **/help**                    → 显示本帮助
 **/team**                    → 列所有员工实时 tmux 状态（群聊为卡片）
 **/usage**                   → Claude Max 周额度 + Extra usage 快照（群聊为卡片）
-**/server-load**             → 主机 + 容器 + 员工资源占用快照（群聊为卡片）
+**/health**                  → 主机 + 容器 + 员工资源占用快照（群聊为卡片）
 **/tmux [agent] [lines]**    → capture-pane 某 agent 的 tmux 窗口
                               例：`/tmux devops 30` → devops 最后 30 行
                               默认 manager / 10 行
