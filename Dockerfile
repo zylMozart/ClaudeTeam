@@ -28,6 +28,12 @@ FROM base AS deps
 # Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
+# uv — Python 版本管理 + 包管理（kimi-cli 需要 Python >=3.12,容器是 3.11）
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && export PATH="$HOME/.local/bin:$PATH" \
+    && uv tool install kimi-cli --python 3.12 \
+    && ln -sf /root/.local/share/uv/tools/kimi-cli/bin/kimi /usr/local/bin/kimi
+
 # lark-cli（飞书 API）
 RUN npm install -g @larksuite/cli \
     && npx @larksuite/cli --version
