@@ -546,10 +546,17 @@ def _advance_cursor():
     """把当前墙钟写进 CURSOR_FILE 的 content。在成功路由一条本团队用户消息
     之后调用。同时会刷新 mtime(心跳顺带)。
     """
-    t = time.time()
+    _advance_cursor_to(time.time())
+
+
+def _advance_cursor_to(ts):
+    """把 cursor 推进到 ts(unix 秒)。只在 ts > 当前 cursor 时写入(单调递增)。"""
+    current = _load_cursor()
+    if current is not None and ts <= current:
+        return
     try:
         with open(CURSOR_FILE, "w") as f:
-            f.write(f"{t:.3f}")
+            f.write(f"{ts:.3f}")
     except Exception as e:
         print(f"  ⚠️ 写 cursor 失败: {e}")
 
@@ -610,8 +617,18 @@ def _catchup_from_history(chat_id):
             print(f"  ⚠️ lark-cli 调用失败: 历史补抓 {chat_id} (停止本轮)",
                   file=sys.stderr)
             break
-        for m in data.get("messages", []):
+        max_create_time = None
+        for m in data.get("messages", data.get("items", [])):
             fetched += 1
+            # 记录本页最新消息时间,用于独立推进 cursor
+            ct = m.get("create_time")
+            if ct:
+                try:
+                    ct_f = float(ct) if "." in str(ct) else float(ct) / 1000
+                    if max_create_time is None or ct_f > max_create_time:
+                        max_create_time = ct_f
+                except (ValueError, TypeError):
+                    pass
             sender = m.get("sender", {})
             # 只 replay 真实用户消息,跳过 app/bot 发的卡片(watchdog 告警、
             # manager 历史回复等),避免这些被 replay 成"新消息"再触发一轮处理
@@ -621,11 +638,17 @@ def _catchup_from_history(chat_id):
             if m.get("msg_type") != "text":
                 print(f"  ⏭  跳过非文本历史消息: {m.get('message_id')}")
                 continue
+            # content 字段兼容:顶层 content 或 body.content(JSON 编码)
+            raw_content = m.get("content") or m.get("body", {}).get("content", "")
+            try:
+                text = json.loads(raw_content).get("text", "") if raw_content else ""
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                text = raw_content or ""
             event = {
                 "message_id":  m.get("message_id", ""),
                 "chat_id":     chat_id,
                 "sender_id":   sender.get("id", ""),
-                "text":        m.get("content", ""),
+                "text":        text,
                 "message_type": "text",
             }
             try:
@@ -633,6 +656,10 @@ def _catchup_from_history(chat_id):
                 replayed += 1
             except Exception as e:
                 print(f"  ⚠️ replay 事件失败: {e}")
+        # 独立推进 cursor:不管 handle_event 成败,只要拉到了消息就推进,
+        # 打破 dedup-cursor 死锁(seen_ids 锁住 msg_id 但 cursor 不前进)
+        if max_create_time is not None:
+            _advance_cursor_to(max_create_time)
         if not data.get("has_more"):
             break
         page_token = data.get("page_token", "")
