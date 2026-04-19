@@ -370,9 +370,9 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
     is_user_msg = (sender_agent is None)
     has_pending = has_pending_messages(agent_name)
 
-    if not has_pending and is_agent_idle(TMUX_SESSION, agent_name):
+    if not has_pending:
         ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
-                              wait_secs=2, force_after_wait=False)
+                              wait_secs=15, force_after_wait=True)
         if ok:
             print(f"  → 已触发 {agent_name} 窗口（直接投递）")
             return
@@ -546,10 +546,17 @@ def _advance_cursor():
     """把当前墙钟写进 CURSOR_FILE 的 content。在成功路由一条本团队用户消息
     之后调用。同时会刷新 mtime(心跳顺带)。
     """
-    t = time.time()
+    _advance_cursor_to(time.time())
+
+
+def _advance_cursor_to(ts):
+    """把 cursor 推进到 ts(unix 秒)。只在 ts > 当前 cursor 时写入(单调递增)。"""
+    current = _load_cursor()
+    if current is not None and ts <= current:
+        return
     try:
         with open(CURSOR_FILE, "w") as f:
-            f.write(f"{t:.3f}")
+            f.write(f"{ts:.3f}")
     except Exception as e:
         print(f"  ⚠️ 写 cursor 失败: {e}")
 
@@ -575,7 +582,7 @@ def _catchup_from_history(chat_id):
     if cursor is None:
         _advance_cursor()
         print("📥 首次启动,无 cursor,跳过历史补抓")
-        return
+        return 0
 
     # 向前退 1 秒避免秒级精度漏掉同一秒的消息。代价: 上一条消息会被 replay
     # 一次(跨 session seen_ids 清空),manager 可能重复响应一次。相比丢消息,
@@ -610,8 +617,18 @@ def _catchup_from_history(chat_id):
             print(f"  ⚠️ lark-cli 调用失败: 历史补抓 {chat_id} (停止本轮)",
                   file=sys.stderr)
             break
-        for m in data.get("messages", []):
+        max_create_time = None
+        for m in data.get("messages", data.get("items", [])):
             fetched += 1
+            # 记录本页最新消息时间,用于独立推进 cursor
+            ct = m.get("create_time")
+            if ct:
+                try:
+                    ct_f = float(ct) if "." in str(ct) else float(ct) / 1000
+                    if max_create_time is None or ct_f > max_create_time:
+                        max_create_time = ct_f
+                except (ValueError, TypeError):
+                    pass
             sender = m.get("sender", {})
             # 只 replay 真实用户消息,跳过 app/bot 发的卡片(watchdog 告警、
             # manager 历史回复等),避免这些被 replay 成"新消息"再触发一轮处理
@@ -621,11 +638,17 @@ def _catchup_from_history(chat_id):
             if m.get("msg_type") != "text":
                 print(f"  ⏭  跳过非文本历史消息: {m.get('message_id')}")
                 continue
+            # content 字段兼容:顶层 content 或 body.content(JSON 编码)
+            raw_content = m.get("content") or m.get("body", {}).get("content", "")
+            try:
+                text = json.loads(raw_content).get("text", "") if raw_content else ""
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                text = raw_content or ""
             event = {
                 "message_id":  m.get("message_id", ""),
                 "chat_id":     chat_id,
                 "sender_id":   sender.get("id", ""),
-                "text":        m.get("content", ""),
+                "text":        text,
                 "message_type": "text",
             }
             try:
@@ -633,6 +656,10 @@ def _catchup_from_history(chat_id):
                 replayed += 1
             except Exception as e:
                 print(f"  ⚠️ replay 事件失败: {e}")
+        # 独立推进 cursor:不管 handle_event 成败,只要拉到了消息就推进,
+        # 打破 dedup-cursor 死锁(seen_ids 锁住 msg_id 但 cursor 不前进)
+        if max_create_time is not None:
+            _advance_cursor_to(max_create_time)
         if not data.get("has_more"):
             break
         page_token = data.get("page_token", "")
@@ -642,6 +669,7 @@ def _catchup_from_history(chat_id):
     if time.time() >= deadline:
         print("  ⚠️ 历史补抓达到 30s 硬上限,剩余页放弃(下次重启会继续)")
     print(f"📥 历史补抓完成: 拉取 {fetched} 条, replay {replayed} 条到 agent")
+    return replayed
 
 
 # ── PID 锁 ──────────────────────────────────────────────────
@@ -730,13 +758,28 @@ def main():
     # 即使 WebSocket 后来恢复也不会冲突。代价是延迟 ≤ 5s、chat-messages-list
     # 调用频率上升。
     def _poll_catchup_loop():
+        cumulative_replayed = 0
+        last_replay_time = time.time()
+        warned = False
         while True:
             try:
-                _catchup_from_history(chat_id)
-                # 轮询模式下 WebSocket 永远不会触发 _refresh_heartbeat,
-                # 但 watchdog 通过 health_file mtime 判活。每轮都刷一下,
-                # 避免被误判为"30 分钟无事件=静默死亡"而重启。
+                n = _catchup_from_history(chat_id) or 0
+                cumulative_replayed += n
+                if n > 0:
+                    last_replay_time = time.time()
+                    warned = False
+                # 心跳: 证明 poll 线程活着(watchdog 需要)
                 _refresh_heartbeat()
+                # 5 分钟内 0 replay → 可能 WebSocket 已断链
+                if (not warned
+                        and time.time() - last_replay_time > 300
+                        and cumulative_replayed == 0):
+                    print("=" * 60)
+                    print("⚠️  轮询 5 分钟内未 replay 任何消息")
+                    print("   如群内有新消息但 agent 无反应,")
+                    print("   WebSocket 可能已断链,catchup 正在兜底。")
+                    print("=" * 60)
+                    warned = True
             except Exception as e:
                 print(f"  ⚠️ 轮询 catchup 异常: {e}")
             time.sleep(5)

@@ -301,6 +301,26 @@ Add a `"cli"` field to `team.json` (omit for default `claude-code`):
 }
 ```
 
+### Kimi CLI credential setup (Docker)
+
+After `docker compose up`, kimi-code agents will prompt for login via a **device code flow**. You'll see a message like:
+
+```
+Please visit the following URL to finish authorization.
+Verification URL: https://www.kimi.com/code/authorize_device?user_code=XXXX-YYYY
+```
+
+Open the URL in your browser, authorize with your Moonshot account, and the kimi CLI will save credentials to `$HOME/.kimi/` inside the container.
+
+**Credential persistence:** The `.kimi-credentials/` directory in the project root is bind-mounted into the container (see `docker-compose.yml`). After first login, subsequent container recreations (`docker compose down && up`) reuse the saved tokens automatically — no re-login needed.
+
+**If kimi login expires:** Remove the `.kimi-credentials/` directory and restart the container. The kimi agents will prompt for login again.
+
+```bash
+rm -rf .kimi-credentials/
+docker compose restart
+```
+
 ### Adding a new adapter
 
 Create `scripts/cli_adapters/my_cli.py` (~40 lines), implement the 4 abstract methods, and register it in `__init__.py`.
