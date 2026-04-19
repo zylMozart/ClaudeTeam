@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""UserPromptSubmit hook: 拦截 /clear <agent>，复用 slash_commands.dispatch。
+
+注意：无参 /clear **不拦**，走 Claude Code 内置 /clear（压自己）。
+仅 `/clear <agent>` 才进入 slash_commands 路径。
+"""
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
+                    Path(__file__).resolve().parents[2])
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+
+import slash_commands  # noqa: E402
+
+
+def block(reason: str) -> None:
+    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+    sys.exit(0)
+
+
+def main() -> None:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        sys.exit(0)
+    prompt = (payload.get("prompt") or "").strip()
+    # 只拦带参的 /clear <agent>；无参放行给 Claude Code 内置 /clear
+    if not re.match(r"^/clear\s+\S", prompt):
+        sys.exit(0)
+
+    try:
+        matched, reply = slash_commands.dispatch(prompt)
+    except Exception as e:
+        block(f"⚠️ /clear 执行异常：{type(e).__name__}: {e}")
+    if not matched:
+        sys.exit(0)
+    body = reply.get("text") if isinstance(reply, dict) else (str(reply) if reply else "")
+    block(body or "(无输出)")
+
+
+if __name__ == "__main__":
+    main()
