@@ -582,7 +582,7 @@ def _catchup_from_history(chat_id):
     if cursor is None:
         _advance_cursor()
         print("📥 首次启动,无 cursor,跳过历史补抓")
-        return
+        return 0
 
     # 向前退 1 秒避免秒级精度漏掉同一秒的消息。代价: 上一条消息会被 replay
     # 一次(跨 session seen_ids 清空),manager 可能重复响应一次。相比丢消息,
@@ -669,6 +669,7 @@ def _catchup_from_history(chat_id):
     if time.time() >= deadline:
         print("  ⚠️ 历史补抓达到 30s 硬上限,剩余页放弃(下次重启会继续)")
     print(f"📥 历史补抓完成: 拉取 {fetched} 条, replay {replayed} 条到 agent")
+    return replayed
 
 
 # ── PID 锁 ──────────────────────────────────────────────────
@@ -757,13 +758,28 @@ def main():
     # 即使 WebSocket 后来恢复也不会冲突。代价是延迟 ≤ 5s、chat-messages-list
     # 调用频率上升。
     def _poll_catchup_loop():
+        cumulative_replayed = 0
+        last_replay_time = time.time()
+        warned = False
         while True:
             try:
-                _catchup_from_history(chat_id)
-                # 轮询模式下 WebSocket 永远不会触发 _refresh_heartbeat,
-                # 但 watchdog 通过 health_file mtime 判活。每轮都刷一下,
-                # 避免被误判为"30 分钟无事件=静默死亡"而重启。
+                n = _catchup_from_history(chat_id) or 0
+                cumulative_replayed += n
+                if n > 0:
+                    last_replay_time = time.time()
+                    warned = False
+                # 心跳: 证明 poll 线程活着(watchdog 需要)
                 _refresh_heartbeat()
+                # 5 分钟内 0 replay → 可能 WebSocket 已断链
+                if (not warned
+                        and time.time() - last_replay_time > 300
+                        and cumulative_replayed == 0):
+                    print("=" * 60)
+                    print("⚠️  轮询 5 分钟内未 replay 任何消息")
+                    print("   如群内有新消息但 agent 无反应,")
+                    print("   WebSocket 可能已断链,catchup 正在兜底。")
+                    print("=" * 60)
+                    warned = True
             except Exception as e:
                 print(f"  ⚠️ 轮询 catchup 异常: {e}")
             time.sleep(5)
