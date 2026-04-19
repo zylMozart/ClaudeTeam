@@ -27,9 +27,11 @@ CASES = [
     "/tmux",
     "/tmux devops 5",
     "/send",          # 不带参,走用法提示
+    "/stop",          # 无参走用法提示(带参会真 C-c,留给老板手动试)
     # /compact-all 已删除
     # /compact 无参 — 故意放行给 Claude 原生
     # /send <agent> <msg> — 会真的注入到员工,留给老板手动试
+    # /clear <agent> — 会真的 rehire,留给老板手动试
 ]
 
 

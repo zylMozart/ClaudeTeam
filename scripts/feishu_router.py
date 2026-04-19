@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
 from tmux_utils import inject_when_idle, is_agent_idle, capture_pane
 from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
-from feishu_msg import _lark_run
+from feishu_msg import _lark_run, cmd_say
+import tmux_command
+import slash_commands
 
 _LIFECYCLE_SH = os.path.join(PROJECT_ROOT, "scripts", "lib", "agent_lifecycle.sh")
 
@@ -429,6 +431,42 @@ def handle_event(event):
     msg_type = event.get("message_type", "text")
 
     if not text:
+        return
+
+    # 斜杠命令统一前置过滤 — 不路由任何 agent,不走 LLM。
+    # .claude/hooks 覆盖 manager 本机输入;这里覆盖飞书群入口,避免转给 manager 触发模型。
+    # 共享模块 scripts/slash_commands.py,行为与 hook 一致。
+    # 命中命令: /help /team /usage /tmux /send /compact <agent> /compact-all
+    matched, reply = slash_commands.dispatch(text)
+    if matched:
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        first = text.strip().split()[0] if text.strip() else ""
+        line = f"[{ts}] slash {first} msg_id={msg_id} → 群聊回显(无 agent 介入)"
+        print(line)
+        try:
+            with open(os.path.join(os.path.dirname(__file__),
+                                   ".tmux_intercept.log"), "a") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+        try:
+            from feishu_msg import _lark_im_send, CHAT, build_system_card
+            chat_id = CHAT()
+            if not chat_id:
+                print(f"  ⚠️ chat_id 未配置,无法回显")
+            elif isinstance(reply, dict) and reply.get("card"):
+                # 自定义卡片(/team /usage)
+                _lark_im_send(chat_id, card=reply["card"])
+            else:
+                # 文本回显 → 包进「系统消息」卡片,避免 bot · ? 难看标签
+                body = reply if isinstance(reply, str) else (
+                    reply.get("text", "(空)") if isinstance(reply, dict) else "(空)")
+                if first == "/tmux":
+                    body = f"```\n{body}\n```"
+                _lark_im_send(chat_id, card=build_system_card(body))
+        except Exception as e:
+            print(f"  ⚠️ slash 回显失败: {e}")
+        _advance_cursor()
         return
 
     print(f"[{time.strftime('%H:%M:%S')}] 新消息: {text[:500]}")
