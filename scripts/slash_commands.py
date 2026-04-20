@@ -202,7 +202,7 @@ def _cmd_tmux(text: str):
     m = _TMUX_RE.match(text)
     if not m:
         return None
-    agent = m.group(1) or "manager"
+    agent = m.group(1) or (AGENT_WINDOWS[0] if AGENT_WINDOWS else "manager")
     lines = int(m.group(2)) if m.group(2) else 10
     lines = max(1, min(lines, 2000))
     if agent not in AGENT_SET:
@@ -250,7 +250,7 @@ def _cmd_compact(text: str):
     m = re.fullmatch(r"/compact(?:\s+(\S+))?\s*", text)
     if not m:
         return None
-    agent = (m.group(1) or "manager").strip()
+    agent = (m.group(1) or (AGENT_WINDOWS[0] if AGENT_WINDOWS else "manager")).strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", agent):
         return f"⚠️ 非法 agent 名：`{agent}`"
     if agent not in AGENT_SET:
