@@ -661,7 +661,18 @@ def _catchup_from_history(chat_id):
             ct = m.get("create_time")
             if ct:
                 try:
-                    ct_f = float(ct) if "." in str(ct) else float(ct) / 1000
+                    ct_str = str(ct).strip()
+                    # lark-cli +chat-messages-list 返回格式化时间 "2026-04-20 09:26"
+                    # 标准 API 返回 unix ms "1776591454415" 或 unix s "1776591454.415"
+                    if re.match(r"\d{4}-\d{2}-\d{2}", ct_str):
+                        from datetime import datetime as _dt
+                        ct_f = _dt.strptime(ct_str, "%Y-%m-%d %H:%M").replace(
+                            tzinfo=timezone(timedelta(hours=8))).timestamp()
+                    elif "." in ct_str:
+                        ct_f = float(ct_str)
+                    else:
+                        v = float(ct_str)
+                        ct_f = v / 1000 if v > 1e12 else v
                     if max_create_time is None or ct_f > max_create_time:
                         max_create_time = ct_f
                 except (ValueError, TypeError):
