@@ -202,29 +202,33 @@ _CODEX_MODEL_RE = re.compile(r"(\S+)\s+default\s+·")
 _CODEX_FREE_RE = re.compile(r"included in your plan for free")
 
 
+_CODEX_USAGE_RE = re.compile(
+    r"(?P<label>[\w ()]+?)\s+(?P<pct>\d+)%\s+resets\s+(?P<reset>\S+)")
+
+
 def _query_codex_usage() -> list:
-    """从 Codex pane 读 banner 信息。"""
-    raw = _tmux_send_and_capture("codex_agent", "", wait=0)
-    model = ""
-    plan = "ChatGPT Plus/Pro"
-    for line in raw.splitlines():
-        m = _CODEX_MODEL_RE.search(line)
+    """用 codex-cli-usage 工具查 Codex 额度（百分比 + 重置时间）。"""
+    r = _run(["codex-cli-usage"], timeout=15)
+    if r.returncode != 0:
+        # fallback: 工具没装或失败
+        return [{"label": "Codex", "pct": -1,
+                 "detail": "codex-cli-usage 不可用 · [点击查看 →](https://chatgpt.com/codex/cloud/settings/analytics#usage)"}]
+    metrics = []
+    plan = ""
+    for line in (r.stdout or "").splitlines():
+        if line.strip().startswith("Plan:"):
+            plan = line.split(":", 1)[1].strip()
+        m = _CODEX_USAGE_RE.search(line)
         if m:
-            model = m.group(1)
-        if _CODEX_FREE_RE.search(line):
-            plan = "Included free (limited time)"
-        if "model:" in line.lower():
-            mm = re.search(r"model:\s+(\S+)", line)
-            if mm:
-                model = mm.group(1)
-    if model:
-        return [
-            {"label": "Model", "pct": -1, "detail": model},
-            {"label": "Plan", "pct": -1, "detail": f"✅ {plan}"},
-            {"label": "详细用量", "pct": -1,
-             "detail": "[点击查看 →](https://chatgpt.com/codex/cloud/settings/analytics#usage)"},
-        ]
-    return []
+            pct = int(m.group("pct"))
+            metrics.append({
+                "label": m.group("label").strip(),
+                "pct": pct,
+                "detail": f"已用 {pct}% · 重置 {m.group('reset')}",
+            })
+    if plan:
+        metrics.insert(0, {"label": "Plan", "pct": -1, "detail": f"✅ {plan}"})
+    return metrics or [{"label": "Codex", "pct": -1, "detail": "无数据"}]
 
 
 # Gemini: /stats 命令获取 session 级用量 + banner 读 plan
