@@ -202,7 +202,7 @@ _CODEX_FREE_RE = re.compile(r"included in your plan for free")
 
 
 def _query_codex_usage() -> list:
-    """从 Codex pane 读 banner；如果拿不到有效信息就返回 plan 描述。"""
+    """从 Codex pane 读 banner 信息。"""
     raw = _tmux_send_and_capture("codex_agent", "", wait=0)
     model = ""
     plan = "ChatGPT Plus/Pro"
@@ -211,42 +211,74 @@ def _query_codex_usage() -> list:
         if m:
             model = m.group(1)
         if _CODEX_FREE_RE.search(line):
-            plan = "Included free"
+            plan = "Included free (limited time)"
+        if "model:" in line.lower():
+            mm = re.search(r"model:\s+(\S+)", line)
+            if mm:
+                model = mm.group(1)
     if model:
         return [
-            {"label": "Codex Model", "pct": -1, "detail": model},
+            {"label": "Model", "pct": -1, "detail": model},
             {"label": "Plan", "pct": -1, "detail": f"✅ {plan}"},
-            {"label": "额度说明", "pct": -1, "detail": "30-150 msg/5h (Plus) · 300-1500 msg/5h (Pro)"},
         ]
-    # pane 没跑或读不到 → 返回空让 _query_cli fallback
     return []
 
 
-# Gemini: 无 usage 命令；从 pane banner 读 plan（不发命令）
+# Gemini: /stats 命令获取 session 级用量 + banner 读 plan
 _GEMINI_PLAN_RE = re.compile(r"Plan:\s+(.+?)(?:\s+/upgrade)?\s*$")
 _GEMINI_MODEL_RE = re.compile(r"Auto \((.+?)\)")
+_GEMINI_TIER_RE = re.compile(r"Tier:\s+(.+)")
+_GEMINI_AUTH_RE = re.compile(r"Auth Method:\s+(.+)")
+_GEMINI_REQS_RE = re.compile(r"Tool Calls:\s+(\d+)")
 
 
 def _query_gemini_usage() -> list:
-    """从 Gemini pane 读 banner；如果拿不到有效信息就返回 plan 描述。"""
-    raw = _tmux_send_and_capture("gemini_agent", "", wait=0)
+    """从 Gemini 发 /stats 并解析 session 级用量。"""
+    # 先抓 banner（不发命令）
+    banner = _tmux_send_and_capture("gemini_agent", "", wait=0)
     plan = "Google AI"
     model = ""
-    for line in raw.splitlines():
+    for line in banner.splitlines():
         m = _GEMINI_PLAN_RE.search(line)
         if m:
             plan = m.group(1).strip()
         m = _GEMINI_MODEL_RE.search(line)
         if m:
             model = m.group(1)
+    # 发 /stats 获取详细数据
+    stats = _tmux_send_and_capture("gemini_agent", "/stats", wait=5, lines=35)
+    tier = plan
+    auth = ""
+    reqs = 0
+    input_tokens = output_tokens = 0
+    for line in stats.splitlines():
+        m = _GEMINI_TIER_RE.search(line)
+        if m:
+            tier = m.group(1).strip()
+        m = _GEMINI_AUTH_RE.search(line)
+        if m:
+            auth = m.group(1).strip()
+        m = _GEMINI_REQS_RE.search(line)
+        if m:
+            reqs = int(m.group(1))
+        # Token rows: model name + numbers
+        nums = re.findall(r"\d+", line)
+        if len(nums) >= 4 and "gemini" in line.lower():
+            try:
+                input_tokens += int(nums[1])
+                output_tokens += int(nums[3])
+            except (IndexError, ValueError):
+                pass
+    result = [
+        {"label": "Plan", "pct": -1, "detail": f"✅ {tier}"},
+    ]
+    if auth:
+        result.append({"label": "Account", "pct": -1, "detail": auth})
     if model:
-        return [
-            {"label": "Gemini Model", "pct": -1, "detail": f"Auto ({model})"},
-            {"label": "Plan", "pct": -1, "detail": f"✅ {plan}"},
-            {"label": "额度说明", "pct": -1, "detail": "60 req/min · 1000 req/day (free)"},
-        ]
-    # 返回空让 _query_cli fallback
-    return []
+        result.append({"label": "Model", "pct": -1, "detail": f"Auto ({model})"})
+    result.append({"label": "Session Tokens", "pct": -1,
+                   "detail": f"in: {input_tokens:,} · out: {output_tokens:,} · reqs: {reqs}"})
+    return result
 
 
 _CLI_QUERY_MAP = {
