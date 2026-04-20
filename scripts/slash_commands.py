@@ -221,6 +221,8 @@ def _query_codex_usage() -> list:
         return [
             {"label": "Model", "pct": -1, "detail": model},
             {"label": "Plan", "pct": -1, "detail": f"✅ {plan}"},
+            {"label": "详细用量", "pct": -1,
+             "detail": "[点击查看 →](https://chatgpt.com/codex/cloud/settings/analytics#usage)"},
         ]
     return []
 
@@ -279,6 +281,8 @@ def _query_gemini_usage() -> list:
         result.append({"label": "Model", "pct": -1, "detail": f"Auto ({model})"})
     result.append({"label": "Session Tokens", "pct": -1,
                    "detail": f"in: {input_tokens:,} · out: {output_tokens:,} · reqs: {reqs}"})
+    result.append({"label": "详细用量", "pct": -1,
+                   "detail": "[点击查看 →](https://aistudio.google.com/apikey)"})
     return result
 
 
