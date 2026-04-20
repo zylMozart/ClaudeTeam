@@ -355,6 +355,19 @@ Gemini agents prompt for **Google OAuth** on first run. You'll see a long Google
 
 All CLIs are pre-configured with auto-approve flags (e.g., `--yolo`, `--dangerously-bypass-approvals-and-sandbox`) so agents never see permission prompts during operation.
 
+### `/usage` per-CLI quota dependencies
+
+The `/usage` slash command queries real-time quota for each CLI. These tools are pre-installed in the Docker image:
+
+| CLI | Quota tool | Install | What it shows |
+|---|---|---|---|
+| Claude Code | `usage_snapshot.py` | Built-in | 5h/7d/Sonnet % + Extra usage |
+| Kimi | `/usage` (built into kimi CLI) | N/A | Weekly % + 5h % + reset time |
+| Codex | `codex-cli-usage` | `uv tool install codex-cli-usage` | Session % + reset time |
+| Gemini | `gemini-cli-usage` | `uv tool install gemini-cli-usage` | Per-model % + reset time |
+
+Usage: `/usage` (CC default), `/usage kimi`, `/usage codex`, `/usage gemini`, `/usage all`.
+
 ### Adding a new adapter
 
 Create `scripts/cli_adapters/my_cli.py` (~40 lines), implement the 4 abstract methods, and register it in `__init__.py`.
