@@ -292,34 +292,112 @@ def _build_usage_card(raw: str, title_suffix: str, cli_details=None) -> dict:
     }
 
 
+_CLI_USAGE_CMDS = {
+    "kimi": "/usage",
+    "codex": "/status",
+    "gemini": "/stats",
+}
+
+
+def _capture_cli_usage(cli_name: str) -> str | None:
+    """在容器 tmux 里发 usage 命令并 capture 输出。返回文本或 None。"""
+    cmd_text = _CLI_USAGE_CMDS.get(cli_name)
+    if not cmd_text:
+        return None
+    session = _host_session()
+    # 找到对应 agent 窗口（team.json 里 cli 字段匹配）
+    try:
+        tj = json.loads((PROJECT_ROOT / "team.json").read_text())
+        agents = tj.get("agents", {})
+        target_agent = None
+        for name, cfg in agents.items():
+            if cfg.get("cli", "claude-code") == f"{cli_name}-code" or \
+               cfg.get("cli", "claude-code") == f"{cli_name}-cli" or \
+               cfg.get("cli", "claude-code").startswith(cli_name):
+                target_agent = name
+                break
+        if not target_agent:
+            return f"(未找到使用 {cli_name} CLI 的 agent)"
+    except Exception:
+        return None
+
+    # 检查窗口存在
+    windows = _list_windows_local(session)
+    if target_agent not in windows:
+        # 尝试容器内
+        for cname in _containers():
+            wmap = _container_window_map(cname)
+            if target_agent in wmap:
+                target = wmap[target_agent]
+                _run(["sudo", "-n", "docker", "exec", cname,
+                      "tmux", "send-keys", "-t", target, cmd_text, "Enter"], timeout=5)
+                time.sleep(4)
+                r = _run(["sudo", "-n", "docker", "exec", cname,
+                          "tmux", "capture-pane", "-pt", target, "-S", "-20"], timeout=5)
+                return r.stdout.strip() if r.returncode == 0 else None
+        return f"({target_agent} 窗口不存在)"
+
+    # 本机 tmux
+    t = f"{session}:{target_agent}"
+    _run(["tmux", "send-keys", "-t", t, cmd_text, "Enter"], timeout=3)
+    time.sleep(4)
+    r = _run(["tmux", "capture-pane", "-pt", t, "-S", "-20"], timeout=5)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
 def _cmd_usage(text: str):
-    m = re.fullmatch(r"/usage(?:\s+(all))?\s*", text)
+    m = re.fullmatch(r"/usage(?:\s+(\S+))?\s*", text)
     if not m:
         return None
-    show_all = m.group(1) == "all"
-
-    snapshot = PROJECT_ROOT / "scripts" / "usage_snapshot.py"
-    r = _run(["python3", str(snapshot)], timeout=30)
-    if r.returncode != 0:
-        err = f"⚠️ /usage 失败 (exit {r.returncode})\n{(r.stderr or r.stdout or '无输出').rstrip()}"
-        return err
-    raw = (r.stdout or "(无输出)").rstrip()
-
-    cli_details = _multi_cli_details() if show_all else None
-
-    # 文本版本
-    raw_full = raw
-    if cli_details:
-        cli_lines = ["\n--- Multi-CLI ---"]
-        for name, logged_in, plan, detail in cli_details:
-            icon = "✅" if logged_in else "❌"
-            line = f"  {name}: {icon} "
-            line += f"{plan} · {detail}" if logged_in else "未登录"
-            cli_lines.append(line)
-        raw_full = raw + "\n".join(cli_lines)
+    target = (m.group(1) or "").lower()
 
     now = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
-    return {"text": raw_full, "card": _build_usage_card(raw, now, cli_details)}
+
+    # /usage 或 /usage cc/claude → CC 额度
+    if target in ("", "cc", "claude", "claude-code"):
+        snapshot = PROJECT_ROOT / "scripts" / "usage_snapshot.py"
+        r = _run(["python3", str(snapshot)], timeout=30)
+        if r.returncode != 0:
+            return f"⚠️ /usage 失败 (exit {r.returncode})\n{(r.stderr or r.stdout or '无输出').rstrip()}"
+        raw = (r.stdout or "(无输出)").rstrip()
+        return {"text": raw, "card": _build_usage_card(raw, f"Claude Code · {now}")}
+
+    # /usage all → CC + 全部已登录 CLI
+    if target == "all":
+        snapshot = PROJECT_ROOT / "scripts" / "usage_snapshot.py"
+        r = _run(["python3", str(snapshot)], timeout=30)
+        cc_raw = (r.stdout or "(无输出)").rstrip() if r.returncode == 0 else "(CC 查询失败)"
+        cli_details = _multi_cli_details()
+        # 对每个已登录的 CLI 尝试抓 usage
+        cli_usage_texts = []
+        for name, logged_in, plan, detail in cli_details:
+            cli_key = name.lower().replace(" ", "")
+            if cli_key in ("claudecode",):
+                continue  # CC 已在上面
+            if logged_in and cli_key in _CLI_USAGE_CMDS:
+                captured = _capture_cli_usage(cli_key)
+                if captured:
+                    cli_usage_texts.append(f"\n=== {name} ({plan}) ===\n{captured}")
+                else:
+                    cli_usage_texts.append(f"\n=== {name} ({plan}) ===\n(agent 未运行，无法查询实时额度)")
+        full_text = cc_raw + "\n".join(cli_usage_texts)
+        return {"text": full_text, "card": _build_usage_card(cc_raw, f"All CLIs · {now}", cli_details)}
+
+    # /usage kimi / /usage codex / /usage gemini → 单个 CLI
+    if target in _CLI_USAGE_CMDS:
+        captured = _capture_cli_usage(target)
+        if captured:
+            return {"text": captured, "card": _build_usage_card(captured, f"{target.title()} · {now}")}
+        else:
+            cli_details = _multi_cli_details()
+            for name, logged_in, plan, detail in cli_details:
+                if name.lower() == target:
+                    if not logged_in:
+                        return f"⚠️ {name} 未登录，无法查询额度"
+                    return f"⚠️ {name} agent 未运行，无法查询实时额度（{plan}）"
+            return f"⚠️ {target} agent 未找到"
+
+    return f"⚠️ 未知 CLI：{target}\n支持：/usage [cc|kimi|codex|gemini|all]"
 
 
 # ── /tmux ──────────────────────────────────────────────────────
