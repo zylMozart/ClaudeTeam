@@ -131,14 +131,19 @@ def _pct_color(p: int) -> str:
 
 def _cli_login_status() -> list:
     """检查多 CLI 凭证文件，返回 [(cli_name, logged_in, plan_info), ...]。"""
+    home = Path(os.environ.get("HOME", "/home/claudeteam"))
     checks = [
-        ("Kimi",   PROJECT_ROOT / ".kimi-credentials" / "config.toml",      "Subscription $19/mo"),
-        ("Codex",  PROJECT_ROOT / ".codex-credentials" / "auth.json",       "ChatGPT Plus/Pro"),
-        ("Gemini", PROJECT_ROOT / ".gemini-credentials" / "oauth_creds.json", "Google AI Free"),
+        ("Kimi",   [home / ".kimi" / "config.toml",
+                    PROJECT_ROOT / ".kimi-credentials" / "config.toml"],       "Subscription $19/mo"),
+        ("Codex",  [home / ".codex" / "auth.json",
+                    PROJECT_ROOT / ".codex-credentials" / "auth.json"],        "ChatGPT Plus/Pro"),
+        ("Gemini", [home / ".gemini" / "oauth_creds.json",
+                    PROJECT_ROOT / ".gemini-credentials" / "oauth_creds.json"], "Google AI Free"),
     ]
     result = []
-    for name, path, plan in checks:
-        result.append((name, path.is_file(), plan))
+    for name, paths, plan in checks:
+        logged_in = any(p.is_file() for p in paths)
+        result.append((name, logged_in, plan))
     return result
 
 
