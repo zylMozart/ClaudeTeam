@@ -173,6 +173,18 @@ def _lark_base_list(base_token, table_id, limit=20, offset=0):
 
 # ── 消息卡片构建 ──────────────────────────────────────────────
 
+def build_system_card(content: str, template: str = "grey") -> dict:
+    """系统消息卡片（给 slash 命令的文本回显用），不带 sender · role 标签。"""
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": template,
+            "title": {"tag": "plain_text", "content": "🛠️ 系统消息"},
+        },
+        "elements": [{"tag": "markdown", "content": content}],
+    }
+
+
 def build_card(from_agent, to_agent, content, priority="中"):
     """构建飞书消息卡片 JSON"""
     info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})

@@ -20,6 +20,7 @@ from feishu_msg import _lark_run, cmd_say
 from cli_adapters import adapter_for_agent
 import tmux_command
 import team_command
+import slash_commands
 
 _LIFECYCLE_SH = os.path.join(PROJECT_ROOT, "scripts", "lib", "agent_lifecycle.sh")
 
@@ -435,6 +436,42 @@ def handle_event(event):
     if not text:
         return
 
+    # 斜杠命令统一前置过滤 — 不路由任何 agent,不走 LLM。
+    # .claude/hooks 覆盖 manager 本机输入;这里覆盖飞书群入口,避免转给 manager 触发模型。
+    # 共享模块 scripts/slash_commands.py,行为与 hook 一致。
+    # 命中命令: /help /team /usage /tmux /send /compact <agent> /compact-all
+    matched, reply = slash_commands.dispatch(text)
+    if matched:
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        first = text.strip().split()[0] if text.strip() else ""
+        line = f"[{ts}] slash {first} msg_id={msg_id} → 群聊回显(无 agent 介入)"
+        print(line)
+        try:
+            with open(os.path.join(os.path.dirname(__file__),
+                                   ".tmux_intercept.log"), "a") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+        try:
+            from feishu_msg import _lark_im_send, CHAT, build_system_card
+            chat_id = CHAT()
+            if not chat_id:
+                print(f"  ⚠️ chat_id 未配置,无法回显")
+            elif isinstance(reply, dict) and reply.get("card"):
+                # 自定义卡片(/team /usage)
+                _lark_im_send(chat_id, card=reply["card"])
+            else:
+                # 文本回显 → 包进「系统消息」卡片,避免 bot · ? 难看标签
+                body = reply if isinstance(reply, str) else (
+                    reply.get("text", "(空)") if isinstance(reply, dict) else "(空)")
+                if first == "/tmux":
+                    body = f"```\n{body}\n```"
+                _lark_im_send(chat_id, card=build_system_card(body))
+        except Exception as e:
+            print(f"  ⚠️ slash 回显失败: {e}")
+        _advance_cursor()
+        return
+
     print(f"[{time.strftime('%H:%M:%S')}] 新消息: {text[:500]}")
 
     # /tmux 本地拦截 — 不路由任何 agent,不走 LLM。
@@ -624,7 +661,17 @@ def _catchup_from_history(chat_id):
             ct = m.get("create_time")
             if ct:
                 try:
-                    ct_f = float(ct) if "." in str(ct) else float(ct) / 1000
+                    ct_str = str(ct).strip()
+                    # lark-cli +chat-messages-list 返回格式化时间 "2026-04-20 09:26"
+                    # 标准 API 返回 unix ms "1776591454415" 或 unix s "1776591454.415"
+                    if re.match(r"\d{4}-\d{2}-\d{2}", ct_str):
+                        from datetime import datetime as _dt
+                        ct_f = _dt.strptime(ct_str, "%Y-%m-%d %H:%M").timestamp()
+                    elif "." in ct_str:
+                        ct_f = float(ct_str)
+                    else:
+                        v = float(ct_str)
+                        ct_f = v / 1000 if v > 1e12 else v
                     if max_create_time is None or ct_f > max_create_time:
                         max_create_time = ct_f
                 except (ValueError, TypeError):
