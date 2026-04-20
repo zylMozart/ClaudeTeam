@@ -180,20 +180,21 @@ def _tmux_send_and_capture(agent: str, cmd_text: str, wait: int = 4,
 
 
 def _query_kimi_usage() -> list:
-    """向 Kimi pane 发 /usage，解析用量。"""
-    raw = _tmux_send_and_capture("kimi_agent", "/usage", wait=4)
-    metrics = []
+    """向 Kimi pane 发 /usage，解析用量。dedup 同名 label 只取最后一次。"""
+    raw = _tmux_send_and_capture("kimi_agent", "/usage", wait=5)
+    seen = {}  # label → metric (后出的覆盖先出的，避免重复 capture)
     for line in raw.splitlines():
         m = _KIMI_USAGE_RE.search(line)
         if m:
             left = int(m.group("left"))
             used_pct = 100 - left
-            metrics.append({
-                "label": m.group("label").strip(),
+            label = m.group("label").strip()
+            seen[label] = {
+                "label": label,
                 "pct": used_pct,
-                "detail": f"已用 {used_pct}% · 重置 {m.group('reset')}",
-            })
-    return metrics
+                "detail": f"{left}% left · 重置 {m.group('reset')}",
+            }
+    return list(seen.values())
 
 
 # Codex: 无 usage 命令；从 pane banner 读 model + plan（不发命令，不干扰 session）
