@@ -22,11 +22,15 @@ PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
                     Path(__file__).resolve().parent.parent)
 BJ_TZ = timezone(timedelta(hours=8))
 
-AGENT_WINDOWS = [
-    "manager", "pm", "architect", "techlead", "devops", "security",
-    "toolsmith", "researcher",
-    "backend1", "backend2", "mobile1", "mobile2", "designer", "qa1", "qa2",
-]
+def _load_agent_windows():
+    """从 team.json 动态读取 agent 列表,不再硬编码。"""
+    try:
+        tj = json.loads((PROJECT_ROOT / "team.json").read_text())
+        return list(tj.get("agents", {}).keys())
+    except Exception:
+        return ["manager"]
+
+AGENT_WINDOWS = _load_agent_windows()
 AGENT_SET = set(AGENT_WINDOWS)
 
 
