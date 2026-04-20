@@ -129,25 +129,89 @@ def _pct_color(p: int) -> str:
     return "green"
 
 
-def _cli_login_status() -> list:
-    """检查多 CLI 凭证文件，返回 [(cli_name, logged_in, plan_info), ...]。"""
+def _find_cred(*candidates) -> Path | None:
+    """返回第一个存在的凭证文件路径，全不存在返回 None。"""
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def _multi_cli_details() -> list:
+    """从凭证文件提取各 CLI 的登录状态和用量详情。
+
+    返回 [(name, logged_in, plan, detail), ...]
+    - plan: 付费方案文字
+    - detail: 从文件可提取的额外信息（token 有效期、auth mode 等）
+    """
     home = Path(os.environ.get("HOME", "/home/claudeteam"))
-    checks = [
-        ("Kimi",   [home / ".kimi" / "config.toml",
-                    PROJECT_ROOT / ".kimi-credentials" / "config.toml"],       "Subscription $19/mo"),
-        ("Codex",  [home / ".codex" / "auth.json",
-                    PROJECT_ROOT / ".codex-credentials" / "auth.json"],        "ChatGPT Plus/Pro"),
-        ("Gemini", [home / ".gemini" / "oauth_creds.json",
-                    PROJECT_ROOT / ".gemini-credentials" / "oauth_creds.json"], "Google AI Free"),
-    ]
     result = []
-    for name, paths, plan in checks:
-        logged_in = any(p.is_file() for p in paths)
-        result.append((name, logged_in, plan))
+
+    # ── Claude Code ──
+    cc_cred = _find_cred(home / ".claude" / ".credentials.json",
+                         PROJECT_ROOT / ".claude" / ".credentials.json")
+    cc_plan = "Max $100/mo"
+    cc_detail = ""
+    if cc_cred:
+        try:
+            d = json.loads(cc_cred.read_text())
+            oauth = d.get("claudeAiOauth", {})
+            cc_detail = f"account: {oauth.get('organizationName', 'N/A')}"
+        except Exception:
+            cc_detail = "凭证文件损坏"
+    result.append(("Claude Code", cc_cred is not None, cc_plan, cc_detail))
+
+    # ── Kimi ──
+    kimi_cred = _find_cred(home / ".kimi" / "credentials" / "kimi-code.json",
+                           PROJECT_ROOT / ".kimi-credentials" / "credentials" / "kimi-code.json")
+    kimi_plan = "Subscription $19/mo"
+    kimi_detail = ""
+    if kimi_cred:
+        try:
+            d = json.loads(kimi_cred.read_text())
+            exp = d.get("expires_at")
+            if exp:
+                from datetime import datetime as _dt
+                exp_str = _dt.fromtimestamp(float(exp), tz=BJ_TZ).strftime("%m-%d %H:%M")
+                kimi_detail = f"token expires {exp_str}"
+        except Exception:
+            kimi_detail = "token 信息不可读"
+    result.append(("Kimi", kimi_cred is not None, kimi_plan, kimi_detail))
+
+    # ── Codex ──
+    codex_cred = _find_cred(home / ".codex" / "auth.json",
+                            PROJECT_ROOT / ".codex-credentials" / "auth.json")
+    codex_plan = "ChatGPT Plus/Pro"
+    codex_detail = ""
+    if codex_cred:
+        try:
+            d = json.loads(codex_cred.read_text())
+            mode = d.get("auth_mode", "unknown")
+            has_token = bool(d.get("tokens") or d.get("OPENAI_API_KEY"))
+            codex_detail = f"auth: {mode}" + (" · token ✓" if has_token else " · token ✗")
+        except Exception:
+            codex_detail = "凭证文件损坏"
+    result.append(("Codex", codex_cred is not None, codex_plan, codex_detail))
+
+    # ── Gemini ──
+    gemini_cred = _find_cred(home / ".gemini" / "oauth_creds.json",
+                             PROJECT_ROOT / ".gemini-credentials" / "oauth_creds.json")
+    gemini_plan = "Google AI Free (60/min)"
+    gemini_detail = ""
+    if gemini_cred:
+        acct_path = gemini_cred.parent / "google_accounts.json"
+        try:
+            accts = json.loads(acct_path.read_text()) if acct_path.is_file() else {}
+            email = accts.get("activeAccount", "")
+            gemini_detail = f"account: {email}" if email else "OAuth ✓"
+        except Exception:
+            gemini_detail = "OAuth ✓"
+    result.append(("Gemini", gemini_cred is not None, gemini_plan, gemini_detail))
+
     return result
 
 
-def _build_usage_card(raw: str, title_suffix: str, cli_status=None) -> dict:
+def _build_usage_card(raw: str, title_suffix: str, cli_details=None) -> dict:
     """把 usage_snapshot.py 文本解析成栅格卡片。"""
     metrics = []
     for line in raw.splitlines():
@@ -189,12 +253,16 @@ def _build_usage_card(raw: str, title_suffix: str, cli_status=None) -> dict:
         })
         rows.append({"tag": "hr"})
 
-    # 多 CLI 登录状态
-    if cli_status:
-        rows.append({"tag": "markdown", "content": "**Multi-CLI 登录状态**"})
-        for name, logged_in, plan in cli_status:
+    # Multi-CLI 详情
+    if cli_details:
+        rows.append({"tag": "markdown", "content": "**Multi-CLI 额度概览**"})
+        for name, logged_in, plan, detail in cli_details:
             icon = "✅" if logged_in else "❌"
-            status = f"{plan}" if logged_in else "未登录"
+            right = f"{icon} {plan}"
+            if detail:
+                right += f"\n{detail}"
+            if not logged_in:
+                right = f"{icon} 未登录"
             rows.append({
                 "tag": "column_set",
                 "flex_mode": "none",
@@ -204,7 +272,7 @@ def _build_usage_card(raw: str, title_suffix: str, cli_status=None) -> dict:
                         {"tag": "markdown", "content": f"**{name}**"}
                     ]},
                     {"tag": "column", "width": "weighted", "weight": 3, "elements": [
-                        {"tag": "markdown", "content": f"{icon} {status}"}
+                        {"tag": "markdown", "content": right}
                     ]},
                 ],
             })
@@ -225,8 +293,11 @@ def _build_usage_card(raw: str, title_suffix: str, cli_status=None) -> dict:
 
 
 def _cmd_usage(text: str):
-    if not re.fullmatch(r"/usage\s*", text):
+    m = re.fullmatch(r"/usage(?:\s+(all))?\s*", text)
+    if not m:
         return None
+    show_all = m.group(1) == "all"
+
     snapshot = PROJECT_ROOT / "scripts" / "usage_snapshot.py"
     r = _run(["python3", str(snapshot)], timeout=30)
     if r.returncode != 0:
@@ -234,16 +305,21 @@ def _cmd_usage(text: str):
         return err
     raw = (r.stdout or "(无输出)").rstrip()
 
-    # 多 CLI 登录状态
-    cli_status = _cli_login_status()
-    cli_lines = ["\n--- Multi-CLI ---"]
-    for name, logged_in, plan in cli_status:
-        icon = "✅" if logged_in else "❌"
-        cli_lines.append(f"  {name}: {icon} {'已登录 · ' + plan if logged_in else '未登录'}")
-    raw_full = raw + "\n".join(cli_lines)
+    cli_details = _multi_cli_details() if show_all else None
+
+    # 文本版本
+    raw_full = raw
+    if cli_details:
+        cli_lines = ["\n--- Multi-CLI ---"]
+        for name, logged_in, plan, detail in cli_details:
+            icon = "✅" if logged_in else "❌"
+            line = f"  {name}: {icon} "
+            line += f"{plan} · {detail}" if logged_in else "未登录"
+            cli_lines.append(line)
+        raw_full = raw + "\n".join(cli_lines)
 
     now = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
-    return {"text": raw_full, "card": _build_usage_card(raw, now, cli_status)}
+    return {"text": raw_full, "card": _build_usage_card(raw, now, cli_details)}
 
 
 # ── /tmux ──────────────────────────────────────────────────────
