@@ -284,19 +284,27 @@ ClaudeTeam supports **heterogeneous teams** — different agents can run differe
 |---|---|---|
 | Claude Code | `claude-code` (default) | `npm i -g @anthropic-ai/claude-code` |
 | Kimi Code | `kimi-code` | `uv tool install kimi-cli` |
-| Gemini CLI | `gemini-cli` | `npm i -g @anthropic-ai/gemini-cli` |
+| Gemini CLI | `gemini-cli` | `npm i -g @google/gemini-cli` |
 | Codex CLI | `codex-cli` | `npm i -g @openai/codex` |
 | Qwen Code | `qwen-code` | `npm i -g qwen-code` |
 
-### Configuring per-agent CLI
+### Configuring per-agent CLI, model, and thinking level
 
-Add a `"cli"` field to `team.json` (omit for default `claude-code`):
+Each agent in `team.json` supports three optional fields:
+- `cli` — which CLI to use (default: `claude-code`)
+- `model` — which model to use (e.g., `opus`, `sonnet`, `haiku`)
+- `thinking` — thinking depth: `high`, `default`, `low`, or `off`
+
+The manager (or team lead) controls model and thinking assignments at runtime.
 
 ```json
 {
   "agents": {
-    "manager":  { "role": "Team Lead", "cli": "claude-code" },
-    "writer":   { "role": "Writer",    "cli": "kimi-code" }
+    "manager":  { "role": "Team Lead", "model": "opus", "thinking": "high" },
+    "dev":      { "role": "Developer", "model": "haiku", "thinking": "default" },
+    "kimi_eng": { "role": "Engineer",  "cli": "kimi-code" },
+    "codex_eng":{ "role": "Engineer",  "cli": "codex-cli" },
+    "gem_eng":  { "role": "Engineer",  "cli": "gemini-cli" }
   }
 }
 ```
@@ -320,6 +328,32 @@ Open the URL in your browser, authorize with your Moonshot account, and the kimi
 rm -rf .kimi-credentials/
 docker compose restart
 ```
+
+### Codex CLI credential setup (Docker)
+
+Codex agents prompt for login via **device code flow** on first run:
+
+```
+https://auth.openai.com/codex/device
+Enter this one-time code: XXXX-XXXXX
+```
+
+Open the URL, sign in with your ChatGPT account, and enter the code. Credentials are saved to `.codex-credentials/` (bind-mounted) and persist across container recreations.
+
+### Gemini CLI credential setup (Docker)
+
+Gemini agents prompt for **Google OAuth** on first run. You'll see a long Google OAuth URL — open it in your browser, authorize, and paste the authorization code back into the terminal. Credentials are saved to `.gemini-credentials/` (bind-mounted) and persist across container recreations.
+
+### Credential persistence summary
+
+| CLI | Credential dir | Bind mount | First login | Persists? |
+|---|---|---|---|---|
+| Claude Code | `~/.claude/` | ✅ (built-in) | OAuth (automatic) | ✅ |
+| Kimi | `.kimi-credentials/` | ✅ | Device code | ✅ |
+| Codex | `.codex-credentials/` | ✅ | Device code | ✅ |
+| Gemini | `.gemini-credentials/` | ✅ | Google OAuth | ✅ |
+
+All CLIs are pre-configured with auto-approve flags (e.g., `--yolo`, `--dangerously-bypass-approvals-and-sandbox`) so agents never see permission prompts during operation.
 
 ### Adding a new adapter
 
