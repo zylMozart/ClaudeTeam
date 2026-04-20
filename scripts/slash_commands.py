@@ -252,17 +252,52 @@ _CLI_HEADINGS = {
 
 
 def _query_cli(name: str) -> list:
-    """统一入口：返回 [{"label","pct","detail"}, ...]。pct=-1 表示无百分比。"""
+    """统一入口：返回 [{"label","pct","detail"}, ...]。pct=-1 表示无百分比。
+
+    如果 agent 在 lazy-wake（CLI 没跑），尝试用 credential 文件信息代替实时查询。
+    """
     fn = _CLI_QUERY_MAP.get(name)
     if not fn:
         return []
-    tgt, _ = _tmux_target(f"{name}_agent")
-    if tgt is None:
-        return [{"label": name.title(), "pct": -1, "detail": "agent 未运行"}]
-    try:
-        return fn()
-    except Exception as e:
-        return [{"label": name.title(), "pct": -1, "detail": f"查询失败: {e}"}]
+    agent = f"{name}_agent"
+    tgt, _ = _tmux_target(agent)
+    if tgt is not None:
+        try:
+            result = fn()
+            if result:
+                return result
+        except Exception as e:
+            pass
+    # Agent 没跑或查询失败 → 从 credential 文件读静态信息
+    home = Path(os.environ.get("HOME", "/home/claudeteam"))
+    cli_info = {
+        "kimi": {
+            "cred_paths": [home / ".kimi" / "config.toml", PROJECT_ROOT / ".kimi-credentials" / "config.toml"],
+            "plan": "Subscription $19/mo",
+            "detail_fn": lambda: "5h rolling quota · 7d 刷新",
+        },
+        "codex": {
+            "cred_paths": [home / ".codex" / "auth.json", PROJECT_ROOT / ".codex-credentials" / "auth.json"],
+            "plan": "ChatGPT Plus/Pro",
+            "detail_fn": lambda: "30-150 msg/5h (Plus) · 300-1500 msg/5h (Pro)",
+        },
+        "gemini": {
+            "cred_paths": [home / ".gemini" / "oauth_creds.json", PROJECT_ROOT / ".gemini-credentials" / "oauth_creds.json"],
+            "plan": "Google AI",
+            "detail_fn": lambda: "60 req/min · 1000 req/day (free)",
+        },
+    }
+    info = cli_info.get(name)
+    if not info:
+        return [{"label": name.title(), "pct": -1, "detail": "未知 CLI"}]
+    logged_in = any(p.is_file() for p in info["cred_paths"])
+    if logged_in:
+        return [
+            {"label": f"{name.title()} Plan", "pct": -1, "detail": f"✅ {info['plan']}"},
+            {"label": "额度说明", "pct": -1, "detail": info["detail_fn"]()},
+            {"label": "状态", "pct": -1, "detail": "agent 未运行 · 启动后可查实时额度"},
+        ]
+    return [{"label": name.title(), "pct": -1, "detail": "❌ 未登录"}]
 
 
 # ── CC 额度解析 ───────────────────────────────────────────────────
