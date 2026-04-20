@@ -239,54 +239,33 @@ _GEMINI_AUTH_RE = re.compile(r"Auth Method:\s+(.+)")
 _GEMINI_REQS_RE = re.compile(r"Tool Calls:\s+(\d+)")
 
 
+_GEMINI_USAGE_RE = re.compile(
+    r"(?P<model>gemini[\w.-]+)\s+(?P<pct>[\d.]+)%\s+used\s+resets\s+(?P<reset>\S+)")
+
+
 def _query_gemini_usage() -> list:
-    """从 Gemini 发 /stats 并解析 session 级用量。"""
-    # 先抓 banner（不发命令）
-    banner = _tmux_send_and_capture("gemini_agent", "", wait=0)
-    plan = "Google AI"
-    model = ""
-    for line in banner.splitlines():
-        m = _GEMINI_PLAN_RE.search(line)
-        if m:
-            plan = m.group(1).strip()
-        m = _GEMINI_MODEL_RE.search(line)
-        if m:
-            model = m.group(1)
-    # 发 /stats 获取详细数据
-    stats = _tmux_send_and_capture("gemini_agent", "/stats", wait=5, lines=35)
-    tier = plan
+    """用 gemini-cli-usage 工具查 Gemini 各 model 额度。"""
+    r = _run(["gemini-cli-usage"], timeout=15)
+    if r.returncode != 0:
+        # fallback
+        return [{"label": "Gemini", "pct": -1,
+                 "detail": "gemini-cli-usage 不可用 · [点击查看 →](https://aistudio.google.com/apikey)"}]
+    metrics = []
     auth = ""
-    reqs = 0
-    input_tokens = output_tokens = 0
-    for line in stats.splitlines():
-        m = _GEMINI_TIER_RE.search(line)
+    for line in (r.stdout or "").splitlines():
+        if "Auth:" in line:
+            auth = line.split(":", 1)[1].strip()
+        m = _GEMINI_USAGE_RE.search(line)
         if m:
-            tier = m.group(1).strip()
-        m = _GEMINI_AUTH_RE.search(line)
-        if m:
-            auth = m.group(1).strip()
-        m = _GEMINI_REQS_RE.search(line)
-        if m:
-            reqs = int(m.group(1))
-        # Token rows: model name + numbers
-        nums = re.findall(r"\d+", line)
-        if len(nums) >= 4 and "gemini" in line.lower():
-            try:
-                input_tokens += int(nums[1])
-                output_tokens += int(nums[3])
-            except (IndexError, ValueError):
-                pass
-    result = [
-        {"label": "Plan", "pct": -1, "detail": f"✅ {tier}"},
-    ]
+            pct = int(float(m.group("pct")))
+            metrics.append({
+                "label": m.group("model"),
+                "pct": pct,
+                "detail": f"已用 {m.group('pct')}% · 重置 {m.group('reset')}",
+            })
     if auth:
-        result.append({"label": "Account", "pct": -1, "detail": auth})
-    if model:
-        result.append({"label": "Model", "pct": -1, "detail": f"Auto ({model})"})
-    result.append({"label": "Session Tokens", "pct": -1,
-                   "detail": f"in: {input_tokens:,} · out: {output_tokens:,} · reqs: {reqs}"})
-    result.append({"label": "详细用量", "pct": -1,
-                   "detail": "[点击查看 →](https://aistudio.google.com/apikey)"})
+        metrics.insert(0, {"label": "Auth", "pct": -1, "detail": f"✅ {auth}"})
+    return metrics or [{"label": "Gemini", "pct": -1, "detail": "无数据"}]
     return result
 
 
