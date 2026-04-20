@@ -202,9 +202,9 @@ _CODEX_FREE_RE = re.compile(r"included in your plan for free")
 
 
 def _query_codex_usage() -> list:
-    """从 Codex pane 读 banner，不发命令。"""
+    """从 Codex pane 读 banner；如果拿不到有效信息就返回 plan 描述。"""
     raw = _tmux_send_and_capture("codex_agent", "", wait=0)
-    model = "?"
+    model = ""
     plan = "ChatGPT Plus/Pro"
     for line in raw.splitlines():
         m = _CODEX_MODEL_RE.search(line)
@@ -212,8 +212,14 @@ def _query_codex_usage() -> list:
             model = m.group(1)
         if _CODEX_FREE_RE.search(line):
             plan = "Included free"
-    return [{"label": "Codex", "pct": -1,
-             "detail": f"model: {model} · {plan}"}]
+    if model:
+        return [
+            {"label": "Codex Model", "pct": -1, "detail": model},
+            {"label": "Plan", "pct": -1, "detail": f"✅ {plan}"},
+            {"label": "额度说明", "pct": -1, "detail": "30-150 msg/5h (Plus) · 300-1500 msg/5h (Pro)"},
+        ]
+    # pane 没跑或读不到 → 返回空让 _query_cli fallback
+    return []
 
 
 # Gemini: 无 usage 命令；从 pane banner 读 plan（不发命令）
@@ -222,10 +228,10 @@ _GEMINI_MODEL_RE = re.compile(r"Auto \((.+?)\)")
 
 
 def _query_gemini_usage() -> list:
-    """从 Gemini pane 读 banner，不发命令。"""
+    """从 Gemini pane 读 banner；如果拿不到有效信息就返回 plan 描述。"""
     raw = _tmux_send_and_capture("gemini_agent", "", wait=0)
     plan = "Google AI"
-    model = "?"
+    model = ""
     for line in raw.splitlines():
         m = _GEMINI_PLAN_RE.search(line)
         if m:
@@ -233,8 +239,14 @@ def _query_gemini_usage() -> list:
         m = _GEMINI_MODEL_RE.search(line)
         if m:
             model = m.group(1)
-    return [{"label": "Gemini", "pct": -1,
-             "detail": f"model: {model} · {plan}"}]
+    if model:
+        return [
+            {"label": "Gemini Model", "pct": -1, "detail": f"Auto ({model})"},
+            {"label": "Plan", "pct": -1, "detail": f"✅ {plan}"},
+            {"label": "额度说明", "pct": -1, "detail": "60 req/min · 1000 req/day (free)"},
+        ]
+    # 返回空让 _query_cli fallback
+    return []
 
 
 _CLI_QUERY_MAP = {
@@ -317,7 +329,20 @@ def _cc_usage_metrics(raw: str) -> list:
             continue
         m = _USAGE_LINE_RE.match(line)
         if m:
-            reset = m.group("reset") or m.group("reset_en") or ""
+            reset_raw = m.group("reset") or m.group("reset_en") or ""
+            # 把 ISO 时间转换为北京时间显示
+            try:
+                from dateutil.parser import parse as _dp
+                dt = _dp(reset_raw).astimezone(BJ_TZ)
+                reset = dt.strftime("%m-%d %H:%M 北京时间")
+            except Exception:
+                # dateutil 不可用或解析失败 → 尝试简单处理
+                try:
+                    dt = datetime.fromisoformat(reset_raw.split('.')[0].replace('Z', '+00:00'))
+                    dt_bj = dt.astimezone(BJ_TZ)
+                    reset = dt_bj.strftime("%m-%d %H:%M 北京时间")
+                except Exception:
+                    reset = reset_raw
             metrics.append({
                 "label": m.group("label").strip(),
                 "pct": int(float(m.group("pct"))),
