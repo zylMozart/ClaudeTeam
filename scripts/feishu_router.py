@@ -665,9 +665,9 @@ def _catchup_from_history(chat_id):
                     # lark-cli +chat-messages-list 返回格式化时间 "2026-04-20 09:26"
                     # 标准 API 返回 unix ms "1776591454415" 或 unix s "1776591454.415"
                     if re.match(r"\d{4}-\d{2}-\d{2}", ct_str):
-                        from datetime import datetime as _dt
+                        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
                         ct_f = _dt.strptime(ct_str, "%Y-%m-%d %H:%M").replace(
-                            tzinfo=timezone(timedelta(hours=8))).timestamp()
+                            tzinfo=_tz(_td(hours=8))).timestamp()
                     elif "." in ct_str:
                         ct_f = float(ct_str)
                     else:
