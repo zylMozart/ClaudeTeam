@@ -114,10 +114,11 @@ def _cmd_help(text: str):
 
 # ── /usage ─────────────────────────────────────────────────────
 _USAGE_LINE_RE = re.compile(
-    r"^\s*(?P<label>[^:]+?)\s*:\s*(?P<pct>\d+)%\s+resets\s+(?P<reset>.+?)\s*$")
+    r"^\s*(?P<label>[^:]+?)\s*:\s*(?P<pct>[\d.]+)%\s+"
+    r"(?:\(重置:\s*(?P<reset>.+?)\)|resets\s+(?P<reset_en>.+?))\s*$")
 _USAGE_EXTRA_RE = re.compile(
-    r"^\s*(?P<label>Extra usage)\s*:\s*(?P<used>[\d.]+)\s*/\s*(?P<cap>\d+)\s+"
-    r"(?P<ccy>\S+)\s*\((?P<pct>\d+)%\)\s*$")
+    r"^\s*(?P<label>Extra usage|额外用量)\s*:\s*\$?(?P<used>[\d.]+)\s*/\s*\$?(?P<cap>[\d.]+)\s+"
+    r"\((?P<pct>[\d.]+)%\)\s*(?:\[(?P<ccy>\S+)\])?\s*$")
 
 
 def _pct_color(p: int) -> str:
@@ -134,18 +135,20 @@ def _build_usage_card(raw: str, title_suffix: str) -> dict:
     for line in raw.splitlines():
         m = _USAGE_EXTRA_RE.match(line)
         if m:
+            ccy = m.group("ccy") or "USD"
             metrics.append({
                 "label": m.group("label"),
-                "pct": int(m.group("pct")),
-                "detail": f"{m.group('used')} / {m.group('cap')} {m.group('ccy')}",
+                "pct": int(float(m.group("pct"))),
+                "detail": f"${m.group('used')} / ${m.group('cap')} {ccy}",
             })
             continue
         m = _USAGE_LINE_RE.match(line)
         if m:
+            reset = m.group("reset") or m.group("reset_en") or ""
             metrics.append({
                 "label": m.group("label").strip(),
-                "pct": int(m.group("pct")),
-                "detail": f"resets {m.group('reset')}",
+                "pct": int(float(m.group("pct"))),
+                "detail": f"重置 {reset}",
             })
 
     # 栅格: 2 列 = [label] [pct + detail]
