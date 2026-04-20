@@ -14,6 +14,9 @@ scripts/.router.pid
 # Credentials (injected via env or volume)
 .env
 .env.*
+.kimi-credentials/
+.codex-credentials/
+.gemini-credentials/
 
 # Git
 .git/

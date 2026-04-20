@@ -101,6 +101,14 @@ services:
       # 首次 /login 后凭证会同步到宿主机 .kimi-credentials/，后续容器重建自动复用。
       - ./.kimi-credentials:/home/claudeteam/.kimi
 
+      # Codex CLI 凭证持久化 — auth.json + config 存在 $HOME/.codex/
+      # 首次登录后凭证同步到宿主机 .codex-credentials/，后续容器重建自动复用。
+      - ./.codex-credentials:/home/claudeteam/.codex
+
+      # Gemini CLI 凭证持久化 — oauth_creds.json + settings 存在 $HOME/.gemini/
+      # 首次 OAuth 授权后凭证同步到宿主机 .gemini-credentials/，后续容器重建自动复用。
+      - ./.gemini-credentials:/home/claudeteam/.gemini
+
     # ── 资源限制 ──────────────────────────────────────────────
     # 默认值针对 2C/4G 的小机器；大机器上可在 .env 里改 CLAUDETEAM_CPUS/CLAUDETEAM_MEM
     deploy:

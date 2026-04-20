@@ -1,6 +1,6 @@
 """Gemini CLI adapter (Google, Apache-2.0).
 
-安装: npm install -g @anthropic-ai/gemini-cli  或  brew install gemini-cli
+安装: npm install -g @google/gemini-cli
 认证: OAuth (60/min + 1000/day 免费) / GEMINI_API_KEY / Vertex AI
 
 ready_markers / busy_markers 基于文档推测,标 TODO 待实测校准。

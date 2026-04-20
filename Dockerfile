@@ -33,7 +33,17 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && export PATH="$HOME/.local/bin:$PATH" \
     && uv tool install kimi-cli --python 3.12 \
-    && ln -sf /root/.local/share/uv/tools/kimi-cli/bin/kimi /usr/local/bin/kimi
+    && ln -sf /root/.local/share/uv/tools/kimi-cli/bin/kimi /usr/local/bin/kimi \
+    && uv tool install codex-cli-usage \
+    && ln -sf /root/.local/share/uv/tools/codex-cli-usage/bin/codex-cli-usage /usr/local/bin/codex-cli-usage \
+    && uv tool install gemini-cli-usage \
+    && ln -sf /root/.local/share/uv/tools/gemini-cli-usage/bin/gemini-cli-usage /usr/local/bin/gemini-cli-usage
+
+# Codex CLI (OpenAI)
+RUN npm install -g @openai/codex || true
+
+# Gemini CLI (Google)
+RUN npm install -g @google/gemini-cli || true
 
 # lark-cli（飞书 API）
 RUN npm install -g @larksuite/cli \

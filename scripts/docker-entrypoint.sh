@@ -250,6 +250,64 @@ with open(p, "w") as f:
 print(f"✅ 已写入 {p} (permissions.allow={len(allow)} 条)")
 PY
 
+# ── CLI auto-approve 预配 ───────────��─────────────────────────
+# 容器启动时预写各 CLI 的 auto-approve 配置,避免运行时弹审批对话框卡死 tmux。
+# Claude Code 已通过 --dangerously-skip-permissions 处理,这里只管第三方 CLI。
+
+# Kimi: config.toml → default_yolo = true
+KIMI_CFG="/home/claudeteam/.kimi/config.toml"
+if [ -f "$KIMI_CFG" ]; then
+  # 已有配置(credential bind mount),修改 default_yolo
+  if grep -q "default_yolo" "$KIMI_CFG"; then
+    sed -i 's/default_yolo\s*=\s*false/default_yolo = true/' "$KIMI_CFG"
+  else
+    echo 'default_yolo = true' >> "$KIMI_CFG"
+  fi
+else
+  mkdir -p "$(dirname "$KIMI_CFG")"
+  cat > "$KIMI_CFG" <<'TOML'
+default_yolo = true
+TOML
+fi
+
+# Codex: config.json → approval_mode = "full-auto" (persisted)
+# 命令行 --full-auto 已在 adapter 里,这里写持久化配置作为 belt-and-suspenders。
+CODEX_CFG="/home/claudeteam/.codex/config.json"
+mkdir -p "$(dirname "$CODEX_CFG")"
+if [ ! -f "$CODEX_CFG" ] || ! python3 -c "import json; json.load(open('$CODEX_CFG'))" 2>/dev/null; then
+  echo '{"approval_mode": "full-auto"}' > "$CODEX_CFG"
+else
+  python3 -c "
+import json
+p = '$CODEX_CFG'
+with open(p) as f:
+    d = json.load(f)
+d['approval_mode'] = 'full-auto'
+with open(p, 'w') as f:
+    json.dump(d, f, indent=2)
+"
+fi
+
+# Gemini: settings.json → sandbox_mode = "yolo" (if supported)
+# adapter spawn_cmd 已带 --approval-mode=yolo;持久化配置作为兜底。
+GEMINI_CFG="/home/claudeteam/.gemini/settings.json"
+mkdir -p "$(dirname "$GEMINI_CFG")"
+if [ ! -f "$GEMINI_CFG" ] || ! python3 -c "import json; json.load(open('$GEMINI_CFG'))" 2>/dev/null; then
+  echo '{"sandbox_mode": "yolo"}' > "$GEMINI_CFG"
+else
+  python3 -c "
+import json
+p = '$GEMINI_CFG'
+with open(p) as f:
+    d = json.load(f)
+d['sandbox_mode'] = 'yolo'
+with open(p, 'w') as f:
+    json.dump(d, f, indent=2)
+"
+fi
+
+echo "✅ CLI auto-approve 配置已预写 (kimi/codex/gemini)"
+
 # ── init 模式：跑 setup.py 创建飞书资源,然后退出 ────────────
 if [ "$MODE" = "init" ]; then
   echo ""
