@@ -129,7 +129,20 @@ def _pct_color(p: int) -> str:
     return "green"
 
 
-def _build_usage_card(raw: str, title_suffix: str) -> dict:
+def _cli_login_status() -> list:
+    """检查多 CLI 凭证文件，返回 [(cli_name, logged_in, plan_info), ...]。"""
+    checks = [
+        ("Kimi",   PROJECT_ROOT / ".kimi-credentials" / "config.toml",      "Subscription $19/mo"),
+        ("Codex",  PROJECT_ROOT / ".codex-credentials" / "auth.json",       "ChatGPT Plus/Pro"),
+        ("Gemini", PROJECT_ROOT / ".gemini-credentials" / "oauth_creds.json", "Google AI Free"),
+    ]
+    result = []
+    for name, path, plan in checks:
+        result.append((name, path.is_file(), plan))
+    return result
+
+
+def _build_usage_card(raw: str, title_suffix: str, cli_status=None) -> dict:
     """把 usage_snapshot.py 文本解析成栅格卡片。"""
     metrics = []
     for line in raw.splitlines():
@@ -170,7 +183,29 @@ def _build_usage_card(raw: str, title_suffix: str) -> dict:
             ],
         })
         rows.append({"tag": "hr"})
-    if rows and rows[-1]["tag"] == "hr":
+
+    # 多 CLI 登录状态
+    if cli_status:
+        rows.append({"tag": "markdown", "content": "**Multi-CLI 登录状态**"})
+        for name, logged_in, plan in cli_status:
+            icon = "✅" if logged_in else "❌"
+            status = f"{plan}" if logged_in else "未登录"
+            rows.append({
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "columns": [
+                    {"tag": "column", "width": "weighted", "weight": 2, "elements": [
+                        {"tag": "markdown", "content": f"**{name}**"}
+                    ]},
+                    {"tag": "column", "width": "weighted", "weight": 3, "elements": [
+                        {"tag": "markdown", "content": f"{icon} {status}"}
+                    ]},
+                ],
+            })
+
+    # 去掉末尾多余的 hr
+    if rows and rows[-1].get("tag") == "hr":
         rows.pop()
 
     return {
@@ -178,7 +213,7 @@ def _build_usage_card(raw: str, title_suffix: str) -> dict:
         "header": {
             "template": "purple",
             "title": {"tag": "plain_text",
-                      "content": f"📊 Claude Max /usage · {title_suffix}"},
+                      "content": f"📊 /usage · {title_suffix}"},
         },
         "elements": rows or [{"tag": "markdown", "content": "(无数据)"}],
     }
@@ -193,8 +228,17 @@ def _cmd_usage(text: str):
         err = f"⚠️ /usage 失败 (exit {r.returncode})\n{(r.stderr or r.stdout or '无输出').rstrip()}"
         return err
     raw = (r.stdout or "(无输出)").rstrip()
+
+    # 多 CLI 登录状态
+    cli_status = _cli_login_status()
+    cli_lines = ["\n--- Multi-CLI ---"]
+    for name, logged_in, plan in cli_status:
+        icon = "✅" if logged_in else "❌"
+        cli_lines.append(f"  {name}: {icon} {'已登录 · ' + plan if logged_in else '未登录'}")
+    raw_full = raw + "\n".join(cli_lines)
+
     now = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
-    return {"text": raw, "card": _build_usage_card(raw, now)}
+    return {"text": raw_full, "card": _build_usage_card(raw, now, cli_status)}
 
 
 # ── /tmux ──────────────────────────────────────────────────────
