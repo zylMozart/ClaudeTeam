@@ -225,6 +225,8 @@ def _cmd_send(text: str):
         return "用法: /send <agent> <message>\n例: /send devops 马上停"
     m = re.match(r"^/send\s+(\S+)\s+(.+)$", text, re.DOTALL)
     if not m:
+        if re.match(r"^/send\s+\S+\s*$", text):
+            return "用法: /send <agent> <message>\n例: /send devops 马上停\n（缺少消息内容）"
         return None
     agent = m.group(1).strip()
     msg = m.group(2).strip()
