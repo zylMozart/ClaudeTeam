@@ -35,6 +35,12 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && uv tool install kimi-cli --python 3.12 \
     && ln -sf /root/.local/share/uv/tools/kimi-cli/bin/kimi /usr/local/bin/kimi
 
+# Codex CLI (OpenAI)
+RUN npm install -g @openai/codex || true
+
+# Gemini CLI (Google)
+RUN npm install -g @google/gemini-cli || true
+
 # lark-cli（飞书 API）
 RUN npm install -g @larksuite/cli \
     && npx @larksuite/cli --version
