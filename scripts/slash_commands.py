@@ -137,82 +137,138 @@ def _find_cred(*candidates) -> Path | None:
     return None
 
 
-def _multi_cli_details() -> list:
-    """从凭证文件提取各 CLI 的登录状态和用量详情。
+# ── 各 CLI tmux 用量查询 ──────────────────────────────────────────
 
-    返回 [(name, logged_in, plan, detail), ...]
-    - plan: 付费方案文字
-    - detail: 从文件可提取的额外信息（token 有效期、auth mode 等）
-    """
-    home = Path(os.environ.get("HOME", "/home/claudeteam"))
-    result = []
-
-    # ── Claude Code ──
-    cc_cred = _find_cred(home / ".claude" / ".credentials.json",
-                         PROJECT_ROOT / ".claude" / ".credentials.json")
-    cc_plan = "Max $100/mo"
-    cc_detail = ""
-    if cc_cred:
-        try:
-            d = json.loads(cc_cred.read_text())
-            oauth = d.get("claudeAiOauth", {})
-            cc_detail = f"account: {oauth.get('organizationName', 'N/A')}"
-        except Exception:
-            cc_detail = "凭证文件损坏"
-    result.append(("Claude Code", cc_cred is not None, cc_plan, cc_detail))
-
-    # ── Kimi ──
-    kimi_cred = _find_cred(home / ".kimi" / "credentials" / "kimi-code.json",
-                           PROJECT_ROOT / ".kimi-credentials" / "credentials" / "kimi-code.json")
-    kimi_plan = "Subscription $19/mo"
-    kimi_detail = ""
-    if kimi_cred:
-        try:
-            d = json.loads(kimi_cred.read_text())
-            exp = d.get("expires_at")
-            if exp:
-                from datetime import datetime as _dt
-                exp_str = _dt.fromtimestamp(float(exp), tz=BJ_TZ).strftime("%m-%d %H:%M")
-                kimi_detail = f"token expires {exp_str}"
-        except Exception:
-            kimi_detail = "token 信息不可读"
-    result.append(("Kimi", kimi_cred is not None, kimi_plan, kimi_detail))
-
-    # ── Codex ──
-    codex_cred = _find_cred(home / ".codex" / "auth.json",
-                            PROJECT_ROOT / ".codex-credentials" / "auth.json")
-    codex_plan = "ChatGPT Plus/Pro"
-    codex_detail = ""
-    if codex_cred:
-        try:
-            d = json.loads(codex_cred.read_text())
-            mode = d.get("auth_mode", "unknown")
-            has_token = bool(d.get("tokens") or d.get("OPENAI_API_KEY"))
-            codex_detail = f"auth: {mode}" + (" · token ✓" if has_token else " · token ✗")
-        except Exception:
-            codex_detail = "凭证文件损坏"
-    result.append(("Codex", codex_cred is not None, codex_plan, codex_detail))
-
-    # ── Gemini ──
-    gemini_cred = _find_cred(home / ".gemini" / "oauth_creds.json",
-                             PROJECT_ROOT / ".gemini-credentials" / "oauth_creds.json")
-    gemini_plan = "Google AI Free (60/min)"
-    gemini_detail = ""
-    if gemini_cred:
-        acct_path = gemini_cred.parent / "google_accounts.json"
-        try:
-            accts = json.loads(acct_path.read_text()) if acct_path.is_file() else {}
-            email = accts.get("activeAccount", "")
-            gemini_detail = f"account: {email}" if email else "OAuth ✓"
-        except Exception:
-            gemini_detail = "OAuth ✓"
-    result.append(("Gemini", gemini_cred is not None, gemini_plan, gemini_detail))
-
-    return result
+# Kimi /usage 输出:  Weekly limit  ━━━━  99% left  (resets in 4d 39m)
+_KIMI_USAGE_RE = re.compile(
+    r"(?P<label>[\w ]+?)\s+[━─]+\s+(?P<left>\d+)%\s+left\s+"
+    r"\(resets\s+in\s+(?P<reset>.+?)\)")
 
 
-def _build_usage_card(raw: str, title_suffix: str, cli_details=None) -> dict:
-    """把 usage_snapshot.py 文本解析成栅格卡片。"""
+def _tmux_target(agent: str):
+    """返回 (tmux_target_str, is_container) 或 (None, False)。"""
+    session = _host_session()
+    if agent in _list_windows_local(session):
+        return f"{session}:{agent}", False
+    for cname in _containers():
+        wmap = _container_window_map(cname)
+        if agent in wmap:
+            return (cname, wmap[agent]), True
+    return None, False
+
+
+def _tmux_send_and_capture(agent: str, cmd_text: str, wait: int = 4,
+                           lines: int = 30) -> str:
+    """向 agent pane 发命令并返回 capture 文本。"""
+    tgt, is_ctr = _tmux_target(agent)
+    if tgt is None:
+        return ""
+    if is_ctr:
+        cname, target = tgt
+        pfx = ["sudo", "-n", "docker", "exec", cname]
+        if cmd_text:
+            _run(pfx + ["tmux", "send-keys", "-t", target, cmd_text, "Enter"], timeout=5)
+            time.sleep(wait)
+        r = _run(pfx + ["tmux", "capture-pane", "-pt", target,
+                         "-S", f"-{lines}"], timeout=5)
+    else:
+        if cmd_text:
+            _run(["tmux", "send-keys", "-t", tgt, cmd_text, "Enter"], timeout=3)
+            time.sleep(wait)
+        r = _run(["tmux", "capture-pane", "-pt", tgt, "-S", f"-{lines}"], timeout=5)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _query_kimi_usage() -> list:
+    """向 Kimi pane 发 /usage，解析用量。"""
+    raw = _tmux_send_and_capture("kimi_agent", "/usage", wait=4)
+    metrics = []
+    for line in raw.splitlines():
+        m = _KIMI_USAGE_RE.search(line)
+        if m:
+            left = int(m.group("left"))
+            used_pct = 100 - left
+            metrics.append({
+                "label": m.group("label").strip(),
+                "pct": used_pct,
+                "detail": f"已用 {used_pct}% · 重置 {m.group('reset')}",
+            })
+    return metrics
+
+
+# Codex: 无 usage 命令；从 pane banner 读 model + plan（不发命令，不干扰 session）
+_CODEX_MODEL_RE = re.compile(r"(\S+)\s+default\s+·")
+_CODEX_FREE_RE = re.compile(r"included in your plan for free")
+
+
+def _query_codex_usage() -> list:
+    """从 Codex pane 读 banner，不发命令。"""
+    raw = _tmux_send_and_capture("codex_agent", "", wait=0)
+    model = "?"
+    plan = "ChatGPT Plus/Pro"
+    for line in raw.splitlines():
+        m = _CODEX_MODEL_RE.search(line)
+        if m:
+            model = m.group(1)
+        if _CODEX_FREE_RE.search(line):
+            plan = "Included free"
+    return [{"label": "Codex", "pct": -1,
+             "detail": f"model: {model} · {plan}"}]
+
+
+# Gemini: 无 usage 命令；从 pane banner 读 plan（不发命令）
+_GEMINI_PLAN_RE = re.compile(r"Plan:\s+(.+?)(?:\s+/upgrade)?\s*$")
+_GEMINI_MODEL_RE = re.compile(r"Auto \((.+?)\)")
+
+
+def _query_gemini_usage() -> list:
+    """从 Gemini pane 读 banner，不发命令。"""
+    raw = _tmux_send_and_capture("gemini_agent", "", wait=0)
+    plan = "Google AI"
+    model = "?"
+    for line in raw.splitlines():
+        m = _GEMINI_PLAN_RE.search(line)
+        if m:
+            plan = m.group(1).strip()
+        m = _GEMINI_MODEL_RE.search(line)
+        if m:
+            model = m.group(1)
+    return [{"label": "Gemini", "pct": -1,
+             "detail": f"model: {model} · {plan}"}]
+
+
+_CLI_QUERY_MAP = {
+    "kimi":   _query_kimi_usage,
+    "codex":  _query_codex_usage,
+    "gemini": _query_gemini_usage,
+}
+
+_CLI_HEADINGS = {
+    "cc":     "Claude Code (Max $100/mo)",
+    "kimi":   "Kimi ($19/mo Subscription)",
+    "codex":  "Codex (ChatGPT Plus/Pro)",
+    "gemini": "Gemini (Google AI)",
+}
+
+
+def _query_cli(name: str) -> list:
+    """统一入口：返回 [{"label","pct","detail"}, ...]。pct=-1 表示无百分比。"""
+    fn = _CLI_QUERY_MAP.get(name)
+    if not fn:
+        return []
+    tgt, _ = _tmux_target(f"{name}_agent")
+    if tgt is None:
+        return [{"label": name.title(), "pct": -1, "detail": "agent 未运行"}]
+    try:
+        return fn()
+    except Exception as e:
+        return [{"label": name.title(), "pct": -1, "detail": f"查询失败: {e}"}]
+
+
+# ── CC 额度解析 ───────────────────────────────────────────────────
+
+def _cc_usage_metrics(raw: str) -> list:
+    """把 usage_snapshot.py 输出解析成 metrics。"""
     metrics = []
     for line in raw.splitlines():
         m = _USAGE_EXTRA_RE.match(line)
@@ -232,52 +288,43 @@ def _build_usage_card(raw: str, title_suffix: str, cli_details=None) -> dict:
                 "pct": int(float(m.group("pct"))),
                 "detail": f"重置 {reset}",
             })
+    return metrics
 
-    # 栅格: 2 列 = [label] [pct + detail]
+
+# ── 卡片构建 ──────────────────────────────────────────────────────
+
+def _build_usage_card(sections: list, title_suffix: str) -> dict:
+    """构建多段式 usage 卡片。
+
+    sections: [{"heading": str, "metrics": [{"label","pct","detail"},...]}]
+    """
     rows = []
-    for met in metrics:
-        color = _pct_color(met["pct"])
-        rows.append({
-            "tag": "column_set",
-            "flex_mode": "none",
-            "background_style": "default",
-            "columns": [
-                {"tag": "column", "width": "weighted", "weight": 2, "elements": [
-                    {"tag": "markdown", "content": f"**{met['label']}**"}
-                ]},
-                {"tag": "column", "width": "weighted", "weight": 3, "elements": [
-                    {"tag": "markdown",
-                     "content": f"<font color='{color}'>**{met['pct']}%**</font> · {met['detail']}"}
-                ]},
-            ],
-        })
-        rows.append({"tag": "hr"})
-
-    # Multi-CLI 详情
-    if cli_details:
-        rows.append({"tag": "markdown", "content": "**Multi-CLI 额度概览**"})
-        for name, logged_in, plan, detail in cli_details:
-            icon = "✅" if logged_in else "❌"
-            right = f"{icon} {plan}"
-            if detail:
-                right += f"\n{detail}"
-            if not logged_in:
-                right = f"{icon} 未登录"
+    for sec in sections:
+        if sec.get("heading"):
+            rows.append({"tag": "markdown",
+                         "content": f"**{sec['heading']}**"})
+        for met in sec.get("metrics", []):
+            pct = met["pct"]
+            if pct >= 0:
+                color = _pct_color(pct)
+                right = (f"<font color='{color}'>**{pct}%**</font>"
+                         f" · {met['detail']}")
+            else:
+                right = met["detail"]
             rows.append({
                 "tag": "column_set",
                 "flex_mode": "none",
                 "background_style": "default",
                 "columns": [
-                    {"tag": "column", "width": "weighted", "weight": 2, "elements": [
-                        {"tag": "markdown", "content": f"**{name}**"}
-                    ]},
-                    {"tag": "column", "width": "weighted", "weight": 3, "elements": [
-                        {"tag": "markdown", "content": right}
-                    ]},
+                    {"tag": "column", "width": "weighted", "weight": 2,
+                     "elements": [{"tag": "markdown",
+                                   "content": f"**{met['label']}**"}]},
+                    {"tag": "column", "width": "weighted", "weight": 3,
+                     "elements": [{"tag": "markdown", "content": right}]},
                 ],
             })
+        rows.append({"tag": "hr"})
 
-    # 去掉末尾多余的 hr
     if rows and rows[-1].get("tag") == "hr":
         rows.pop()
 
@@ -292,112 +339,50 @@ def _build_usage_card(raw: str, title_suffix: str, cli_details=None) -> dict:
     }
 
 
-_CLI_USAGE_CMDS = {
-    "kimi": "/usage",
-    "codex": "/status",
-    "gemini": "/stats",
-}
-
-
-def _capture_cli_usage(cli_name: str) -> str | None:
-    """在容器 tmux 里发 usage 命令并 capture 输出。返回文本或 None。"""
-    cmd_text = _CLI_USAGE_CMDS.get(cli_name)
-    if not cmd_text:
-        return None
-    session = _host_session()
-    # 找到对应 agent 窗口（team.json 里 cli 字段匹配）
-    try:
-        tj = json.loads((PROJECT_ROOT / "team.json").read_text())
-        agents = tj.get("agents", {})
-        target_agent = None
-        for name, cfg in agents.items():
-            if cfg.get("cli", "claude-code") == f"{cli_name}-code" or \
-               cfg.get("cli", "claude-code") == f"{cli_name}-cli" or \
-               cfg.get("cli", "claude-code").startswith(cli_name):
-                target_agent = name
-                break
-        if not target_agent:
-            return f"(未找到使用 {cli_name} CLI 的 agent)"
-    except Exception:
-        return None
-
-    # 检查窗口存在
-    windows = _list_windows_local(session)
-    if target_agent not in windows:
-        # 尝试容器内
-        for cname in _containers():
-            wmap = _container_window_map(cname)
-            if target_agent in wmap:
-                target = wmap[target_agent]
-                _run(["sudo", "-n", "docker", "exec", cname,
-                      "tmux", "send-keys", "-t", target, cmd_text, "Enter"], timeout=5)
-                time.sleep(4)
-                r = _run(["sudo", "-n", "docker", "exec", cname,
-                          "tmux", "capture-pane", "-pt", target, "-S", "-20"], timeout=5)
-                return r.stdout.strip() if r.returncode == 0 else None
-        return f"({target_agent} 窗口不存在)"
-
-    # 本机 tmux
-    t = f"{session}:{target_agent}"
-    _run(["tmux", "send-keys", "-t", t, cmd_text, "Enter"], timeout=3)
-    time.sleep(4)
-    r = _run(["tmux", "capture-pane", "-pt", t, "-S", "-20"], timeout=5)
-    return r.stdout.strip() if r.returncode == 0 else None
-
-
 def _cmd_usage(text: str):
     m = re.fullmatch(r"/usage(?:\s+(\S+))?\s*", text)
     if not m:
         return None
-    target = (m.group(1) or "").lower()
+    target = (m.group(1) or "").lower()  # "", "all", "kimi", "codex", "gemini", "cc"
 
     now = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
+    sections = []
+    text_lines = []
 
-    # /usage 或 /usage cc/claude → CC 额度
-    if target in ("", "cc", "claude", "claude-code"):
-        snapshot = PROJECT_ROOT / "scripts" / "usage_snapshot.py"
-        r = _run(["python3", str(snapshot)], timeout=30)
-        if r.returncode != 0:
-            return f"⚠️ /usage 失败 (exit {r.returncode})\n{(r.stderr or r.stdout or '无输出').rstrip()}"
-        raw = (r.stdout or "(无输出)").rstrip()
-        return {"text": raw, "card": _build_usage_card(raw, f"Claude Code · {now}")}
+    # 决定要查哪些 CLI
+    if target in ("", "cc", "claude"):
+        targets = ["cc"]
+    elif target == "all":
+        targets = ["cc", "kimi", "codex", "gemini"]
+    elif target in _CLI_QUERY_MAP:
+        targets = [target]
+    else:
+        return f"⚠️ 未知 CLI：{target}\n支持：/usage [cc|kimi|codex|gemini|all]"
 
-    # /usage all → CC + 全部已登录 CLI
-    if target == "all":
-        snapshot = PROJECT_ROOT / "scripts" / "usage_snapshot.py"
-        r = _run(["python3", str(snapshot)], timeout=30)
-        cc_raw = (r.stdout or "(无输出)").rstrip() if r.returncode == 0 else "(CC 查询失败)"
-        cli_details = _multi_cli_details()
-        # 对每个已登录的 CLI 尝试抓 usage
-        cli_usage_texts = []
-        for name, logged_in, plan, detail in cli_details:
-            cli_key = name.lower().replace(" ", "")
-            if cli_key in ("claudecode",):
-                continue  # CC 已在上面
-            if logged_in and cli_key in _CLI_USAGE_CMDS:
-                captured = _capture_cli_usage(cli_key)
-                if captured:
-                    cli_usage_texts.append(f"\n=== {name} ({plan}) ===\n{captured}")
-                else:
-                    cli_usage_texts.append(f"\n=== {name} ({plan}) ===\n(agent 未运行，无法查询实时额度)")
-        full_text = cc_raw + "\n".join(cli_usage_texts)
-        return {"text": full_text, "card": _build_usage_card(cc_raw, f"All CLIs · {now}", cli_details)}
-
-    # /usage kimi / /usage codex / /usage gemini → 单个 CLI
-    if target in _CLI_USAGE_CMDS:
-        captured = _capture_cli_usage(target)
-        if captured:
-            return {"text": captured, "card": _build_usage_card(captured, f"{target.title()} · {now}")}
+    for t in targets:
+        heading = _CLI_HEADINGS.get(t, t)
+        if t == "cc":
+            snapshot = PROJECT_ROOT / "scripts" / "usage_snapshot.py"
+            r = _run(["python3", str(snapshot)], timeout=30)
+            if r.returncode != 0:
+                sections.append({"heading": heading,
+                                 "metrics": [{"label": "CC", "pct": -1,
+                                              "detail": f"查询失败 (exit {r.returncode})"}]})
+                continue
+            raw = (r.stdout or "").rstrip()
+            cc_metrics = _cc_usage_metrics(raw)
+            sections.append({"heading": heading, "metrics": cc_metrics})
+            text_lines.append(raw)
         else:
-            cli_details = _multi_cli_details()
-            for name, logged_in, plan, detail in cli_details:
-                if name.lower() == target:
-                    if not logged_in:
-                        return f"⚠️ {name} 未登录，无法查询额度"
-                    return f"⚠️ {name} agent 未运行，无法查询实时额度（{plan}）"
-            return f"⚠️ {target} agent 未找到"
+            metrics = _query_cli(t)
+            sections.append({"heading": heading, "metrics": metrics})
+            for met in metrics:
+                pct_s = f"{met['pct']}%" if met["pct"] >= 0 else "—"
+                text_lines.append(f"  {met['label']}: {pct_s}  {met['detail']}")
 
-    return f"⚠️ 未知 CLI：{target}\n支持：/usage [cc|kimi|codex|gemini|all]"
+    title = "All CLIs" if target == "all" else _CLI_HEADINGS.get(target or "cc", target)
+    return {"text": "\n".join(text_lines),
+            "card": _build_usage_card(sections, f"{title} · {now}")}
 
 
 # ── /tmux ──────────────────────────────────────────────────────
