@@ -110,6 +110,8 @@ ALLOWED_MODELS = frozenset({
     "opus", "sonnet", "haiku",
     # 全名(精确钉版本)
     "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
+    # OpenAI / Codex CLI 模型
+    "gpt-5.4",
 })
 
 # 兜底默认。用短别名 'opus' 是刻意的:Opus 4.6 1M-context 模式的完整 ID

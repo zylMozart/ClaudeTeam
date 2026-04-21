@@ -14,8 +14,12 @@ class KimiCodeAdapter(CliAdapter):
         return f"KIMI_AGENT={agent} kimi --yolo"
 
     def ready_markers(self):
-        # TODO: 实测校准 — kimi CLI technical preview, UI 特征串未稳定
-        return ["kimi>", "Type your request"]
+        return [
+            "Welcome to Kimi Code CLI",
+            "Send /help for help information",
+            "── input",
+            "context:",
+        ]
 
     def busy_markers(self):
         # TODO: 实测校准

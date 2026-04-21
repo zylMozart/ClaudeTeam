@@ -306,6 +306,22 @@ with open(p, 'w') as f:
 "
 fi
 
+# Gemini: trust 当前工作目录,避免首次 TUI trust prompt 卡住 smoke/lazy wake。
+GEMINI_TRUSTED="/home/claudeteam/.gemini/trustedFolders.json"
+mkdir -p "$(dirname "$GEMINI_TRUSTED")"
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+p = Path("/home/claudeteam/.gemini/trustedFolders.json")
+try:
+    data = json.loads(p.read_text()) if p.exists() else {}
+except Exception:
+    data = {}
+data["/app"] = "TRUST_FOLDER"
+p.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+PY
+
 echo "✅ CLI auto-approve 配置已预写 (kimi/codex/gemini)"
 
 # ── init 模式：跑 setup.py 创建飞书资源,然后退出 ────────────
@@ -500,7 +516,15 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 
 【Thinking 指引】${THINKING_HINT}"
 
-    tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
+    INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
+import os, sys
+from tmux_utils import inject_when_idle
+
+session, agent = sys.argv[1], sys.argv[2]
+ok = inject_when_idle(session, agent, os.environ["INIT_MSG"],
+                      wait_secs=20, force_after_wait=False)
+raise SystemExit(0 if ok else 1)
+PY
     # Bug 15 防御: feishu_msg.py status → Bitable record-batch-create 并发写
     # 会撞限流,错峰 2.5s 与 start-team.sh 对齐。lazy-mode 下 ACTIVE_AGENTS
     # 通常只有 manager+supervisor,2.5s 对启动总耗时的影响可忽略。

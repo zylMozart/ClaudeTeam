@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
 from tmux_utils import inject_when_idle, is_agent_idle, capture_pane
 from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
-from feishu_msg import _lark_run, cmd_say
+from feishu_msg import _lark_run, cmd_say, sanitize_agent_message
+from message_renderer import render_inbox_text, render_tmux_prompt
 from cli_adapters import adapter_for_agent
 import tmux_command
 import team_command
@@ -276,11 +277,20 @@ def _cli_pids_in_pane(agent_name):
 
 def _wait_cli_ui_ready(agent_name, timeout_s=WAKE_READY_TIMEOUT_S):
     """轮询 tmux pane,等 CLI UI 出现 adapter 定义的 ready 特征串。"""
-    markers = adapter_for_agent(agent_name).ready_markers()
+    adapter = adapter_for_agent(agent_name)
+    markers = adapter.ready_markers()
+    proc_name = adapter.process_name()
+    not_ready = ("Loading configuration",)
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         pane = capture_pane(TMUX_SESSION, agent_name)
-        if any(m in pane for m in markers):
+        tail = "\n".join(pane.splitlines()[-30:])
+        if any(m in tail for m in not_ready):
+            time.sleep(0.5)
+            continue
+        if any(m in tail for m in markers):
+            if proc_name == "kimi":
+                time.sleep(1.5)
             return True
         time.sleep(0.5)
     return False
@@ -299,6 +309,8 @@ def wake_on_deliver(agent_name):
       False — wake 失败 / UI 未在 timeout 内出现
     """
     if _agent_has_live_cli(agent_name):
+        if adapter_for_agent(agent_name).process_name() == "kimi":
+            return _wait_cli_ui_ready(agent_name, timeout_s=min(10, WAKE_READY_TIMEOUT_S))
         return True
 
     now = time.time()
@@ -348,6 +360,8 @@ def wake_on_deliver(agent_name):
 def wake_agent(agent_name, message_preview, sender_agent=None,
                full_text=None, msg_id=""):
     """向 agent 投递消息：先尝试直接投递，忙碌则入队"""
+    message_preview = sanitize_agent_message(message_preview)
+    full_text = sanitize_agent_message(full_text) if full_text else full_text
     # lazy-wake: 若 agent 休眠,先 wake 起来再投递。已活则秒回。
     wake_on_deliver(agent_name)
     if sender_agent:
@@ -355,7 +369,7 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
             sender=sender_agent, agent=agent_name,
             preview=message_preview[:500])
     else:
-        content = full_text or message_preview
+        content = render_inbox_text(full_text or message_preview)
         if len(content) > 400:
             msg_file = os.path.join(PROJECT_ROOT, "workspace", "shared",
                                     f".router_msg_{agent_name}.txt")
@@ -363,10 +377,12 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
             with open(msg_file, "w", encoding="utf-8") as f:
                 f.write(content)
             prompt = TPL_USER_MSG_LONG.format(
-                file_path=msg_file, preview=content[:200], agent=agent_name)
+                file_path=msg_file,
+                preview=render_inbox_text(content[:200]),
+                agent=agent_name)
         else:
-            prompt = TPL_USER_MSG_SHORT.format(
-                content=content, agent=agent_name)
+            prompt = render_tmux_prompt(
+                "群聊消息", "用户在群里对你说:", content, agent_name)
 
     is_user_msg = (sender_agent is None)
     has_pending = has_pending_messages(agent_name)
@@ -432,6 +448,7 @@ def handle_event(event):
     # --compact 模式下 text 字段已解析好
     text = event.get("text", event.get("content", ""))
     msg_type = event.get("message_type", "text")
+    text = sanitize_agent_message(text)
 
     if not text:
         return

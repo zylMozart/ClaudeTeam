@@ -10,6 +10,8 @@ import os, json, time, threading
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from config import PROJECT_ROOT, TMUX_SESSION
+from feishu_msg import sanitize_agent_message
+from message_renderer import render_tmux_prompt
 from tmux_utils import inject_when_idle, is_agent_idle
 
 PENDING_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", ".pending_msgs")
@@ -22,6 +24,7 @@ UNREAD_CHECK_INTERVAL = 30  # manager 未读检查间隔
 
 def enqueue_message(agent_name, msg_text, msg_id, is_user_msg=False):
     """将消息加入待投递队列（线程安全）。"""
+    msg_text = sanitize_agent_message(msg_text)
     with _queue_lock:
         os.makedirs(PENDING_DIR, exist_ok=True)
         queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
@@ -75,6 +78,7 @@ def dequeue_pending(agent_name):
             return
 
         msg = queue[0]
+        msg["text"] = sanitize_agent_message(msg["text"])
         ok = inject_when_idle(TMUX_SESSION, agent_name, msg["text"],
                               wait_secs=2, force_after_wait=False)
         if ok:
@@ -138,6 +142,8 @@ def _handle_busy_agent(agent_name, queue):
                 f"请尽快处理当前任务后执行: "
                 f"python3 scripts/feishu_msg.py inbox {agent_name}"
             )
+            urgent_prompt = render_tmux_prompt(
+                "紧急提醒", "待处理消息积压", urgent_prompt)
             inject_when_idle(TMUX_SESSION, agent_name, urgent_prompt,
                             wait_secs=2, force_after_wait=True)
             oldest_user_msg["attempts"] += 1

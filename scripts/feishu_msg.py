@@ -24,6 +24,7 @@ import sys, os, json, time, subprocess
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
+from message_renderer import render_feishu_markdown, render_inbox_text, render_log_text
 from tmux_utils import inject_when_idle
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
@@ -44,6 +45,12 @@ def extract_text(v):
     """从 Bitable 字段值中提取文本。"""
     if isinstance(v, list): return v[0].get("text", "") if v else ""
     return str(v) if v else ""
+
+
+def sanitize_agent_message(text: str) -> str:
+    """Remove Codex CLI spawn command fragments accidentally mixed into messages."""
+    return render_inbox_text(text)
+
 
 # ── lark-cli 封装 ────────────────────────────────────────────
 
@@ -175,6 +182,7 @@ def _lark_base_list(base_token, table_id, limit=20, offset=0):
 
 def build_system_card(content: str, template: str = "grey") -> dict:
     """系统消息卡片（给 slash 命令的文本回显用），不带 sender · role 标签。"""
+    content = render_feishu_markdown(content)
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -187,6 +195,7 @@ def build_system_card(content: str, template: str = "grey") -> dict:
 
 def build_card(from_agent, to_agent, content, priority="中"):
     """构建飞书消息卡片 JSON"""
+    content = render_feishu_markdown(content)
     info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})
     emoji = info["emoji"]
     role  = info["role"]
@@ -237,6 +246,7 @@ def ws_log(agent, log_type, content, ref=""):
     tid = WS(agent)
     if not tid:
         return
+    content = render_log_text(content)
     d = _lark_base_create(BT(), tid,
                           {"类型": log_type, "内容": content,
                            "时间": now_ms(), "关联对象": ref})
@@ -252,6 +262,7 @@ def cmd_say(from_agent, message="", image_path=""):
         print("❌ 群组未配置"); sys.exit(1)
 
     if message:
+        message = sanitize_agent_message(message)
         card = build_card(from_agent, None, message)
         d = _lark_im_send(chat_id, card=card)
         _check_lark_result(d, f"群聊发言 {from_agent}→*")
@@ -271,6 +282,7 @@ def cmd_say(from_agent, message="", image_path=""):
 
 def bitable_insert_message(to, frm, content, priority):
     """向消息表写入一条记录，返回 record_id 或 None。"""
+    content = render_inbox_text(content)
     d = _lark_base_create(BT(), MT(),
                           {"收件人": to, "发件人": frm,
                            "消息内容": content, "优先级": priority,
@@ -318,6 +330,7 @@ def _notify_agent_tmux(to_agent, from_agent, message):
 
 
 def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
+    message = sanitize_agent_message(message)
     actual_message = f"[{task_id}] {message}" if task_id else message
     rid = bitable_insert_message(to_agent, from_agent, actual_message, priority)
     # 主写入失败 → fatal exit 1。`rid or None` 把空串也归一到 None。
@@ -344,6 +357,7 @@ def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
 
 def cmd_direct(to_agent, from_agent, message):
     """直连发消息：写入收件箱，自动抄送 manager。"""
+    message = sanitize_agent_message(message)
     rid = bitable_insert_message(to_agent, from_agent, message, "中")
     _check_lark_result(rid or None, f"直连写入 {from_agent}→{to_agent}")
 
@@ -525,7 +539,7 @@ def cmd_inbox(agent_name):
         ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
         frm = extract_text(f.get("发件人", "?"))
         pri = extract_text(f.get("优先级", "?"))
-        content = extract_text(f.get("消息内容", ""))
+        content = sanitize_agent_message(extract_text(f.get("消息内容", "")))
         print(f"── [{ts}] 来自 {frm} [优先级:{pri}]")
         print(f"   {content}")
         print(f"   标记已读: python3 scripts/feishu_msg.py read {rid}")
