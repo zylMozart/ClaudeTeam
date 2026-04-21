@@ -12,23 +12,46 @@ class CodexCliAdapter(CliAdapter):
     # Codex 支持的 OpenAI 原生模型前缀; Claude 系列模型(opus/sonnet/haiku 等)
     # 不是 OpenAI 模型,传给 Codex 会报 400,尤其 ChatGPT 登录模式下。
     _OPENAI_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4", "codex")
+    _REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
+
+    def _reasoning_config(self, agent):
+        # Codex CLI 0.121.0 consumes reasoning effort via -c
+        # model_reasoning_effort="high". Keep "default"/"off" as no override.
+        try:
+            from config import resolve_thinking_for_agent
+            thinking = resolve_thinking_for_agent(agent)
+        except Exception:
+            return ""
+        if thinking in self._REASONING_EFFORTS:
+            return f' -c model_reasoning_effort=\\"{thinking}\\"'
+        return ""
 
     def spawn_cmd(self, agent, model):
+        reasoning_config = self._reasoning_config(agent)
+        base = (
+            "CODEX_AGENT={agent} codex "
+            "--dangerously-bypass-approvals-and-sandbox"
+        ).format(agent=agent)
         # 只有 OpenAI 原生模型名才传 --model,其余(Claude 别名/全名)一律忽略,
         # 让 Codex CLI 自己选默认模型。
         if model and any(model.startswith(p) for p in self._OPENAI_MODEL_PREFIXES):
-            return f"CODEX_AGENT={agent} codex --dangerously-bypass-approvals-and-sandbox --model {model}"
-        return f"CODEX_AGENT={agent} codex --dangerously-bypass-approvals-and-sandbox"
+            return f"{base} --model {model}{reasoning_config}"
+        return f"{base}{reasoning_config}"
 
     def ready_markers(self):
-        # TODO: 实测校准 — Codex CLI TUI 的 ready 特征串
-        return ["codex>", ">"]
+        # 实测 (codex-cli 0.121.0): TUI 就绪时 pane 底部出现 "tab to queue
+        # message" 或模型 banner "gpt-5.x default · <cwd>"。"Implement
+        # {feature}" 是首次启动 placeholder；后续启动会被上次会话内容覆盖，
+        # 不如前两者可靠。
+        return ["tab to queue message", "gpt-5"]
 
     def busy_markers(self):
-        # TODO: 实测校准
+        # 实测: codex 忙时 pane 出 "Working (Xs • esc to interrupt)",
+        # 共用 "esc to interrupt" 足以覆盖。spinner 字符复用 CC 集合作为
+        # 次要信号 (codex 0.121 的 spinner 还未实测,保守留 braille 全集)。
         return [
-            "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",  # braille spinner
-            "Thinking", "Running tool",
+            "esc to interrupt",
+            "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",
         ]
 
     def process_name(self):

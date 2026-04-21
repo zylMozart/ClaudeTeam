@@ -12,11 +12,14 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+from message_renderer import render_feishu_markdown
 
 PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
                     Path(__file__).resolve().parent.parent)
@@ -42,12 +45,75 @@ def _host_session() -> str:
         return "server-manager"
 
 
-def _run(cmd, timeout=5):
+def _run(cmd, timeout=5, env=None):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout, env=env)
     except Exception as e:
         class R: returncode = -1; stdout = ""; stderr = str(e)
         return R()
+
+
+def _gemini_usage_env() -> dict | None:
+    """Add Gemini CLI OAuth client metadata for bundled Gemini CLI installs."""
+    if (os.environ.get("GEMINI_OAUTH_CLIENT_ID")
+            and os.environ.get("GEMINI_OAUTH_CLIENT_SECRET")):
+        return None
+
+    roots = []
+    gemini_bin = shutil.which("gemini")
+    if gemini_bin:
+        resolved = Path(gemini_bin).resolve()
+        roots.extend([
+            resolved.parent.parent / "lib" / "node_modules",
+            resolved.parent.parent / "lib",
+        ])
+    roots.extend([
+        Path("/usr/local/lib/node_modules"),
+        Path("/usr/lib/node_modules"),
+        Path.home() / ".nvm" / "versions" / "node",
+    ])
+
+    id_re = re.compile(r"(?:var|const)\s+OAUTH_CLIENT_ID\s*=\s*[\"']([^\"']+)[\"']")
+    secret_re = re.compile(r"(?:var|const)\s+OAUTH_CLIENT_SECRET\s*=\s*[\"']([^\"']+)[\"']")
+    bundle_dirs = []
+    for root in roots:
+        if not root.exists():
+            continue
+        if root.name == "node":
+            bundle_dirs.extend(root.glob("*/lib/node_modules/@google/gemini-cli/bundle"))
+        else:
+            bundle_dirs.append(root / "@google" / "gemini-cli" / "bundle")
+
+    for bundle_dir in bundle_dirs:
+        if not bundle_dir.is_dir():
+            continue
+        for bundle_path in sorted(bundle_dir.glob("chunk-*.js")):
+            try:
+                source = bundle_path.read_text()
+            except OSError:
+                continue
+            if "code_assist/oauth2" not in source:
+                continue
+            client_id = id_re.search(source)
+            client_secret = secret_re.search(source)
+            if client_id and client_secret:
+                env = os.environ.copy()
+                env["GEMINI_OAUTH_CLIENT_ID"] = client_id.group(1)
+                env["GEMINI_OAUTH_CLIENT_SECRET"] = client_secret.group(1)
+                return env
+    return None
+
+
+def _run_usage_tool(tool: str, timeout=15):
+    """Run a uv-installed usage helper, falling back to uvx if not on PATH."""
+    env = _gemini_usage_env() if tool == "gemini-cli-usage" else None
+    exe = shutil.which(tool)
+    if exe:
+        return _run([exe], timeout=timeout, env=env)
+    if shutil.which("uvx"):
+        return _run(["uvx", tool], timeout=timeout, env=env)
+    return _run([tool], timeout=timeout, env=env)
 
 
 def _containers():
@@ -80,17 +146,19 @@ def _container_window_map(cname: str) -> dict:
 
 def _send_local(session: str, agent: str, msg: str) -> bool:
     t = f"{session}:{agent}"
-    if _run(["tmux", "send-keys", "-t", t, msg]).returncode != 0:
+    if _run(["tmux", "send-keys", "-l", "-t", t, msg]).returncode != 0:
         return False
-    return _run(["tmux", "send-keys", "-t", t, "Enter"]).returncode == 0
+    time.sleep(0.2)
+    return _run(["tmux", "send-keys", "-t", t, "Enter", "C-m"]).returncode == 0
 
 
 def _send_container(cname: str, target: str, msg: str) -> bool:
     if _run(["sudo", "-n", "docker", "exec", cname, "tmux",
-             "send-keys", "-t", target, msg]).returncode != 0:
+             "send-keys", "-l", "-t", target, msg]).returncode != 0:
         return False
+    time.sleep(0.2)
     return _run(["sudo", "-n", "docker", "exec", cname, "tmux",
-                 "send-keys", "-t", target, "Enter"]).returncode == 0
+                 "send-keys", "-t", target, "Enter", "C-m"]).returncode == 0
 
 
 # ── /help ──────────────────────────────────────────────────────
@@ -129,6 +197,36 @@ def _pct_color(p: int) -> str:
     return "green"
 
 
+def _remaining_pct_color(p: int) -> str:
+    if p <= 20:
+        return "red"
+    if p <= 50:
+        return "orange"
+    return "green"
+
+
+def _relative_reset_to_bj(reset: str) -> str:
+    """Convert compact relative reset strings like 4h31m to BJ absolute time."""
+    total = timedelta()
+    for value, unit in re.findall(r"(\d+)\s*([dhm])", reset):
+        n = int(value)
+        if unit == "d":
+            total += timedelta(days=n)
+        elif unit == "h":
+            total += timedelta(hours=n)
+        elif unit == "m":
+            total += timedelta(minutes=n)
+    if total == timedelta():
+        return reset
+    return (datetime.now(BJ_TZ) + total).strftime("%Y-%m-%d %H:%M 北京时间")
+
+
+def _fmt_pct(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
 def _find_cred(*candidates) -> Path | None:
     """返回第一个存在的凭证文件路径，全不存在返回 None。"""
     for p in candidates:
@@ -141,8 +239,18 @@ def _find_cred(*candidates) -> Path | None:
 
 # Kimi /usage 输出:  Weekly limit  ━━━━  99% left  (resets in 4d 39m)
 _KIMI_USAGE_RE = re.compile(
-    r"(?P<label>[\w ]+?)\s+[━─]+\s+(?P<left>\d+)%\s+left\s+"
+    r"(?P<label>[\w ]+?)\s+[━─]+\s+(?P<left>[\d.]+)%\s+left\s+"
     r"\(resets\s+in\s+(?P<reset>.+?)\)")
+
+
+def _team_agents_by_cli(cli_name: str) -> list:
+    try:
+        tj = json.loads((PROJECT_ROOT / "team.json").read_text())
+        agents = tj.get("agents", {})
+        return [name for name, info in agents.items()
+                if info.get("cli") == cli_name]
+    except Exception:
+        return []
 
 
 def _tmux_target(agent: str):
@@ -157,44 +265,90 @@ def _tmux_target(agent: str):
     return None, False
 
 
+def _capture_tmux_target(tgt, is_ctr: bool, cmd_text: str,
+                         wait: int = 4, lines: int = 30) -> str:
+    if is_ctr:
+        cname, target = tgt
+        pfx = ["sudo", "-n", "docker", "exec", cname]
+        if cmd_text:
+            _run(pfx + ["tmux", "send-keys", "-l", "-t", target, cmd_text], timeout=5)
+            _run(pfx + ["tmux", "send-keys", "-t", target, "Enter", "C-m"], timeout=5)
+            time.sleep(wait)
+        r = _run(pfx + ["tmux", "capture-pane", "-pt", target,
+                         "-S", f"-{lines}"], timeout=5)
+    else:
+        if cmd_text:
+            _run(["tmux", "send-keys", "-l", "-t", tgt, cmd_text], timeout=3)
+            _run(["tmux", "send-keys", "-t", tgt, "Enter", "C-m"], timeout=3)
+            time.sleep(wait)
+        r = _run(["tmux", "capture-pane", "-pt", tgt, "-S", f"-{lines}"], timeout=5)
+    return r.stdout if r.returncode == 0 else ""
+
+
 def _tmux_send_and_capture(agent: str, cmd_text: str, wait: int = 4,
                            lines: int = 30) -> str:
     """向 agent pane 发命令并返回 capture 文本。"""
     tgt, is_ctr = _tmux_target(agent)
     if tgt is None:
         return ""
-    if is_ctr:
-        cname, target = tgt
-        pfx = ["sudo", "-n", "docker", "exec", cname]
-        if cmd_text:
-            _run(pfx + ["tmux", "send-keys", "-t", target, cmd_text, "Enter"], timeout=5)
-            time.sleep(wait)
-        r = _run(pfx + ["tmux", "capture-pane", "-pt", target,
-                         "-S", f"-{lines}"], timeout=5)
-    else:
-        if cmd_text:
-            _run(["tmux", "send-keys", "-t", tgt, cmd_text, "Enter"], timeout=3)
-            time.sleep(wait)
-        r = _run(["tmux", "capture-pane", "-pt", tgt, "-S", f"-{lines}"], timeout=5)
-    return r.stdout if r.returncode == 0 else ""
+    return _capture_tmux_target(tgt, is_ctr, cmd_text, wait=wait, lines=lines)
+
+
+def _find_kimi_tmux_target():
+    """Find a running Kimi pane without assuming the window is named kimi_agent."""
+    configured = _team_agents_by_cli("kimi-code")
+    for agent in configured:
+        tgt, is_ctr = _tmux_target(agent)
+        if tgt is not None:
+            return tgt, is_ctr, f"team agent {agent}"
+
+    r = _run(["tmux", "list-panes", "-a", "-F",
+              "#{session_name}:#{window_name}.#{pane_index}\t#{pane_current_command}"])
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            target, _, command = line.partition("\t")
+            cmd_name = Path(command.strip()).name.lower()
+            if cmd_name in ("kimi", "kimi-cli"):
+                return target.strip(), False, f"tmux pane {target.strip()}"
+
+    return None, False, ("team.json 没有 cli=kimi-code 的 agent，"
+                         "当前 tmux 也没有 kimi/kimi-cli pane")
 
 
 def _query_kimi_usage() -> list:
     """向 Kimi pane 发 /usage，解析用量。dedup 同名 label 只取最后一次。"""
-    raw = _tmux_send_and_capture("kimi_agent", "/usage", wait=5)
+    tgt, is_ctr, source = _find_kimi_tmux_target()
+    if tgt is None:
+        return [{"label": "行动项", "pct": -1,
+                 "detail": (f"⚠️ 需要启动 kimi-code agent 后才能实时查询；当前 {source}。"
+                            "非交互 `kimi --quiet -p /usage` 返回 Unknown slash command。")}]
+
+    raw = _capture_tmux_target(tgt, is_ctr, "/usage", wait=5)
     seen = {}  # label → metric (后出的覆盖先出的，避免重复 capture)
     for line in raw.splitlines():
         m = _KIMI_USAGE_RE.search(line)
         if m:
-            left = int(m.group("left"))
+            left = float(m.group("left"))
             used_pct = 100 - left
+            reset_bj = _relative_reset_to_bj(m.group("reset"))
             label = m.group("label").strip()
+            left_i = int(round(left))
+            used_i = int(round(used_pct))
             seen[label] = {
                 "label": label,
-                "pct": used_pct,
-                "detail": f"{left}% left · 重置 {m.group('reset')}",
+                "pct": used_i,
+                "display_pct": left_i,
+                "color": _remaining_pct_color(left),
+                "detail": (f"剩余 {_fmt_pct(left)}% · 已用 {_fmt_pct(used_pct)}% "
+                           f"· 下次刷新 {reset_bj}"),
             }
-    return list(seen.values())
+    if seen:
+        return list(seen.values())
+    return [
+        {"label": "行动项", "pct": -1,
+         "detail": (f"⚠️ 已向 {source} 发送 /usage，但未解析到 Kimi usage 输出；"
+                    "需要确认该 pane 正在运行 kimi-code 且支持 /usage。")},
+    ]
 
 
 # Codex: 无 usage 命令；从 pane banner 读 model + plan（不发命令，不干扰 session）
@@ -206,13 +360,21 @@ _CODEX_USAGE_RE = re.compile(
     r"(?P<label>[\w ()]+?)\s+(?P<pct>\d+)%\s+resets\s+(?P<reset>\S+)")
 
 
+def _usage_error_detail(tool: str, output: str) -> str:
+    clean = " ".join((output or "").split())
+    if ("HTTPError" in clean and "403" in clean) or re.search(r"\b403\b", clean):
+        return (f"{tool} 返回 403：账号权限不足、usage API 被拒绝或当前环境无权访问；"
+                "请确认登录账号/订阅权限，其他 /usage section 已继续查询")
+    return f"{tool} 不可用 · {(clean or '无错误输出')[:120]}"
+
+
 def _query_codex_usage() -> list:
     """用 codex-cli-usage 工具查 Codex 额度（百分比 + 重置时间）。"""
-    r = _run(["codex-cli-usage"], timeout=15)
+    r = _run_usage_tool("codex-cli-usage", timeout=15)
     if r.returncode != 0:
         # fallback: 工具没装或失败
         return [{"label": "Codex", "pct": -1,
-                 "detail": "codex-cli-usage 不可用 · [点击查看 →](https://chatgpt.com/codex/cloud/settings/analytics#usage)"}]
+                 "detail": _usage_error_detail("codex-cli-usage", (r.stderr or "") + (r.stdout or ""))}]
     metrics = []
     plan = ""
     for line in (r.stdout or "").splitlines():
@@ -221,10 +383,14 @@ def _query_codex_usage() -> list:
         m = _CODEX_USAGE_RE.search(line)
         if m:
             pct = int(m.group("pct"))
+            remaining = max(0, min(100, 100 - pct))
+            reset_bj = _relative_reset_to_bj(m.group("reset"))
             metrics.append({
                 "label": m.group("label").strip(),
                 "pct": pct,
-                "detail": f"已用 {pct}% · 重置 {m.group('reset')}",
+                "display_pct": remaining,
+                "color": _remaining_pct_color(remaining),
+                "detail": f"剩余 {remaining}% · 已用 {pct}% · 下次刷新 {reset_bj}",
             })
     if plan:
         metrics.insert(0, {"label": "Plan", "pct": -1, "detail": f"✅ {plan}"})
@@ -245,28 +411,48 @@ _GEMINI_USAGE_RE = re.compile(
 
 def _query_gemini_usage() -> list:
     """用 gemini-cli-usage 工具查 Gemini 各 model 额度。"""
-    r = _run(["gemini-cli-usage"], timeout=15)
+    r = _run_usage_tool("gemini-cli-usage", timeout=15)
+    output = (r.stderr or "") + (r.stdout or "")
+    if r.returncode != 0 and "OAuth access token expired" in output:
+        _run(["gemini", "-p", "Return only OK"], timeout=60)
+        r = _run_usage_tool("gemini-cli-usage", timeout=15)
     if r.returncode != 0:
         # fallback
         return [{"label": "Gemini", "pct": -1,
-                 "detail": "gemini-cli-usage 不可用 · [点击查看 →](https://aistudio.google.com/apikey)"}]
+                 "detail": f"gemini-cli-usage 不可用 · {((r.stderr or r.stdout or '').strip() or '无错误输出')[:120]}"}]
     metrics = []
     auth = ""
     for line in (r.stdout or "").splitlines():
-        if "Auth:" in line:
-            auth = line.split(":", 1)[1].strip()
+        stripped = line.strip()
+        if "Auth:" in stripped:
+            auth = stripped.split(":", 1)[1].strip()
+        if stripped.startswith("Quota"):
+            detail = stripped[len("Quota"):].strip() or "无额度数据"
+            if "OAuth access token expired" in detail:
+                detail = ("OAuth token 已过期，需要重新登录 Gemini CLI："
+                          "运行 `gemini` 完成登录后重试；或设置 "
+                          "GEMINI_OAUTH_CLIENT_ID/GEMINI_OAUTH_CLIENT_SECRET")
+            metrics.append({"label": "Quota", "pct": -1, "detail": f"⚠️ {detail}"})
         m = _GEMINI_USAGE_RE.search(line)
         if m:
-            pct = int(float(m.group("pct")))
+            used = float(m.group("pct"))
+            remaining = max(0, min(100, 100 - used))
+            reset_bj = _relative_reset_to_bj(m.group("reset"))
             metrics.append({
                 "label": m.group("model"),
-                "pct": pct,
-                "detail": f"已用 {m.group('pct')}% · 重置 {m.group('reset')}",
+                "pct": int(round(used)),
+                "display_pct": int(round(remaining)),
+                "color": _remaining_pct_color(remaining),
+                "detail": (f"剩余 {_fmt_pct(remaining)}% · 已用 {_fmt_pct(used)}% "
+                           f"· 下次刷新 {reset_bj}"),
             })
     if auth:
-        metrics.insert(0, {"label": "Auth", "pct": -1, "detail": f"✅ {auth}"})
+        auth_prefix = "⚠️" if any(m["label"] == "Quota" for m in metrics) else "✅"
+        auth_detail = f"{auth_prefix} {auth}"
+        if auth_prefix == "⚠️":
+            auth_detail += "（需要刷新登录态）"
+        metrics.insert(0, {"label": "Auth", "pct": -1, "detail": auth_detail})
     return metrics or [{"label": "Gemini", "pct": -1, "detail": "无数据"}]
-    return result
 
 
 _CLI_QUERY_MAP = {
@@ -291,15 +477,26 @@ def _query_cli(name: str) -> list:
     fn = _CLI_QUERY_MAP.get(name)
     if not fn:
         return []
-    agent = f"{name}_agent"
-    tgt, _ = _tmux_target(agent)
-    if tgt is not None:
+
+    if name in ("kimi", "codex", "gemini"):
         try:
             result = fn()
             if result:
                 return result
         except Exception as e:
-            pass
+            return [{"label": name.title(), "pct": -1, "detail": f"查询异常：{e}"}]
+        return [{"label": name.title(), "pct": -1, "detail": "无数据"}]
+    else:
+        agent = f"{name}_agent"
+        tgt, _ = _tmux_target(agent)
+        if tgt is not None:
+            try:
+                result = fn()
+                if result:
+                    return result
+            except Exception:
+                pass
+
     # Agent 没跑或查询失败 → 从 credential 文件读静态信息
     home = Path(os.environ.get("HOME", "/home/claudeteam"))
     cli_info = {
@@ -381,16 +578,20 @@ def _build_usage_card(sections: list, title_suffix: str) -> dict:
     rows = []
     for sec in sections:
         if sec.get("heading"):
+            heading = render_feishu_markdown(sec["heading"])
             rows.append({"tag": "markdown",
-                         "content": f"**{sec['heading']}**"})
+                         "content": f"**{heading}**"})
         for met in sec.get("metrics", []):
             pct = met["pct"]
+            label = render_feishu_markdown(met["label"])
+            detail = render_feishu_markdown(met["detail"])
             if pct >= 0:
-                color = _pct_color(pct)
-                right = (f"<font color='{color}'>**{pct}%**</font>"
-                         f" · {met['detail']}")
+                display_pct = met.get("display_pct", pct)
+                color = met.get("color", _pct_color(pct))
+                right = (f"<font color='{color}'>**{display_pct}%**</font>"
+                         f" · {detail}")
             else:
-                right = met["detail"]
+                right = detail
             rows.append({
                 "tag": "column_set",
                 "flex_mode": "none",
@@ -398,7 +599,7 @@ def _build_usage_card(sections: list, title_suffix: str) -> dict:
                 "columns": [
                     {"tag": "column", "width": "weighted", "weight": 2,
                      "elements": [{"tag": "markdown",
-                                   "content": f"**{met['label']}**"}]},
+                                   "content": f"**{label}**"}]},
                     {"tag": "column", "width": "weighted", "weight": 3,
                      "elements": [{"tag": "markdown", "content": right}]},
                 ],
@@ -457,7 +658,8 @@ def _cmd_usage(text: str):
             metrics = _query_cli(t)
             sections.append({"heading": heading, "metrics": metrics})
             for met in metrics:
-                pct_s = f"{met['pct']}%" if met["pct"] >= 0 else "—"
+                display_pct = met.get("display_pct", met["pct"])
+                pct_s = f"{display_pct}%" if met["pct"] >= 0 else "—"
                 text_lines.append(f"  {met['label']}: {pct_s}  {met['detail']}")
 
     title = "All CLIs" if target == "all" else _CLI_HEADINGS.get(target or "cc", target)
@@ -1158,7 +1360,7 @@ def _clear_local(session: str, agent: str) -> bool:
                  _init_msg(agent)]).returncode != 0:
             return False
         time.sleep(0.5)
-        return _run(["tmux", "send-keys", "-t", t, "Enter"]).returncode == 0
+        return _run(["tmux", "send-keys", "-t", t, "Enter", "C-m"]).returncode == 0
 
 
 def _clear_container(cname: str, target: str, agent: str) -> bool:
@@ -1172,7 +1374,7 @@ def _clear_container(cname: str, target: str, agent: str) -> bool:
         return False
     time.sleep(0.5)
     return _run(["sudo", "-n", "docker", "exec", cname, "tmux",
-                 "send-keys", "-t", target, "Enter"]).returncode == 0
+                 "send-keys", "-t", target, "Enter", "C-m"]).returncode == 0
 
 
 def _cmd_clear(text: str):

@@ -239,7 +239,15 @@ for agent in "${ACTIVE_AGENTS[@]}"; do
 
 【Thinking 指引】${THINKING_HINT}"
 
-  tmux send-keys -t "$SESSION:$agent" "$INIT_MSG" Enter
+  INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
+import os, sys
+from tmux_utils import inject_when_idle
+
+session, agent = sys.argv[1], sys.argv[2]
+ok = inject_when_idle(session, agent, os.environ["INIT_MSG"],
+                      wait_secs=20, force_after_wait=False)
+raise SystemExit(0 if ok else 1)
+PY
   # 每个 agent init 会同时调用 feishu_msg.py status → Bitable record-batch-create
   # 撞到飞书限流。错峰 2.5s 避免 Bug 15 的并发写入失败。
   sleep 2.5

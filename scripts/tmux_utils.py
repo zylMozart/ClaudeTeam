@@ -65,6 +65,30 @@ def send_ctrlc(session, window):
         capture_output=True
     )
 
+def _tail_text(text, max_len=240):
+    """Normalize a prompt tail for best-effort submission checks."""
+    return " ".join((text or "").split())[-max_len:]
+
+def _press_submit(target):
+    """Submit the current input line in a way that works across CLIs."""
+    for key in ("Enter", "C-m"):
+        subprocess.run(
+            ["tmux", "send-keys", "-t", target, key],
+            capture_output=True
+        )
+        time.sleep(0.2)
+
+def _input_still_visible(session, window, text):
+    """Best-effort check: did the prompt remain in the visible input area?"""
+    if not text:
+        return False
+    needle = _tail_text(text)
+    if not needle:
+        return False
+    pane = capture_pane(session, window)
+    tail = _tail_text("\n".join(pane.rstrip().splitlines()[-12:]))
+    return needle in tail
+
 def check_agent_alive(session, window, stale_minutes=15):
     """检查 agent 是否存活。返回 (alive: bool, reason: str)"""
     # 1. 窗口存在性
@@ -100,7 +124,8 @@ def check_agent_alive(session, window, stale_minutes=15):
     return True, "正常"
 
 def inject_when_idle(session, window, text,
-                     wait_secs=5, poll_interval=0.5, force_after_wait=True):
+                     wait_secs=5, poll_interval=0.5, force_after_wait=True,
+                     verify_submit=True):
     """
     等待 Agent 窗口空闲后注入文本（模拟用户输入并按 Enter）。
 
@@ -111,6 +136,7 @@ def inject_when_idle(session, window, text,
       wait_secs       最长等待空闲的秒数（默认 30s）
       poll_interval   轮询间隔（默认 2s）
       force_after_wait 超时后是否强制注入（默认 True）
+      verify_submit  发送回车后复核输入是否仍停在输入框；若是则补一次提交
 
     返回:
       True  — 注入成功（或强制注入）
@@ -162,11 +188,14 @@ def inject_when_idle(session, window, text,
             capture_output=True
         )
 
-    # 等待 TUI 处理完文本输入后再按 Enter
+    # 等待 TUI 处理完文本输入后再按 Enter。Codex/Kimi/Claude 的 TUI 对
+    # paste-buffer 和 literal send-keys 的消化时机不同；Enter 后再补 C-m，
+    # 并做一次可见区复核，避免消息堆在输入框里没有提交。
     time.sleep(0.5)
-    subprocess.run(
-        ["tmux", "send-keys", "-t", target, "Enter"],
-        capture_output=True
-    )
+    _press_submit(target)
+    if verify_submit:
+        time.sleep(1.0)
+        if _input_still_visible(session, window, text):
+            _press_submit(target)
 
     return True
