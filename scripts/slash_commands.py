@@ -259,6 +259,15 @@ _KIMI_USAGE_BLOCK_RE = re.compile(
     r".{0,160}?\(?resets?\s+in\s+(?P<reset>[0-9dhm\s]+)\)?",
     re.I | re.S,
 )
+_KIMI_BUSY_MARKERS = (
+    "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",
+    "Thinking",
+    "esc to interrupt",
+    "queued",
+    "Queued",
+    "queued input",
+    "Queued input",
+)
 
 
 def _team_agents_by_cli(cli_name: str) -> list:
@@ -312,13 +321,17 @@ def _tmux_send_and_capture(agent: str, cmd_text: str, wait: int = 4,
     return _capture_tmux_target(tgt, is_ctr, cmd_text, wait=wait, lines=lines)
 
 
-def _find_kimi_tmux_target():
-    """Find a running Kimi pane without assuming the window is named kimi_agent."""
+def _kimi_tmux_candidates():
+    """Return all likely Kimi panes, preferring configured team agents."""
+    seen = set()
+    candidates = []
     configured = _team_agents_by_cli("kimi-code")
     for agent in configured:
         tgt, is_ctr = _tmux_target(agent)
         if tgt is not None:
-            return tgt, is_ctr, f"team agent {agent}"
+            key = repr(tgt)
+            seen.add(key)
+            candidates.append((tgt, is_ctr, f"team agent {agent}"))
 
     r = _run(["tmux", "list-panes", "-a", "-F",
               "#{session_name}:#{window_name}.#{pane_index}\t#{pane_current_command}"])
@@ -327,10 +340,19 @@ def _find_kimi_tmux_target():
             target, _, command = line.partition("\t")
             cmd_name = Path(command.strip()).name.lower()
             if cmd_name in ("kimi", "kimi-cli"):
-                return target.strip(), False, f"tmux pane {target.strip()}"
+                target = target.strip()
+                key = repr(target)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append((target, False, f"tmux pane {target}"))
 
-    return None, False, ("team.json 没有 cli=kimi-code 的 agent，"
-                         "当前 tmux 也没有 kimi/kimi-cli pane")
+    return candidates
+
+
+def _kimi_pane_is_busy(raw: str) -> bool:
+    tail = "\n".join((raw or "").rstrip().splitlines()[-5:])
+    return any(marker in tail for marker in _KIMI_BUSY_MARKERS)
 
 
 def _add_kimi_metric(seen: dict, label: str, left: float, reset: str) -> None:
@@ -371,28 +393,54 @@ def _parse_kimi_usage(raw: str) -> list:
 
 
 def _query_kimi_usage() -> list:
-    """向 Kimi pane 发 /usage，解析用量。dedup 同名 label 只取最后一次。"""
-    tgt, is_ctr, source = _find_kimi_tmux_target()
-    if tgt is None:
+    """向 idle Kimi pane 发 /usage，解析用量。dedup 同名 label 只取最后一次。"""
+    candidates = _kimi_tmux_candidates()
+    if not candidates:
         info = inspect_cli("kimi", respect_enabled=False)
         return _usage_status_metric(
             info,
             STATUS_API_FAILED,
-            (f"需要启动 kimi-code agent 后才能实时查询；当前 {source}。"
+            ("需要启动 kimi-code agent 后才能实时查询；当前 team.json 没有可用 "
+             "cli=kimi-code pane，tmux 也没有 kimi/kimi-cli pane。"
              "非交互 kimi --quiet -p /usage 返回 Unknown slash command。"),
         )
 
-    raw = _capture_tmux_target(tgt, is_ctr, "/usage", wait=5)
-    metrics = _parse_kimi_usage(raw)
-    if metrics:
-        return metrics
+    busy_sources = []
+    not_ready_sources = []
+    for tgt, is_ctr, source in candidates:
+        before = _capture_tmux_target(tgt, is_ctr, "", wait=0, lines=18)
+        if _kimi_pane_is_busy(before):
+            busy_sources.append(source)
+            continue
+
+        raw = _capture_tmux_target(tgt, is_ctr, "/usage", wait=5, lines=50)
+        metrics = _parse_kimi_usage(raw)
+        if metrics:
+            return metrics
+        if _kimi_pane_is_busy(raw):
+            busy_sources.append(source)
+        else:
+            not_ready_sources.append(source)
+
     info = inspect_cli("kimi", respect_enabled=False)
-    return _usage_status_metric(
-        info,
-        STATUS_API_FAILED,
-        (f"已向 {source} 发送 /usage，但未解析到 Kimi usage 输出；"
-         "需要确认该 pane 正在运行 kimi-code 且支持 /usage。"),
-    )
+    if busy_sources and not not_ready_sources:
+        detail = "⚠️ Kimi pane busy · " + "、".join(busy_sources[:4])
+        if len(busy_sources) > 4:
+            detail += f" 等 {len(busy_sources)} 个 pane"
+        detail += " 正忙，已跳过注入 /usage，避免污染输入队列"
+        return [{"label": "Status", "pct": -1, "detail": detail}]
+    detail = "⚠️ Kimi capture not ready · "
+    if not_ready_sources:
+        detail += "、".join(not_ready_sources[:4])
+        if len(not_ready_sources) > 4:
+            detail += f" 等 {len(not_ready_sources)} 个 pane"
+        detail += " 未返回可解析 API Usage card"
+    if busy_sources:
+        detail += "；忙碌 pane 已跳过: " + "、".join(busy_sources[:4])
+    detail += "；请稍后重试或确认 kimi-code pane 已空闲"
+    if info.get("status") != STATUS_OK:
+        detail += f"；preflight: {status_label(info['status'])}"
+    return [{"label": "Status", "pct": -1, "detail": detail}]
 
 
 # Codex: 无 usage 命令；从 pane banner 读 model + plan（不发命令，不干扰 session）
