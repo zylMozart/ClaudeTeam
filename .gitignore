@@ -40,3 +40,5 @@ __pycache__/
 tools/
 docker-compose.override.yml
 .kimi-credentials/
+.codex-credentials/
+.gemini-credentials/
