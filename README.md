@@ -131,8 +131,9 @@ touch scripts/runtime_config.json
 # 4. Build the image.
 docker compose build
 
-# 5. One-shot init: container creates the Bitable / group chat / inbox tables
-#    and writes scripts/runtime_config.json. Exits when done.
+# 5. One-shot init: container creates the Bitable / group chat / inbox /
+#    status / kanban / boss todo tables and writes scripts/runtime_config.json.
+#    Exits when done.
 docker compose run --rm team init
 
 # 6. Start the team for real (manager + workers + router + watchdog).
@@ -397,6 +398,48 @@ The `/usage` slash command queries real-time quota for each CLI. These tools are
 Usage: `/usage` (CC default), `/usage kimi`, `/usage codex`, `/usage gemini`, `/usage all`.
 
 `/usage all` also runs a lightweight credential inventory before each provider query. It always attempts all four providers (Claude, Kimi, Codex, Gemini) because its product goal is "all CLI usage", not "only CLIs currently used by team agents". If a CLI has no tools or credentials, the section says so explicitly; if credentials exist but a provider rejects refresh or usage calls, the section reports the actionable status such as permission denied, expired login, or container-local re-login required. `team.json` still controls which agents are launched, but it does not hide an otherwise queryable CLI from `/usage all`.
+
+### Boss todo Bitable
+
+Boss todos are blocking actions that only the user/boss can complete: OAuth login, credential handoff, approval, PR publishing, external billing, or explicit confirmation. They are stored in a dedicated Feishu Bitable table named `老板代办`; they are not written to `task_tracker.py` or employee task files.
+
+New `setup.py` runs create or reuse this table automatically and writes:
+
+```json
+{
+  "boss_todo": {
+    "base_token": "<same as bitable_app_token>",
+    "table_id": "tbl...",
+    "table_name": "老板代办",
+    "view_link": "",
+    "dedupe_keys": ["来源任务", "标题"]
+  }
+}
+```
+
+For an existing deployment whose `runtime_config.json` predates this table, run:
+
+```bash
+python3 scripts/setup.py ensure-boss-todo
+```
+
+The runtime reader also accepts the legacy flat keys `boss_todo_table_id`, `boss_todo_link`, and `boss_todo_dedupe_keys`. If no table ID is configured, `scripts/boss_todo.py` fails loudly and tells you to run `ensure-boss-todo` or ask devops to write the config.
+
+Common commands:
+
+```bash
+python3 scripts/boss_todo.py upsert "Gemini OAuth 重新登录" \
+  --source-task usage-credential-p0 \
+  --source-type login \
+  --priority 高 \
+  --note "token 已过期，需要老板重新登录"
+
+python3 scripts/boss_todo.py list --status 待处理
+
+python3 scripts/boss_todo.py done "Gemini OAuth 重新登录" \
+  --source-task usage-credential-p0 \
+  --note "老板已登录，devops 验证通过"
+```
 
 ### Adding a new adapter
 
