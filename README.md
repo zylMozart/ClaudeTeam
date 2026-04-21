@@ -143,6 +143,7 @@ Why this flow:
 
 - **Feishu credentials never touch the host.** They live in `.env` and only get materialized inside the container's writable layer at startup. Nothing is written to `~/.lark-cli` on the host. Multiple ClaudeTeam deployments on the same host can't see each other's Feishu identities.
 - **Claude Code credentials are shared via bind mount** (`~/.claude/.credentials.json` + `~/.claude.json`). Same Anthropic account in multiple deployments is the normal case, so this is fine. If you'd rather use an API key, set `ANTHROPIC_API_KEY` in `.env` — the bind mounts become optional.
+- **Kimi/Codex/Gemini credentials live in project-local directories** (`.kimi-credentials/`, `.codex-credentials/`, `.gemini-credentials/`). They are bind-mounted into the container and are gitignored. Copy existing host login state into these directories before first `docker compose up`, or complete each CLI login inside the container.
 - **The whole `scripts/` directory is bind-mounted** so you can edit Python scripts on the host and they take effect on container restart, no rebuild needed.
 
 **Before this works** you still have to do the two manual Feishu console steps once (scopes batch-import + event subscription). See [Phase 1](#phase-1-configure-feishu-app) below — those steps apply to both Quick Start and Docker Deployment.
@@ -322,6 +323,13 @@ Open the URL in your browser, authorize with your Moonshot account, and the kimi
 
 **Credential persistence:** The `.kimi-credentials/` directory in the project root is bind-mounted into the container (see `docker-compose.yml`). After first login, subsequent container recreations (`docker compose down && up`) reuse the saved tokens automatically — no re-login needed.
 
+If the host already has a known-good Kimi login:
+
+```bash
+mkdir -p .kimi-credentials
+rsync -a ~/.kimi/ .kimi-credentials/
+```
+
 **If kimi login expires:** Remove the `.kimi-credentials/` directory and restart the container. The kimi agents will prompt for login again.
 
 ```bash
@@ -340,9 +348,29 @@ Enter this one-time code: XXXX-XXXXX
 
 Open the URL, sign in with your ChatGPT account, and enter the code. Credentials are saved to `.codex-credentials/` (bind-mounted) and persist across container recreations.
 
+If the host already has a Codex login:
+
+```bash
+mkdir -p .codex-credentials
+rsync -a ~/.codex/ .codex-credentials/
+```
+
+Copying `.codex` is necessary but not always sufficient for Codex usage in a new container. If `/usage codex` or `/usage all` still reports HTTP `403` from the usage API and `401` during refresh, treat it as a container login/permission problem, not as a missing mount. Run `codex` inside the container and complete ChatGPT login there, or use host-side `codex-cli-usage status` until a host-side usage bridge is available.
+
 ### Gemini CLI credential setup (Docker)
 
 Gemini agents prompt for **Google OAuth** on first run. You'll see a long Google OAuth URL — open it in your browser, authorize, and paste the authorization code back into the terminal. Credentials are saved to `.gemini-credentials/` (bind-mounted) and persist across container recreations.
+
+If the host already has a Gemini login:
+
+```bash
+mkdir -p .gemini-credentials
+rsync -a ~/.gemini/ .gemini-credentials/
+```
+
+If copied Gemini credentials are expired, run `gemini` inside the container and complete Google login again.
+
+Do not commit `.kimi-credentials/`, `.codex-credentials/`, or `.gemini-credentials/`; they contain OAuth/token material and are intentionally listed in `.gitignore`.
 
 ### Credential persistence summary
 
@@ -367,6 +395,8 @@ The `/usage` slash command queries real-time quota for each CLI. These tools are
 | Gemini | `gemini-cli-usage` | `uv tool install gemini-cli-usage` | Per-model % + reset time |
 
 Usage: `/usage` (CC default), `/usage kimi`, `/usage codex`, `/usage gemini`, `/usage all`.
+
+`/usage all` also runs a lightweight credential inventory before each provider query. It always attempts all four providers (Claude, Kimi, Codex, Gemini) because its product goal is "all CLI usage", not "only CLIs currently used by team agents". If a CLI has no tools or credentials, the section says so explicitly; if credentials exist but a provider rejects refresh or usage calls, the section reports the actionable status such as permission denied, expired login, or container-local re-login required. `team.json` still controls which agents are launched, but it does not hide an otherwise queryable CLI from `/usage all`.
 
 ### Adding a new adapter
 

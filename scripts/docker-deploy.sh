@@ -74,6 +74,10 @@ fi
 green "✓ 所有前置条件满足"
 echo ""
 
+echo "🔎 检查项目本地 CLI usage 凭证目录 (提示模式，不阻断部署)..."
+python3 scripts/cli_credentials.py doctor --skip-tools --no-fail || true
+echo ""
+
 # Compose project name = claudeteam-<session>。故意不用 directory basename,
 # 因为用户可能把两个团队都放在叫 ClaudeTeam 的目录里 (git clone 默认就这个名),
 # directory basename 会撞。绑到 team.json 的 session 之后,同机多团队天然隔离:
