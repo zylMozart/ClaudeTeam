@@ -253,6 +253,14 @@ def evaluate_completion_report_signal(evidence, now=None):
     if now_ts is None:
         now_ts = datetime.now(timezone.utc).timestamp()
 
+    if _truthy(evidence.get("manager_inbox_source_error")):
+        return {
+            "state": "unknown",
+            "should_remind": False,
+            "reason": "manager_inbox_source_error",
+            "source_error": True,
+        }
+
     reported_at = _as_epoch(evidence.get("manager_reported_at_s") or evidence.get("manager_reported_at"))
     if reported_at is None:
         reported_at = _as_epoch(evidence.get("reported_at_s") or evidence.get("reported_at"))
