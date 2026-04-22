@@ -13,6 +13,9 @@ tmux 工具函数 — 检测 Agent 空闲状态后安全注入文本
   或"Thinking"等流式输出特征。inject_when_idle 轮询最多 wait_secs 秒，
   确认空闲后用 send-keys -l（字面模式）注入，避免 # $ 等字符被 tmux/shell 解释。
 """
+import contextlib
+import dataclasses
+import re
 import subprocess, time, os, tempfile
 
 # ── 状态特征字符串 ─────────────────────────────────────────────
@@ -24,6 +27,38 @@ _BUSY_MARKERS = [
     "Thinking", "Running tool",                      # Claude Code 状态文字
     # 注意：移除 "…" — 太常见，历史输出中大量出现，容易误判为忙碌
 ]
+
+_INPUT_PROMPT_RE = re.compile(
+    r"^\s*(?:[>❯›]\s+|[│┃]\s*[>❯›]\s+|(?:input|prompt)\s*[:：]\s+)(?P<text>.+?)\s*$",
+    re.I,
+)
+_READY_PLACEHOLDERS = (
+    "tab to queue message",
+    "? for shortcuts",
+    "Send /help for help information",
+    "Implement {feature}",
+    "Summarize recent commits",
+    "Find and fix a bug in @filename",
+    "Use /skills to list available skills",
+    "Explain this codebase",
+)
+
+
+@dataclasses.dataclass
+class InjectionResult:
+    ok: bool
+    submitted: bool = False
+    busy_before: bool = False
+    residual_visible: bool = False
+    unsafe_input: bool = False
+    forced: bool = False
+    error: str = ""
+    method: str = ""
+    target: str = ""
+    tail_summary: str = ""
+
+    def __bool__(self):
+        return self.ok and self.submitted and not self.unsafe_input and not self.error
 
 # ── 核心函数 ──────────────────────────────────────────────────
 
@@ -40,6 +75,66 @@ def capture_pane(session, window):
         return r.stdout if r.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _strip_control(text):
+    text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text or "")
+    return text.replace("\r", "")
+
+
+def _tail_summary(text, max_len=240):
+    return " ".join(_strip_control(text).split())[-max_len:]
+
+
+def detect_unsubmitted_input_text(pane_text):
+    """Return residual input text if the visible prompt appears non-empty."""
+    lines = _strip_control(pane_text).rstrip().splitlines()
+    for raw in reversed(lines[-8:]):
+        s = raw.strip()
+        if not s:
+            continue
+        m = _INPUT_PROMPT_RE.match(s)
+        if not m:
+            if any(ph in s for ph in _READY_PLACEHOLDERS):
+                return ""
+            continue
+        text = m.group("text").strip()
+        if not text or any(ph in text for ph in _READY_PLACEHOLDERS):
+            return ""
+        return text
+    return ""
+
+
+def has_unsubmitted_input(session, window):
+    return bool(detect_unsubmitted_input_text(capture_pane(session, window)))
+
+
+@contextlib.contextmanager
+def _pane_inject_lock(session, window, timeout=10):
+    lock_dir = os.path.join(os.path.dirname(__file__), "..", "workspace",
+                            "shared", ".inject_locks")
+    os.makedirs(lock_dir, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{session}_{window}")
+    path = os.path.join(lock_dir, f"{safe}.lock")
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        import fcntl
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.time() >= deadline:
+                    raise TimeoutError("inject lock timeout")
+                time.sleep(0.1)
+        yield
+    finally:
+        try:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 def is_agent_idle(session, window, busy_markers=None):
     """
@@ -72,11 +167,14 @@ def _tail_text(text, max_len=240):
 def _press_submit(target):
     """Submit the current input line in a way that works across CLIs."""
     for key in ("Enter", "C-m"):
-        subprocess.run(
+        r = subprocess.run(
             ["tmux", "send-keys", "-t", target, key],
             capture_output=True
         )
+        if r.returncode != 0:
+            return False
         time.sleep(0.2)
+    return True
 
 def _input_still_visible(session, window, text):
     """Best-effort check: did the prompt remain in the visible input area?"""
@@ -85,9 +183,8 @@ def _input_still_visible(session, window, text):
     needle = _tail_text(text)
     if not needle:
         return False
-    pane = capture_pane(session, window)
-    tail = _tail_text("\n".join(pane.rstrip().splitlines()[-12:]))
-    return needle in tail
+    residual = detect_unsubmitted_input_text(capture_pane(session, window))
+    return needle in _tail_text(residual)
 
 def check_agent_alive(session, window, stale_minutes=15):
     """检查 agent 是否存活。返回 (alive: bool, reason: str)"""
@@ -139,63 +236,100 @@ def inject_when_idle(session, window, text,
       verify_submit  发送回车后复核输入是否仍停在输入框；若是则补一次提交
 
     返回:
-      True  — 注入成功（或强制注入）
-      False — 目标窗口不存在
+      InjectionResult — 支持 bool(result) 兼容旧调用。
 
     实现细节:
       使用 send-keys -l（literal 模式），避免 # $ 等字符被 tmux 解释为变量。
       先发文本（-l），再单独发 Enter（非 literal，使其被识别为回车键）。
     """
-    # 确认窗口存在
+    target = f"{session}:{window}"
+    result = InjectionResult(ok=False, target=target)
+
     try:
         r = subprocess.run(
-            ["tmux", "has-session", "-t", f"{session}:{window}"],
+            ["tmux", "has-session", "-t", target],
             capture_output=True, timeout=5
         )
         if r.returncode != 0:
-            return False
-    except Exception:
-        return False
+            result.error = "tmux target missing"
+            return result
+    except Exception as e:
+        result.error = f"tmux target check failed: {e}"
+        return result
 
-    # 轮询等待空闲
-    deadline = time.time() + wait_secs
-    while time.time() < deadline:
-        if is_agent_idle(session, window):
-            break
-        time.sleep(poll_interval)
-    else:
-        if not force_after_wait:
-            return False
-        # 超时后强制注入（允许打断）
+    try:
+        with _pane_inject_lock(session, window):
+            before = capture_pane(session, window)
+            result.tail_summary = _tail_summary("\n".join(before.splitlines()[-8:]))
+            residual = detect_unsubmitted_input_text(before)
+            if residual:
+                result.unsafe_input = True
+                result.error = "unsafe unsubmitted input"
+                result.tail_summary = _tail_summary(residual)
+                return result
 
-    # 发送文本到 tmux
-    target = f"{session}:{window}"
-    if len(text) > 600:
-        # 长文本：写临时文件 → tmux load-buffer → paste-buffer（绕过 pty 缓冲限制）
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
-                                          delete=False, encoding="utf-8")
-        tmp.write(text)
-        tmp.close()
-        subprocess.run(["tmux", "load-buffer", "-b", "_inject", tmp.name],
-                       capture_output=True)
-        subprocess.run(["tmux", "paste-buffer", "-b", "_inject", "-d", "-t", target],
-                       capture_output=True)
-        os.unlink(tmp.name)
-    else:
-        # 短文本：用 -l 字面模式发送
-        subprocess.run(
-            ["tmux", "send-keys", "-l", "-t", target, text],
-            capture_output=True
-        )
+            deadline = time.time() + wait_secs
+            idle = False
+            while time.time() < deadline:
+                if is_agent_idle(session, window):
+                    idle = True
+                    break
+                result.busy_before = True
+                time.sleep(poll_interval)
+            if not idle:
+                result.busy_before = True
+                if not force_after_wait:
+                    result.error = "pane busy"
+                    return result
+                result.forced = True
 
-    # 等待 TUI 处理完文本输入后再按 Enter。Codex/Kimi/Claude 的 TUI 对
-    # paste-buffer 和 literal send-keys 的消化时机不同；Enter 后再补 C-m，
-    # 并做一次可见区复核，避免消息堆在输入框里没有提交。
-    time.sleep(0.5)
-    _press_submit(target)
-    if verify_submit:
-        time.sleep(1.0)
-        if _input_still_visible(session, window, text):
-            _press_submit(target)
+            if len(text) > 600:
+                result.method = "paste-buffer"
+                tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
+                                                  delete=False, encoding="utf-8")
+                tmp.write(text)
+                tmp.close()
+                buffer_name = f"_inject_{os.getpid()}_{int(time.time() * 1000)}"
+                try:
+                    r = subprocess.run(["tmux", "load-buffer", "-b", buffer_name, tmp.name],
+                                       capture_output=True)
+                    if r.returncode != 0:
+                        result.error = "tmux load-buffer failed"
+                        return result
+                    r = subprocess.run(["tmux", "paste-buffer", "-b", buffer_name,
+                                        "-d", "-t", target], capture_output=True)
+                    if r.returncode != 0:
+                        result.error = "tmux paste-buffer failed"
+                        return result
+                finally:
+                    os.unlink(tmp.name)
+            else:
+                result.method = "send-keys"
+                r = subprocess.run(
+                    ["tmux", "send-keys", "-l", "-t", target, text],
+                    capture_output=True
+                )
+                if r.returncode != 0:
+                    result.error = "tmux send-keys failed"
+                    return result
 
-    return True
+            time.sleep(0.5)
+            if not _press_submit(target):
+                result.error = "tmux submit failed"
+                return result
+            result.ok = True
+            result.submitted = True
+            if verify_submit:
+                time.sleep(1.0)
+                result.residual_visible = _input_still_visible(session, window, text)
+                if result.residual_visible:
+                    _press_submit(target)
+                    time.sleep(0.5)
+                    result.residual_visible = _input_still_visible(session, window, text)
+                    if result.residual_visible:
+                        result.submitted = False
+                        result.error = "input residual visible after submit"
+            return result
+    except TimeoutError as e:
+        result.error = str(e)
+        return result

@@ -87,6 +87,8 @@ def dequeue_pending(agent_name):
         else:
             msg["attempts"] += 1
             msg["last_attempt"] = time.time()
+            detail = getattr(ok, "error", "") or "not submitted"
+            print(f"  ⚠️ 待投递消息未提交 {agent_name}: {detail}")
 
         _save_queue_unlocked(agent_name, queue)
 
@@ -144,8 +146,11 @@ def _handle_busy_agent(agent_name, queue):
             )
             urgent_prompt = render_tmux_prompt(
                 "紧急提醒", "待处理消息积压", urgent_prompt)
-            inject_when_idle(TMUX_SESSION, agent_name, urgent_prompt,
-                            wait_secs=2, force_after_wait=True)
+            ok = inject_when_idle(TMUX_SESSION, agent_name, urgent_prompt,
+                                  wait_secs=2, force_after_wait=False)
+            if not ok:
+                detail = getattr(ok, "error", "") or "not submitted"
+                print(f"  ⚠️ [{agent_name}] 紧急提醒未注入: {detail}")
             oldest_user_msg["attempts"] += 1
             oldest_user_msg["last_attempt"] = time.time()
             _save_queue_unlocked(agent_name, queue)

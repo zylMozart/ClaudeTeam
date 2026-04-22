@@ -253,25 +253,44 @@ def _cli_pids_in_pane(agent_name):
     if bash_pid is None:
         return []
     proc_name = adapter_for_agent(agent_name).process_name()
-    result = []
+    children = {}
+    comm_by_pid = {}
     for proc_dir in glob.glob("/proc/[0-9]*"):
+        try:
+            pid = int(os.path.basename(proc_dir))
+        except ValueError:
+            continue
         try:
             with open(f"{proc_dir}/status") as f:
                 status = f.read()
         except OSError:
             continue
-        if f"\nPPid:\t{bash_pid}\n" not in status:
-            continue
+        ppid = None
+        for line in status.splitlines():
+            if line.startswith("PPid:"):
+                try:
+                    ppid = int(line.split()[1])
+                except (IndexError, ValueError):
+                    ppid = None
+                break
+        if ppid is not None:
+            children.setdefault(ppid, []).append(pid)
         try:
             with open(f"{proc_dir}/comm") as f:
-                comm = f.read().strip()
+                comm_by_pid[pid] = f.read().strip()
         except OSError:
+            pass
+    result = []
+    stack = list(children.get(bash_pid, []))
+    seen = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
             continue
-        if comm == proc_name:
-            try:
-                result.append(int(os.path.basename(proc_dir)))
-            except ValueError:
-                pass
+        seen.add(pid)
+        if comm_by_pid.get(pid) == proc_name:
+            result.append(pid)
+        stack.extend(children.get(pid, []))
     return result
 
 
@@ -389,10 +408,12 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
 
     if not has_pending:
         ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
-                              wait_secs=15, force_after_wait=True)
+                              wait_secs=15, force_after_wait=False)
         if ok:
             print(f"  → 已触发 {agent_name} 窗口（直接投递）")
             return
+        detail = getattr(ok, "error", "") or "not submitted"
+        print(f"  📥 直接投递未提交 {agent_name}: {detail}，转入队列")
 
     enqueue_message(agent_name, prompt, msg_id, is_user_msg=is_user_msg)
     if has_pending:
@@ -470,7 +491,7 @@ def handle_event(event):
         except Exception:
             pass
         try:
-            from feishu_msg import _lark_im_send, CHAT, build_system_card
+            from feishu_msg import _lark_im_send, CHAT, post_system_to_group
             chat_id = CHAT()
             if not chat_id:
                 print(f"  ⚠️ chat_id 未配置,无法回显")
@@ -483,7 +504,7 @@ def handle_event(event):
                     reply.get("text", "(空)") if isinstance(reply, dict) else "(空)")
                 if first == "/tmux":
                     body = f"```\n{body}\n```"
-                _lark_im_send(chat_id, card=build_system_card(body))
+                post_system_to_group(body)
         except Exception as e:
             print(f"  ⚠️ slash 回显失败: {e}")
         _advance_cursor()
