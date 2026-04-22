@@ -1,0 +1,34 @@
+[project]
+name = "claudeteam"
+version = "0.0.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+addopts = [
+  "-ra",
+  "--strict-config",
+  "--strict-markers",
+  "-m",
+  "not live and not smoke and not live_feishu and not tmux and not docker and not manual",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+  "unit: fast tests for pure or monkeypatched implementation logic",
+  "contract: compatibility and safety-contract tests",
+  "regression: wrappers around existing regression scripts",
+  "integration: multi-module tests that still avoid real external Feishu/tmux/docker/network boundaries",
+  "smoke: live smoke tests that require CLAUDETEAM_LIVE_TESTS=1 and may touch ClaudeTeam/Feishu/tmux",
+  "live: tests allowed to touch real external systems only when CLAUDETEAM_LIVE_TESTS=1; excluded from default runs",
+  "live_feishu: tests that may call real Feishu/lark-cli; require CLAUDETEAM_LIVE_TESTS=1",
+  "tmux: tests that may call real tmux or inspect live tmux panes; require CLAUDETEAM_LIVE_TESTS=1",
+  "docker: tests that may call real docker/docker-compose; require CLAUDETEAM_LIVE_TESTS=1",
+  "manual: manually orchestrated tests excluded from default runs; require explicit selection and CLAUDETEAM_LIVE_TESTS=1 if live",
+  "allow_subprocess(*commands): opt into local subprocess calls from an allowlist; dangerous tmux/docker/lark/feishu_msg commands remain blocked",
+]
