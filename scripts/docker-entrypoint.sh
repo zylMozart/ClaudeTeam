@@ -520,9 +520,9 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 
 【Thinking 指引】${THINKING_HINT}"
 
-INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
+    PYTHONPATH="$ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+    INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
 import os, sys
-sys.path.insert(0, "scripts")
 from tmux_utils import inject_when_idle
 
 session, agent = sys.argv[1], sys.argv[2]

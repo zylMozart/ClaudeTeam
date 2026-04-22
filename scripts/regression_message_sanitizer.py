@@ -2,6 +2,7 @@
 """Regression checks for Codex spawn command leakage into business messages."""
 import json
 import tempfile
+import sys
 
 import feishu_msg
 import feishu_router
@@ -30,8 +31,14 @@ def check_sanitizer():
         "whole line": (f"{SPAWN}\n真实任务", "真实任务"),
         "glued prefix": (f"{SPAWN}真实任务", "真实任务"),
         "prefix with model": (f"{SPAWN_MODEL} 真实任务", "真实任务"),
-        "suffix": (f"真实任务 {SPAWN}", "真实任务"),
+        "suffix example preserved": (f"真实任务 {SPAWN}", f"真实任务 {SPAWN}"),
         "middle multiline": (f"第一行\n{SPAWN_MODEL}\n第二行", "第一行\n第二行"),
+        "placeholder example preserved": (
+            "CODEX_AGENT=<agent> codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'",
+            "CODEX_AGENT=&lt;agent&gt; codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'",
+        ),
     }
     for label, (raw, expected) in cases.items():
         assert_eq(feishu_msg.sanitize_agent_message(raw), expected, label)
@@ -42,6 +49,8 @@ def check_send_direct():
     old = (
         feishu_msg.bitable_insert_message,
         feishu_msg.post_to_group,
+        feishu_msg.CHAT,
+        feishu_msg._lark_im_send,
         feishu_msg.ws_log,
         feishu_msg._notify_agent_tmux,
     )
@@ -54,6 +63,10 @@ def check_send_direct():
             lambda frm, to, content, priority:
             captured.append(("group", to, frm, content, priority)) or True
         )
+        feishu_msg.CHAT = lambda: "chat-id"
+        feishu_msg._lark_im_send = (
+            lambda chat_id, **kw: captured.append(("direct_group", chat_id, kw)) or {}
+        )
         feishu_msg.ws_log = (
             lambda agent, typ, content, ref="":
             captured.append(("log", agent, typ, content, ref))
@@ -63,11 +76,13 @@ def check_send_direct():
             captured.append(("notify", to, frm, content))
         )
         feishu_msg.cmd_send("devops", "manager", f"{SPAWN}真实任务", "高")
-        feishu_msg.cmd_direct("toolsmith", "manager", f"直连任务 {SPAWN_MODEL}")
+        feishu_msg.cmd_direct("toolsmith", "manager", f"直连任务\n{SPAWN_MODEL}")
     finally:
         (
             feishu_msg.bitable_insert_message,
             feishu_msg.post_to_group,
+            feishu_msg.CHAT,
+            feishu_msg._lark_im_send,
             feishu_msg.ws_log,
             feishu_msg._notify_agent_tmux,
         ) = old
@@ -75,6 +90,46 @@ def check_send_direct():
     joined = json.dumps(captured, ensure_ascii=False)
     assert_not_contains(joined, "CODEX_AGENT=", "send/direct")
     assert "真实任务" in joined and "直连任务" in joined
+
+
+def check_say_file():
+    captured = []
+    old_argv = sys.argv
+    old = (
+        feishu_msg._lark_im_send,
+        feishu_msg.CHAT,
+        feishu_msg.ws_log,
+    )
+    with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as tmp:
+        tmp.write(
+            "Codex command:\n"
+            "CODEX_AGENT=<agent> codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'\n"
+            "Use <model> safely."
+        )
+        tmp.flush()
+        try:
+            sys.argv = ["feishu_msg.py", "say", "manager", "--file", tmp.name]
+            feishu_msg.CHAT = lambda: "chat-id"
+            feishu_msg._lark_im_send = (
+                lambda chat_id, **kw: captured.append((chat_id, kw)) or {}
+            )
+            feishu_msg.ws_log = lambda *a, **kw: None
+            feishu_msg.main()
+        finally:
+            sys.argv = old_argv
+            (
+                feishu_msg._lark_im_send,
+                feishu_msg.CHAT,
+                feishu_msg.ws_log,
+            ) = old
+
+    assert captured, "say --file did not send"
+    card = captured[0][1]["card"]
+    content = card["elements"][0]["content"]
+    assert "CODEX_AGENT=&lt;agent&gt;" in content, content
+    assert "model_reasoning_effort" in content, content
+    assert "&lt;model&gt;" in content, content
 
 
 def check_queue():
@@ -127,7 +182,7 @@ def check_router_default_route():
             "message_id": "regression-msg-1",
             "chat_id": "",
             "sender_id": "user-open-id",
-            "text": f"{SPAWN_MODEL} 默认路由任务 {SPAWN}",
+            "text": f"{SPAWN_MODEL}\n默认路由任务",
             "message_type": "text",
         })
     finally:
@@ -171,7 +226,7 @@ def check_history_replay_route():
                 "sender": {"sender_type": "user", "id": "user-open-id"},
                 "msg_type": "text",
                 "content": json.dumps({
-                    "text": f"{SPAWN} replay任务 {SPAWN_MODEL}"
+                    "text": f"{SPAWN}\nreplay任务\n{SPAWN_MODEL}"
                 }),
             }],
             "has_more": False,
@@ -210,6 +265,7 @@ def check_history_replay_route():
 def main():
     check_sanitizer()
     check_send_direct()
+    check_say_file()
     check_queue()
     check_router_default_route()
     check_history_replay_route()
