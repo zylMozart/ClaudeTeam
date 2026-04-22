@@ -30,6 +30,7 @@ from message_renderer import (
     split_feishu_markdown,
 )
 from tmux_utils import inject_when_idle
+from cli_adapters import adapter_for_agent
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
 
@@ -403,7 +404,8 @@ def _notify_agent_tmux(to_agent, from_agent, message):
             f"请执行: python3 scripts/feishu_msg.py inbox {to_agent}"
         )
         inject_when_idle(TMUX_SESSION, to_agent, notify_text,
-                         wait_secs=5, force_after_wait=False)
+                         wait_secs=5, force_after_wait=False,
+                         submit_keys=adapter_for_agent(to_agent).submit_keys())
     except Exception:
         pass  # best-effort，不影响消息发送本身
 

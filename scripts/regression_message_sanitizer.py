@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Regression checks for Codex spawn command leakage into business messages."""
+import contextlib
+import io
 import json
 import tempfile
 import sys
+import time
 
 import feishu_msg
 import feishu_router
@@ -201,6 +204,190 @@ def check_router_default_route():
     assert "默认路由任务" in prompt
 
 
+def check_router_at_manager_route():
+    injected = []
+    old = (
+        feishu_router._state.reload_agents,
+        feishu_router.wake_on_deliver,
+        feishu_router.has_pending_messages,
+        feishu_router.inject_when_idle,
+        feishu_router.enqueue_message,
+        feishu_router._advance_cursor,
+    )
+    try:
+        feishu_router._state.seen_ids.clear()
+        feishu_router._state.chat_id = ""
+        feishu_router._state.reload_agents = lambda: ["manager", "toolsmith"]
+        feishu_router.wake_on_deliver = lambda agent: True
+        feishu_router.has_pending_messages = lambda agent: False
+        feishu_router.inject_when_idle = (
+            lambda session, agent, prompt, **kw:
+            injected.append((agent, prompt, kw)) or True
+        )
+        feishu_router.enqueue_message = (
+            lambda agent, prompt, msg_id, is_user_msg=False:
+            injected.append((agent, prompt, {"queued": True, "is_user_msg": is_user_msg}))
+        )
+        feishu_router._advance_cursor = lambda: None
+        feishu_router.handle_event({
+            "message_id": "regression-at-manager",
+            "chat_id": "",
+            "sender_id": "user-open-id",
+            "sender_type": "user",
+            "text": "@manager 请看这条消息",
+            "message_type": "text",
+        })
+    finally:
+        (
+            feishu_router._state.reload_agents,
+            feishu_router.wake_on_deliver,
+            feishu_router.has_pending_messages,
+            feishu_router.inject_when_idle,
+            feishu_router.enqueue_message,
+            feishu_router._advance_cursor,
+        ) = old
+
+    assert injected, "@manager route did not inject"
+    agent, prompt, meta = injected[0]
+    assert_eq(agent, "manager", "@manager target")
+    assert meta.get("queued") or "群聊消息" in prompt
+
+
+def check_router_bracket_sender_text_not_swallowed():
+    injected = []
+    old = (
+        feishu_router._state.reload_agents,
+        feishu_router.wake_on_deliver,
+        feishu_router.has_pending_messages,
+        feishu_router.inject_when_idle,
+        feishu_router.enqueue_message,
+        feishu_router._advance_cursor,
+    )
+    try:
+        feishu_router._state.seen_ids.clear()
+        feishu_router._state.chat_id = ""
+        feishu_router._state.reload_agents = lambda: ["manager", "toolsmith"]
+        feishu_router.wake_on_deliver = lambda agent: True
+        feishu_router.has_pending_messages = lambda agent: False
+        feishu_router.inject_when_idle = (
+            lambda session, agent, prompt, **kw:
+            injected.append((agent, prompt, kw)) or True
+        )
+        feishu_router.enqueue_message = (
+            lambda agent, prompt, msg_id, is_user_msg=False:
+            injected.append((agent, prompt, {"queued": True, "is_user_msg": is_user_msg}))
+        )
+        feishu_router._advance_cursor = lambda: None
+        feishu_router.handle_event({
+            "message_id": "regression-bracket-manager",
+            "chat_id": "",
+            "sender_id": "user-open-id",
+            "sender_type": "user",
+            "text": "【manager 你好】这是一条普通用户正文，不应被吞",
+            "message_type": "text",
+        })
+    finally:
+        (
+            feishu_router._state.reload_agents,
+            feishu_router.wake_on_deliver,
+            feishu_router.has_pending_messages,
+            feishu_router.inject_when_idle,
+            feishu_router.enqueue_message,
+            feishu_router._advance_cursor,
+        ) = old
+
+    assert injected, "bracket-style user text was swallowed"
+    agent, prompt, meta = injected[0]
+    assert_eq(agent, "manager", "bracket default target")
+    assert meta.get("queued") or "不应被吞" in prompt
+
+
+def check_user_pending_not_expired_on_save():
+    old_dir = msg_queue.PENDING_DIR
+    old_insert = msg_queue.bitable_insert_message
+    alerts = []
+    out = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            msg_queue.PENDING_DIR = tmp
+            msg_queue.bitable_insert_message = (
+                lambda to, frm, content, priority:
+                alerts.append((to, frm, content, priority)) or f"rid-{to}"
+            )
+            msg_queue.enqueue_message("manager", "用户待处理消息", "user-expired", is_user_msg=True)
+            queue_file = f"{tmp}/manager.json"
+            with open(queue_file) as f:
+                queue = json.load(f)
+            queue[0]["queued_at"] = time.time() - msg_queue.EXPIRE_SECS - 5
+            with contextlib.redirect_stdout(out):
+                msg_queue._save_queue_unlocked("manager", queue)
+                with open(queue_file) as f:
+                    saved_once = json.load(f)
+                msg_queue._save_queue_unlocked("manager", saved_once)
+            with open(queue_file) as f:
+                saved = json.load(f)
+        finally:
+            msg_queue.PENDING_DIR = old_dir
+            msg_queue.bitable_insert_message = old_insert
+
+    assert_eq(len(saved), 1, "expired user pending should be kept")
+    assert saved[0]["is_user_msg"], saved
+    assert saved[0].get("expiry_alerted_at"), saved
+    assert "保留不丢弃" in out.getvalue(), out.getvalue()
+    assert_eq([a[0] for a in alerts], ["manager", "devops"], "expiry alert recipients throttled")
+    joined = json.dumps(alerts, ensure_ascii=False)
+    assert "agent: manager" in joined, joined
+    assert "msg_id: user-exp" in joined, joined
+    assert "等待秒数:" in joined, joined
+    assert f"queue file: {tmp}/manager.json" in joined, joined
+    assert "python3 scripts/feishu_msg.py inbox manager" in joined, joined
+    assert all(a[1] == "router" and a[3] == "中" for a in alerts), alerts
+
+
+def check_busy_user_pending_not_silent_drop():
+    old_dir = msg_queue.PENDING_DIR
+    old_idle = msg_queue.is_agent_idle
+    old_inject = msg_queue.inject_when_idle
+    old_insert = msg_queue.bitable_insert_message
+    alerts = []
+    out = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            msg_queue.PENDING_DIR = tmp
+            msg_queue.bitable_insert_message = (
+                lambda to, frm, content, priority:
+                alerts.append((to, frm, content, priority)) or f"rid-{to}"
+            )
+            msg_queue.enqueue_message("manager", "忙碌时的用户消息", "busy-user-expired", is_user_msg=True)
+            queue_file = f"{tmp}/manager.json"
+            with open(queue_file) as f:
+                queue = json.load(f)
+            queue[0]["queued_at"] = time.time() - msg_queue.EXPIRE_SECS - 5
+            with open(queue_file, "w") as f:
+                json.dump(queue, f, ensure_ascii=False)
+
+            msg_queue.is_agent_idle = lambda session, agent: False
+            msg_queue.inject_when_idle = lambda *args, **kwargs: False
+            with contextlib.redirect_stdout(out):
+                msg_queue.dequeue_pending("manager")
+            with open(queue_file) as f:
+                saved = json.load(f)
+        finally:
+            msg_queue.PENDING_DIR = old_dir
+            msg_queue.is_agent_idle = old_idle
+            msg_queue.inject_when_idle = old_inject
+            msg_queue.bitable_insert_message = old_insert
+
+    assert_eq(len(saved), 1, "busy expired user pending should be kept")
+    assert saved[0]["is_user_msg"], saved
+    assert saved[0].get("expiry_alerted_at"), saved
+    assert "保留不丢弃" in out.getvalue(), out.getvalue()
+    assert_eq([a[0] for a in alerts], ["manager", "devops"], "busy expiry alert recipients")
+    joined = json.dumps(alerts, ensure_ascii=False)
+    assert "msg_id: busy-use" in joined, joined
+    assert "queue file:" in joined, joined
+
+
 def check_history_replay_route():
     injected = []
     old = (
@@ -268,6 +455,10 @@ def main():
     check_say_file()
     check_queue()
     check_router_default_route()
+    check_router_at_manager_route()
+    check_router_bracket_sender_text_not_swallowed()
+    check_user_pending_not_expired_on_save()
+    check_busy_user_pending_not_silent_drop()
     check_history_replay_route()
     print("✅ message sanitizer regression passed")
 

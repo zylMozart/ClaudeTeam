@@ -25,11 +25,16 @@ _BUSY_MARKERS = [
     "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",  # braille spinner
     "◐", "◑", "◒", "◓",                            # arc spinner
     "Thinking", "Running tool",                      # Claude Code 状态文字
+    "Working", "esc to interrupt", "Running",
     # 注意：移除 "…" — 太常见，历史输出中大量出现，容易误判为忙碌
 ]
 
 _INPUT_PROMPT_RE = re.compile(
     r"^\s*(?:[>❯›]\s+|[│┃]\s*[>❯›]\s+|(?:input|prompt)\s*[:：]\s+)(?P<text>.+?)\s*$",
+    re.I,
+)
+_EMPTY_INPUT_PROMPT_RE = re.compile(
+    r"^\s*(?:[>❯›]\s*|[│┃]\s*[>❯›]\s*|(?:input|prompt)\s*[:：]\s*)$",
     re.I,
 )
 _READY_PLACEHOLDERS = (
@@ -42,6 +47,8 @@ _READY_PLACEHOLDERS = (
     "Use /skills to list available skills",
     "Explain this codebase",
 )
+
+DEFAULT_SUBMIT_KEYS = ("Enter", "C-m", "C-j")
 
 
 @dataclasses.dataclass
@@ -164,17 +171,56 @@ def _tail_text(text, max_len=240):
     """Normalize a prompt tail for best-effort submission checks."""
     return " ".join((text or "").split())[-max_len:]
 
-def _press_submit(target):
-    """Submit the current input line in a way that works across CLIs."""
-    for key in ("Enter", "C-m"):
+def _text_needles(text, max_len=100):
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    candidates = []
+    if lines:
+        candidates.extend([lines[0], lines[-1]])
+    compact = " ".join(str(text or "").split())
+    if compact:
+        candidates.append(compact[-max_len:])
+    out = []
+    for item in candidates:
+        item = " ".join(item.split())
+        if len(item) > max_len:
+            item = item[-max_len:]
+        if item and item not in out:
+            out.append(item)
+    return out
+
+def _send_tmux_key(target, key):
+    r = subprocess.run(
+        ["tmux", "send-keys", "-t", target, key],
+        capture_output=True
+    )
+    return r.returncode == 0
+
+
+def _press_submit(target, session=None, window=None, text="", *,
+                  submit_keys=None, verify_submit=True):
+    """Submit current input, trying CLI-compatible keys one at a time."""
+    keys = tuple(submit_keys or DEFAULT_SUBMIT_KEYS)
+    for key in keys:
         r = subprocess.run(
             ["tmux", "send-keys", "-t", target, key],
             capture_output=True
         )
         if r.returncode != 0:
             return False
-        time.sleep(0.2)
-    return True
+        time.sleep(0.5)
+        if not verify_submit or not session or not window:
+            return True
+        if not _input_still_visible(session, window, text):
+            return True
+    return False
+
+
+def _clear_unsubmitted_input(target, session, window, text):
+    """Best-effort cleanup after a failed submit so no task stays in composer."""
+    if not _send_tmux_key(target, "C-c"):
+        return False
+    time.sleep(0.5)
+    return not _input_still_visible(session, window, text)
 
 def _input_still_visible(session, window, text):
     """Best-effort check: did the prompt remain in the visible input area?"""
@@ -183,8 +229,24 @@ def _input_still_visible(session, window, text):
     needle = _tail_text(text)
     if not needle:
         return False
-    residual = detect_unsubmitted_input_text(capture_pane(session, window))
-    return needle in _tail_text(residual)
+    pane = capture_pane(session, window)
+    lines = _strip_control(pane).rstrip().splitlines()
+    tail = "\n".join(lines[-3:])
+    if any(marker in tail for marker in _BUSY_MARKERS):
+        return False
+    recent = [line for line in lines[-8:] if line.strip()]
+    if recent and (
+        _EMPTY_INPUT_PROMPT_RE.match(recent[-1].strip())
+        or any(ph in recent[-1] for ph in _READY_PLACEHOLDERS)
+    ):
+        return False
+    residual = detect_unsubmitted_input_text(pane)
+    if needle in _tail_text(residual):
+        return True
+    tail_area = " ".join(line.strip() for line in recent[-4:])
+    if any(ph in tail_area for ph in _READY_PLACEHOLDERS):
+        return False
+    return any(n in tail_area for n in _text_needles(text))
 
 def check_agent_alive(session, window, stale_minutes=15):
     """检查 agent 是否存活。返回 (alive: bool, reason: str)"""
@@ -222,7 +284,7 @@ def check_agent_alive(session, window, stale_minutes=15):
 
 def inject_when_idle(session, window, text,
                      wait_secs=5, poll_interval=0.5, force_after_wait=True,
-                     verify_submit=True):
+                     verify_submit=True, submit_keys=None):
     """
     等待 Agent 窗口空闲后注入文本（模拟用户输入并按 Enter）。
 
@@ -234,6 +296,7 @@ def inject_when_idle(session, window, text,
       poll_interval   轮询间隔（默认 2s）
       force_after_wait 超时后是否强制注入（默认 True）
       verify_submit  发送回车后复核输入是否仍停在输入框；若是则补一次提交
+      submit_keys    CLI 提交键序列；默认 Enter/C-m/C-j,逐个尝试并复核
 
     返回:
       InjectionResult — 支持 bool(result) 兼容旧调用。
@@ -314,21 +377,27 @@ def inject_when_idle(session, window, text,
                     return result
 
             time.sleep(0.5)
-            if not _press_submit(target):
-                result.error = "tmux submit failed"
+            if not _press_submit(target, session, window, text,
+                                 submit_keys=submit_keys,
+                                 verify_submit=verify_submit):
+                result.residual_visible = _input_still_visible(session, window, text)
+                if result.residual_visible:
+                    result.residual_visible = not _clear_unsubmitted_input(
+                        target, session, window, text)
+                    result.error = "input residual visible after submit"
+                else:
+                    result.error = "tmux submit failed"
                 return result
             result.ok = True
             result.submitted = True
             if verify_submit:
-                time.sleep(1.0)
                 result.residual_visible = _input_still_visible(session, window, text)
                 if result.residual_visible:
-                    _press_submit(target)
-                    time.sleep(0.5)
-                    result.residual_visible = _input_still_visible(session, window, text)
-                    if result.residual_visible:
-                        result.submitted = False
-                        result.error = "input residual visible after submit"
+                    result.residual_visible = not _clear_unsubmitted_input(
+                        target, session, window, text)
+                    result.submitted = False
+                    result.ok = False
+                    result.error = "input residual visible after submit"
             return result
     except TimeoutError as e:
         result.error = str(e)

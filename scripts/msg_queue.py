@@ -10,16 +10,19 @@ import os, json, time, threading
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from config import PROJECT_ROOT, TMUX_SESSION
-from feishu_msg import sanitize_agent_message
+from feishu_msg import bitable_insert_message, sanitize_agent_message
 from message_renderer import render_tmux_prompt
 from tmux_utils import inject_when_idle, is_agent_idle
+from cli_adapters import adapter_for_agent
 
 PENDING_DIR = os.path.join(PROJECT_ROOT, "workspace", "shared", ".pending_msgs")
 _queue_lock = threading.Lock()
 
 EXPIRE_SECS = 600  # 10 分钟过期
+USER_MSG_EXPIRE_ALERT_INTERVAL = 300  # 用户消息过期后仍保留,最多 5 分钟告警一次
 URGENT_WAIT_SECS = 30  # 用户消息等待超过此时间则紧急升级
 UNREAD_CHECK_INTERVAL = 30  # manager 未读检查间隔
+EXPIRY_ALERT_RECIPIENTS = ("manager", "devops")
 
 
 def enqueue_message(agent_name, msg_text, msg_id, is_user_msg=False):
@@ -80,7 +83,8 @@ def dequeue_pending(agent_name):
         msg = queue[0]
         msg["text"] = sanitize_agent_message(msg["text"])
         ok = inject_when_idle(TMUX_SESSION, agent_name, msg["text"],
-                              wait_secs=2, force_after_wait=False)
+                              wait_secs=2, force_after_wait=False,
+                              submit_keys=adapter_for_agent(agent_name).submit_keys())
         if ok:
             queue.pop(0)
             print(f"  ✅ 待投递消息已送达 {agent_name} (msg_id: {msg['msg_id'][:8]})")
@@ -147,7 +151,8 @@ def _handle_busy_agent(agent_name, queue):
             urgent_prompt = render_tmux_prompt(
                 "紧急提醒", "待处理消息积压", urgent_prompt)
             ok = inject_when_idle(TMUX_SESSION, agent_name, urgent_prompt,
-                                  wait_secs=2, force_after_wait=False)
+                                  wait_secs=2, force_after_wait=False,
+                                  submit_keys=adapter_for_agent(agent_name).submit_keys())
             if not ok:
                 detail = getattr(ok, "error", "") or "not submitted"
                 print(f"  ⚠️ [{agent_name}] 紧急提醒未注入: {detail}")
@@ -159,19 +164,53 @@ def _handle_busy_agent(agent_name, queue):
 def _save_queue_unlocked(agent_name, queue):
     """保存队列，清理过期消息。调用方需持有 _queue_lock。"""
     now = time.time()
+    queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
 
     expired = [m for m in queue if now - m["queued_at"] >= EXPIRE_SECS]
     for m in expired:
         wait_secs = int(now - m["queued_at"])
         msg_id_short = m.get("msg_id", "?")[:8]
         if m.get("is_user_msg"):
-            print(f"  ⚠️ [{agent_name}] 用户消息过期丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s")
+            last_alert = float(m.get("expiry_alerted_at") or 0)
+            if now - last_alert >= USER_MSG_EXPIRE_ALERT_INTERVAL:
+                print(
+                    f"  ⚠️ [{agent_name}] 用户消息超过 {EXPIRE_SECS}s 仍未送达,"
+                    f" 已保留不丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s;"
+                    f" 请检查 pending 队列或执行 python3 scripts/feishu_msg.py inbox {agent_name}"
+                )
+                _send_user_msg_expiry_alert(agent_name, m, wait_secs, queue_file)
+                m["expiry_alerted_at"] = now
         else:
             print(f"  🗑️ [{agent_name}] 队列消息过期丢弃: msg_id={msg_id_short}, 等待 {wait_secs}s")
 
-    queue = [m for m in queue if now - m["queued_at"] < EXPIRE_SECS]
+    queue = [
+        m for m in queue
+        if m.get("is_user_msg") or now - m["queued_at"] < EXPIRE_SECS
+    ]
 
     os.makedirs(PENDING_DIR, exist_ok=True)
-    queue_file = os.path.join(PENDING_DIR, f"{agent_name}.json")
     with open(queue_file, "w") as f:
         json.dump(queue, f, ensure_ascii=False)
+
+
+def _send_user_msg_expiry_alert(agent_name, msg, wait_secs, queue_file):
+    """写入 manager/devops 可见 inbox 告警,不走 tmux/队列,避免递归。"""
+    msg_id_short = str(msg.get("msg_id") or "?")[:8]
+    content = (
+        "【Router pending 告警】用户消息超过队列保留阈值仍未送达,已保留不丢弃。\n"
+        f"- agent: {agent_name}\n"
+        f"- msg_id: {msg_id_short}\n"
+        f"- 等待秒数: {wait_secs}\n"
+        f"- queue file: {queue_file}\n"
+        f"- 建议检查命令: python3 scripts/feishu_msg.py inbox {agent_name}\n"
+        f"- 队列检查: cat {queue_file}"
+    )
+    for recipient in EXPIRY_ALERT_RECIPIENTS:
+        try:
+            rid = bitable_insert_message(recipient, "router", content, "中")
+            if rid:
+                print(f"  ⚠️ [{agent_name}] pending 告警已写入 {recipient} inbox [rid: {rid}]")
+            else:
+                print(f"  ⚠️ [{agent_name}] pending 告警写入 {recipient} inbox 失败")
+        except Exception as e:
+            print(f"  ⚠️ [{agent_name}] pending 告警写入 {recipient} inbox 异常: {e}")

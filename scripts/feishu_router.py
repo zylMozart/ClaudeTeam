@@ -408,7 +408,8 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
 
     if not has_pending:
         ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
-                              wait_secs=15, force_after_wait=False)
+                              wait_secs=15, force_after_wait=False,
+                              submit_keys=adapter_for_agent(agent_name).submit_keys())
         if ok:
             print(f"  → 已触发 {agent_name} 窗口（直接投递）")
             return
@@ -562,6 +563,7 @@ def handle_event(event):
 
     sender_agent = _state.parse_sender(text)
     targets = _state.parse_targets(text)
+    is_user_event = event.get("sender_type", "user") == "user"
 
     if targets:
         for target in targets:
@@ -570,8 +572,9 @@ def handle_event(event):
             print(f"  路由: @{target} ← {sender_agent or '用户'}")
             wake_agent(target, text, sender_agent=sender_agent,
                        full_text=text, msg_id=msg_id)
-    elif not sender_agent:
-        # 用户消息默认路由到 manager
+    elif is_user_event:
+        # 真实用户消息即使正文包含 "【manager " / "【toolsmith ·" 这类
+        # 业务文本,也必须默认路由 manager,不能被 parse_sender() 误判吞掉。
         wake_agent("manager", text, msg_id=msg_id, full_text=text)
 
     # 推进 cursor — 必须放在成功路由之后,否则半路异常会让 cursor 跳过

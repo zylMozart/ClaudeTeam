@@ -78,7 +78,82 @@ def test_idle_injects_and_submits():
     assert not result.residual_visible
     assert any(cmd[:3] == ["tmux", "send-keys", "-l"] for cmd in calls), calls
     assert any(cmd[-1:] == ["Enter"] for cmd in calls), calls
-    assert any(cmd[-1:] == ["C-m"] for cmd in calls), calls
+    assert not any(cmd[-1:] == ["C-m"] for cmd in calls), calls
+
+
+def test_submit_tries_cli_keys_until_input_clears():
+    calls = []
+    state = {"inserted": False, "submitted": False}
+
+    def fake_capture(_session, _window):
+        if state["submitted"]:
+            return "› hello\n\n• accepted\n\n› Implement {feature}\n"
+        if state["inserted"]:
+            return "gpt-5 default\n› hello\n"
+        return "gpt-5 default\n› \n"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["tmux", "send-keys", "-l"]:
+            state["inserted"] = True
+        elif cmd[-1:] == ["C-j"]:
+            state["submitted"] = True
+        return R(0)
+
+    with Patch(tmux_utils, capture_pane=fake_capture):
+        with Patch(tmux_utils.subprocess, run=fake_run):
+            result = tmux_utils.inject_when_idle(
+                "s", "manager", "hello", wait_secs=0.1,
+                force_after_wait=False,
+                submit_keys=("Enter", "C-m", "C-j"))
+    assert result.ok
+    assert result.submitted
+    assert not result.residual_visible
+    submit_keys = [cmd[-1] for cmd in calls if cmd[:3] == ["tmux", "send-keys", "-t"]]
+    assert submit_keys == ["Enter", "C-m", "C-j"], calls
+
+
+def test_failed_submit_clears_unsubmitted_input():
+    calls = []
+    state = {"inserted": False, "cleared": False}
+
+    def fake_capture(_session, _window):
+        if state["cleared"]:
+            return "gpt-5 default\n› \n"
+        if state["inserted"]:
+            return "gpt-5 default\n› hello\n"
+        return "gpt-5 default\n› \n"
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["tmux", "send-keys", "-l"]:
+            state["inserted"] = True
+        elif cmd[-1:] == ["C-c"]:
+            state["cleared"] = True
+        return R(0)
+
+    with Patch(tmux_utils, capture_pane=fake_capture):
+        with Patch(tmux_utils.subprocess, run=fake_run):
+            result = tmux_utils.inject_when_idle(
+                "s", "manager", "hello", wait_secs=0.1,
+                force_after_wait=False,
+                submit_keys=("Enter", "C-m", "C-j"))
+    assert not result
+    assert not result.submitted
+    assert result.error == "input residual visible after submit"
+    assert not result.residual_visible
+    assert any(cmd[-1:] == ["C-c"] for cmd in calls), calls
+
+
+def test_residual_detection_handles_box_input_without_prompt_marker():
+    panes = iter([
+        "header\n│ hello\n",
+        "› hello\n\n• accepted\n\n› \n",
+    ])
+
+    with Patch(tmux_utils, capture_pane=lambda _s, _w: next(panes)):
+        assert tmux_utils._input_still_visible("s", "manager", "hello")
+        assert not tmux_utils._input_still_visible("s", "manager", "hello")
 
 
 def test_submitted_history_is_not_residual():
@@ -121,6 +196,9 @@ def main():
     test_unsafe_input_not_injected()
     test_busy_not_forced()
     test_idle_injects_and_submits()
+    test_submit_tries_cli_keys_until_input_clears()
+    test_failed_submit_clears_unsubmitted_input()
+    test_residual_detection_handles_box_input_without_prompt_marker()
     test_submitted_history_is_not_residual()
     test_diagnose_reports_agent_and_tail()
     print("✅ regression_tmux_inject passed")
