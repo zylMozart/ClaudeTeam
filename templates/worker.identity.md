@@ -33,6 +33,12 @@ python3 scripts/feishu_msg.py read <record_id>
 3. 有消息 → 标记已读 → 执行任务 → 汇报 manager
 4. 无消息 → 更新状态为"待命" → 等待分配
 
+## 回报规则
+
+- 完成、阻塞或需要验收时，必须用 `python3 scripts/feishu_msg.py send manager {{AGENT_NAME}} "<消息>" 高` 回报 manager。
+- 完成回报必须包含产物路径、已运行的验证命令或无法验证的原因、残余风险。
+- 阻塞回报必须包含阻塞原因、已尝试动作、需要谁处理和下一步建议。
+
 ## 产出规范
 - 个人产出 → agents/{{AGENT_NAME}}/workspace/
 - 设计文档 → agents/{{AGENT_NAME}}/workspace/design/
