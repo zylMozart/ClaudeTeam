@@ -5,6 +5,7 @@ import tempfile
 
 import feishu_msg
 import feishu_router
+import local_facts
 import msg_queue
 
 
@@ -13,6 +14,13 @@ SPAWN_MODEL = (
     "CODEX_AGENT=devops codex --dangerously-bypass-approvals-and-sandbox "
     "--model gpt-5.4"
 )
+
+
+def redirect_facts(tmp):
+    local_facts.FACTS_DIR = local_facts.Path(tmp)
+    local_facts.INBOX_FILE = local_facts.FACTS_DIR / "inbox.json"
+    local_facts.STATUS_FILE = local_facts.FACTS_DIR / "status.json"
+    local_facts.LOCK_FILE = local_facts.FACTS_DIR / ".facts.lock"
 
 
 def assert_eq(actual, expected, label):
@@ -42,6 +50,8 @@ def check_send_direct():
     old = (
         feishu_msg.bitable_insert_message,
         feishu_msg.post_to_group,
+        feishu_msg.CHAT,
+        feishu_msg._lark_im_send,
         feishu_msg.ws_log,
         feishu_msg._notify_agent_tmux,
     )
@@ -53,6 +63,11 @@ def check_send_direct():
         feishu_msg.post_to_group = (
             lambda frm, to, content, priority:
             captured.append(("group", to, frm, content, priority)) or True
+        )
+        feishu_msg.CHAT = lambda: "test-chat-id"
+        feishu_msg._lark_im_send = (
+            lambda chat_id, **kw:
+            captured.append(("direct_group", chat_id, kw)) or {}
         )
         feishu_msg.ws_log = (
             lambda agent, typ, content, ref="":
@@ -68,6 +83,8 @@ def check_send_direct():
         (
             feishu_msg.bitable_insert_message,
             feishu_msg.post_to_group,
+            feishu_msg.CHAT,
+            feishu_msg._lark_im_send,
             feishu_msg.ws_log,
             feishu_msg._notify_agent_tmux,
         ) = old
@@ -107,6 +124,7 @@ def check_router_default_route():
         feishu_router.has_pending_messages,
         feishu_router.inject_when_idle,
         feishu_router.enqueue_message,
+        feishu_router._refresh_heartbeat,
         feishu_router._advance_cursor,
     )
     try:
@@ -122,6 +140,7 @@ def check_router_default_route():
             lambda agent, prompt, msg_id, is_user_msg=False:
             injected.append((agent, prompt))
         )
+        feishu_router._refresh_heartbeat = lambda: None
         feishu_router._advance_cursor = lambda: None
         feishu_router.handle_event({
             "message_id": "regression-msg-1",
@@ -136,6 +155,7 @@ def check_router_default_route():
             feishu_router.has_pending_messages,
             feishu_router.inject_when_idle,
             feishu_router.enqueue_message,
+            feishu_router._refresh_heartbeat,
             feishu_router._advance_cursor,
         ) = old
 
@@ -152,6 +172,7 @@ def check_history_replay_route():
         feishu_router._load_cursor,
         feishu_router._advance_cursor,
         feishu_router._advance_cursor_to,
+        feishu_router._refresh_heartbeat,
         feishu_router._lark_run,
         feishu_router.wake_on_deliver,
         feishu_router.has_pending_messages,
@@ -164,6 +185,7 @@ def check_history_replay_route():
         feishu_router._load_cursor = lambda: 1776720000.0
         feishu_router._advance_cursor = lambda: None
         feishu_router._advance_cursor_to = lambda ts: None
+        feishu_router._refresh_heartbeat = lambda: None
         feishu_router._lark_run = lambda args, timeout=40: {
             "messages": [{
                 "message_id": "regression-replay-1",
@@ -192,6 +214,7 @@ def check_history_replay_route():
             feishu_router._load_cursor,
             feishu_router._advance_cursor,
             feishu_router._advance_cursor_to,
+            feishu_router._refresh_heartbeat,
             feishu_router._lark_run,
             feishu_router.wake_on_deliver,
             feishu_router.has_pending_messages,
@@ -208,11 +231,13 @@ def check_history_replay_route():
 
 
 def main():
-    check_sanitizer()
-    check_send_direct()
-    check_queue()
-    check_router_default_route()
-    check_history_replay_route()
+    with tempfile.TemporaryDirectory() as tmp:
+        redirect_facts(tmp)
+        check_sanitizer()
+        check_send_direct()
+        check_queue()
+        check_router_default_route()
+        check_history_replay_route()
     print("✅ message sanitizer regression passed")
 
 

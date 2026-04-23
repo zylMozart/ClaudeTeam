@@ -26,17 +26,45 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
 from message_renderer import render_feishu_markdown, render_inbox_text, render_log_text
 from tmux_utils import inject_when_idle
+import local_facts
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
+
+LEGACY_BITABLE_ENV = "CLAUDETEAM_ENABLE_BITABLE_LEGACY"
+FEISHU_REMOTE_ENV = "CLAUDETEAM_ENABLE_FEISHU_REMOTE"
+
+
+def _env_enabled(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def legacy_bitable_enabled():
+    """Bitable is an explicit opt-in legacy adapter, disabled by default."""
+    return _env_enabled(LEGACY_BITABLE_ENV)
+
+
+def feishu_remote_enabled():
+    """Live Feishu group sends are explicit opt-in, disabled by default."""
+    return _env_enabled(FEISHU_REMOTE_ENV)
 
 def cfg():
     return load_runtime_config()
 
+def _projection_cfg():
+    """Return runtime config for optional Bitable projections, or {} if absent."""
+    try:
+        return cfg()
+    except SystemExit:
+        return {}
+    except Exception as e:
+        print(f"⚠️ runtime_config 读取失败，Bitable 投影降级: {e}", file=sys.stderr)
+        return {}
+
 def BT():  return cfg()["bitable_app_token"]
 def MT():  return cfg()["msg_table_id"]
 def ST():  return cfg()["sta_table_id"]
-def WS(a): return cfg()["workspace_tables"].get(a, "")
-def CHAT(): return cfg().get("chat_id", "")
+def WS(a): return (_projection_cfg().get("workspace_tables") or {}).get(a, "")
+def CHAT(): return _projection_cfg().get("chat_id", "")
 
 def now_ms():
     return int(time.time() * 1000)
@@ -224,9 +252,16 @@ def build_card(from_agent, to_agent, content, priority="中"):
 def post_to_group(from_agent, to_agent, content, priority="中"):
     """向飞书群组发一条消息卡片。返回 True 表示发送成功。
 
-    失败非致命 —— 调用方（cmd_send / cmd_direct）根据返回值决定是否升级
-    为 exit 2（"收件箱已写但群通知失败"）。
+    Feishu group notification is no longer part of the default core path. It is
+    a live remote adapter and must be explicitly enabled.
     """
+    if not feishu_remote_enabled():
+        print(
+            f"ℹ️ Feishu 群通知默认关闭，跳过远端发送 "
+            f"(设置 {FEISHU_REMOTE_ENV}=1 才启用 legacy remote)",
+            file=sys.stderr,
+        )
+        return True
     chat_id = CHAT()
     if not chat_id:
         print("  ⚠️ chat_id 未配置，跳过群通知", file=sys.stderr)
@@ -238,25 +273,18 @@ def post_to_group(from_agent, to_agent, content, priority="中"):
 # ── 工作空间日志 ───────────────────────────────────────────────
 
 def ws_log(agent, log_type, content, ref=""):
-    """写工作空间审计日志（非致命：失败仅 stderr 警告，主命令继续）。
-
-    限流期间如果强行退出会让所有命令连锁挂掉；丢几条审计记录的代价
-    可接受，丢可观测性不行。
-    """
-    tid = WS(agent)
-    if not tid:
-        return
+    """Write local workspace audit log for core state/evidence."""
     content = render_log_text(content)
-    d = _lark_base_create(BT(), tid,
-                          {"类型": log_type, "内容": content,
-                           "时间": now_ms(), "关联对象": ref})
-    _check_lark_result(d, f"ws_log {agent}/{log_type}", fatal=False)
+    local_facts.append_log(agent, log_type, content, ref)
 
 # ── 命令：say（直接发群消息，用于回复用户）──────────────────────
 
 def cmd_say(from_agent, message="", image_path=""):
     if not message and not image_path:
         print("❌ 消息内容和图片路径不能同时为空"); sys.exit(1)
+    if not feishu_remote_enabled():
+        print(f"❌ Feishu 远端发送默认关闭；设置 {FEISHU_REMOTE_ENV}=1 后才能 say")
+        sys.exit(1)
     chat_id = CHAT()
     if not chat_id:
         print("❌ 群组未配置"); sys.exit(1)
@@ -298,6 +326,40 @@ def bitable_insert_message(to, frm, content, priority):
         return records[0].get("record_id", "")
     return d.get("record_id", "")
 
+
+def _project_message_to_bitable(to, frm, content, priority, local_id):
+    """Manual/optional Bitable projection for a locally durable inbox message.
+
+    Core send/direct paths no longer call this by default. Bitable is a
+    low-frequency display/audit projection and must not gate message sync.
+    """
+    if not legacy_bitable_enabled():
+        return ""
+    pcfg = _projection_cfg()
+    if not pcfg.get("bitable_app_token") or not pcfg.get("msg_table_id"):
+        print(
+            f"⚠️ Bitable 消息投影未配置，本地 inbox 已保存 [local_id: {local_id}]",
+            file=sys.stderr,
+        )
+        return ""
+    rid = bitable_insert_message(to, frm, content, priority)
+    if rid:
+        local_facts.attach_bitable_record(local_id, rid)
+        return rid
+    print(
+        f"⚠️ Bitable 消息投影失败，本地 inbox 已保存 [local_id: {local_id}]",
+        file=sys.stderr,
+    )
+    return ""
+
+
+def _local_suffix(rid):
+    if rid:
+        return f"rid: {rid}"
+    if legacy_bitable_enabled():
+        return "legacy Bitable projection unavailable"
+    return "local-only"
+
 # ── 命令：send ────────────────────────────────────────────────
 
 def _notify_agent_tmux(to_agent, from_agent, message):
@@ -324,33 +386,50 @@ def _notify_agent_tmux(to_agent, from_agent, message):
             f"你有来自 {from_agent} 的新消息。"
             f"请执行: python3 scripts/feishu_msg.py inbox {to_agent}"
         )
-        inject_when_idle(TMUX_SESSION, to_agent, notify_text, wait_secs=5)
+        ok = inject_when_idle(TMUX_SESSION, to_agent, notify_text,
+                              wait_secs=5, force_after_wait=False)
+        if ok:
+            return True
+        try:
+            from msg_queue import enqueue_message
+            enqueue_message(
+                to_agent, notify_text,
+                f"notify_{to_agent}_{int(time.time() * 1000)}",
+                is_user_msg=False,
+            )
+        except Exception:
+            pass
+        return False
     except Exception:
-        pass  # best-effort，不影响消息发送本身
+        return False  # best-effort，不影响本地核心事实写入
 
 
 def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
     message = sanitize_agent_message(message)
     actual_message = f"[{task_id}] {message}" if task_id else message
-    rid = bitable_insert_message(to_agent, from_agent, actual_message, priority)
-    # 主写入失败 → fatal exit 1。`rid or None` 把空串也归一到 None。
-    _check_lark_result(rid or None, f"收件箱写入 {from_agent}→{to_agent}")
-    ref_str = f"{rid} | task:{task_id}" if task_id else rid
+    local_id = local_facts.append_message(
+        to_agent, from_agent, actual_message, priority, task_id=task_id)
+    rid = ""
+    if legacy_bitable_enabled():
+        rid = _project_message_to_bitable(
+            to_agent, from_agent, actual_message, priority, local_id)
+    ref_str = f"{local_id} | legacy_bitable:{rid}" if rid else local_id
 
-    group_ok = post_to_group(from_agent, to_agent, actual_message, priority)
-    # 主写入已完成（Bitable 有记录），所以无论群通知是否成功都要写 ws_log，
-    # 保证审计链路完整。
+    group_ok = True
+    if feishu_remote_enabled():
+        group_ok = post_to_group(from_agent, to_agent, actual_message, priority)
     ws_log(from_agent, "消息发出", f"→ {to_agent}：{actual_message[:10000]}", ref_str)
     ws_log(to_agent, "消息收到", f"← {from_agent}：{actual_message[:10000]}", ref_str)
 
     if not group_ok:
         # 收件箱已写 + 群通知失败 → exit 2 让上游（watchdog / 调用脚本）
-        # 感知"部分成功"，不重试（重试会复制消息到 Bitable）。
-        print(f"⚠️ 收件箱已写但群通知失败 [rid: {rid}]")
+        # 感知"部分成功"，不重试（重试会复制本地消息）。
+        print(f"⚠️ 本地 inbox 已写但 Feishu 群通知失败 [local_id: {local_id}]")
         _notify_agent_tmux(to_agent, from_agent, actual_message)
         sys.exit(2)
 
-    print(f"✅ 消息已发送 → {to_agent}  [rid: {rid}]")
+    suffix = _local_suffix(rid)
+    print(f"✅ 消息已发送 → {to_agent}  [local_id: {local_id}, {suffix}]")
     _notify_agent_tmux(to_agent, from_agent, actual_message)
 
 # ── 命令：direct ──────────────────────────────────────────────
@@ -358,23 +437,26 @@ def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
 def cmd_direct(to_agent, from_agent, message):
     """直连发消息：写入收件箱，自动抄送 manager。"""
     message = sanitize_agent_message(message)
-    rid = bitable_insert_message(to_agent, from_agent, message, "中")
-    _check_lark_result(rid or None, f"直连写入 {from_agent}→{to_agent}")
+    local_id = local_facts.append_message(to_agent, from_agent, message, "中")
+    rid = ""
+    if legacy_bitable_enabled():
+        rid = _project_message_to_bitable(to_agent, from_agent, message, "中", local_id)
 
     cc_rid = None
+    cc_local_id = None
     if to_agent != "manager" and from_agent != "manager":
         cc_content = f"[抄送] {from_agent}→{to_agent}: {message}"
-        cc_rid = bitable_insert_message("manager", from_agent, cc_content, "低")
-        # 抄送失败不致命：主消息已写入，manager 仍可从 to_agent inbox 追查
-        if not cc_rid:
-            print(f"⚠️ lark-cli 调用失败: 抄送 {from_agent}→manager", file=sys.stderr)
+        cc_local_id = local_facts.append_message("manager", from_agent, cc_content, "低")
+        if legacy_bitable_enabled():
+            cc_rid = _project_message_to_bitable(
+                "manager", from_agent, cc_content, "低", cc_local_id)
 
-    # 群通知（带 [直连] 标记）非致命，失败走 exit 2
-    group_ok = True
-    chat_id = CHAT()
-    if not chat_id:
+    # 群通知（带 [直连] 标记）是显式 opt-in legacy remote。
+    chat_id = CHAT() if feishu_remote_enabled() else ""
+    if not feishu_remote_enabled():
+        pass
+    elif not chat_id:
         print("  ⚠️ chat_id 未配置，跳过群通知", file=sys.stderr)
-        group_ok = False
     else:
         info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})
         title = f"{info['emoji']} {from_agent} · {info['role']} → @{to_agent} [直连]"
@@ -385,20 +467,18 @@ def cmd_direct(to_agent, from_agent, message):
             "elements": [{"tag": "markdown", "content": message}]
         }
         d = _lark_im_send(chat_id, card=card)
-        group_ok = _check_lark_result(
-            d, f"直连群通知 {from_agent}→{to_agent}", fatal=False)
+        if not _check_lark_result(
+                d, f"直连群通知 {from_agent}→{to_agent}", fatal=False):
+            print(f"⚠️ 本地 inbox 已写但 Feishu 直连通知失败 [local_id: {local_id}]")
 
-    ws_log(from_agent, "消息发出", f"→ {to_agent}[直连]：{message[:10000]}", rid)
-    ws_log(to_agent,   "消息收到", f"← {from_agent}[直连]：{message[:10000]}", rid)
+    ws_log(from_agent, "消息发出", f"→ {to_agent}[直连]：{message[:10000]}", local_id)
+    ws_log(to_agent,   "消息收到", f"← {from_agent}[直连]：{message[:10000]}", local_id)
 
-    if not group_ok:
-        print(f"⚠️ 直连已写但群通知失败 [rid: {rid}]")
-        _notify_agent_tmux(to_agent, from_agent, message)
-        sys.exit(2)
-
-    print(f"✅ 消息已直发 → {to_agent}  [rid: {rid}]")
-    if cc_rid:
-        print(f"✅ 抄送已发送 → manager     [rid: {cc_rid}]")
+    suffix = _local_suffix(rid)
+    print(f"✅ 消息已直发 → {to_agent}  [local_id: {local_id}, {suffix}]")
+    if cc_local_id:
+        cc_suffix = _local_suffix(cc_rid)
+        print(f"✅ 抄送已写入 → manager     [local_id: {cc_local_id}, {cc_suffix}]")
     _notify_agent_tmux(to_agent, from_agent, message)
 
 # ── 命令：inbox ───────────────────────────────────────────────
@@ -523,23 +603,18 @@ def _search_records(base_token, table_id, keyword, search_fields):
 
 
 def cmd_inbox(agent_name):
-    records = _search_records(BT(), MT(), agent_name, ["收件人"])
-    # ADR lark_read_error_propagation: records 可能为 None(失败) 或 list(成功)
-    _check_lark_result(records, f"inbox 查询 {agent_name}")
-    # 到这里 records 一定是 list（可能空），可以安全迭代
-    unread = [r for r in records if not r["fields"].get("已读")]
+    unread = local_facts.list_messages(agent_name, unread_only=True)
     if not unread:
         print(f"📭 {agent_name} 暂无未读消息")
         return
     print(f"📬 {agent_name} 有 {len(unread)} 条未读消息:\n")
     for rec in unread:
-        f = rec["fields"]
-        rid = rec["record_id"]
-        t = f.get("时间", 0)
+        rid = rec["local_id"]
+        t = rec.get("created_at", 0)
         ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
-        frm = extract_text(f.get("发件人", "?"))
-        pri = extract_text(f.get("优先级", "?"))
-        content = sanitize_agent_message(extract_text(f.get("消息内容", "")))
+        frm = rec.get("from", "?")
+        pri = rec.get("priority", "?")
+        content = sanitize_agent_message(rec.get("content", ""))
         print(f"── [{ts}] 来自 {frm} [优先级:{pri}]")
         print(f"   {content}")
         print(f"   标记已读: python3 scripts/feishu_msg.py read {rid}")
@@ -548,67 +623,80 @@ def cmd_inbox(agent_name):
 # ── 命令：read ────────────────────────────────────────────────
 
 def cmd_read(record_id):
-    d = _lark_base_update(BT(), MT(), [record_id], {"已读": True})
-    _check_lark_result(d, f"已读标记 {record_id}")
-    print(f"✅ 已标记已读: {record_id}")
+    if local_facts.mark_read(record_id):
+        print(f"✅ 已标记本地已读: {record_id}")
+        return
+    if legacy_bitable_enabled():
+        d = _lark_base_update(BT(), MT(), [record_id], {"已读": True})
+        _check_lark_result(d, f"已读标记 {record_id}")
+        print(f"✅ 已标记 legacy Bitable 已读: {record_id}")
+        return
+    print(f"❌ 找不到本地消息: {record_id}")
+    sys.exit(1)
 
 # ── 命令：status ──────────────────────────────────────────────
 
 def cmd_status(agent_name, status, task, blocker=""):
-    # 先搜索是否已有记录
-    records = _search_records(BT(), ST(), agent_name, ["Agent名称"])
-    # ADR lark_read_error_propagation: 失败时 fatal exit，避免误走 create 分支
-    # 创建重复记录（原 bug：查询失败 → records=[] → 重复 create）。
-    _check_lark_result(records, f"状态查询 {agent_name}")
-    fields = {"Agent名称": agent_name, "状态": status, "当前任务": task,
-              "阻塞原因": blocker, "更新时间": now_ms()}
-    if records:
-        d = _lark_base_update(BT(), ST(), [records[0]["record_id"]], fields)
-        _check_lark_result(d, f"状态写入 {agent_name}→{status}")
-    else:
-        d = _lark_base_create(BT(), ST(), fields)
-        _check_lark_result(d, f"状态新建 {agent_name}→{status}")
-    # 到这里要么主写入成功，要么已 sys.exit(1)
+    local_facts.upsert_status(agent_name, status, task, blocker)
+
+    projection_ok = True
+    if legacy_bitable_enabled():
+        fields = {"Agent名称": agent_name, "状态": status, "当前任务": task,
+                  "阻塞原因": blocker, "更新时间": now_ms()}
+        projection_ok = False
+        pcfg = _projection_cfg()
+        bt = pcfg.get("bitable_app_token")
+        st = pcfg.get("sta_table_id")
+        if not bt or not st:
+            print(
+                f"⚠️ Bitable 状态投影未配置，本地状态已保存: {agent_name}→{status}",
+                file=sys.stderr,
+            )
+        else:
+            records = _search_records(bt, st, agent_name, ["Agent名称"])
+            if records is None:
+                print(
+                    f"⚠️ Bitable 状态投影查询失败，本地状态已保存: {agent_name}→{status}",
+                    file=sys.stderr,
+                )
+            elif records:
+                d = _lark_base_update(bt, st, [records[0]["record_id"]], fields)
+                projection_ok = _check_lark_result(
+                    d, f"状态投影写入 {agent_name}→{status}", fatal=False)
+            else:
+                d = _lark_base_create(bt, st, fields)
+                projection_ok = _check_lark_result(
+                    d, f"状态投影新建 {agent_name}→{status}", fatal=False)
     content = f"状态：{status} | {task}"
     if blocker: content += f" | ⛔ {blocker}"
     ws_log(agent_name, "阻塞上报" if status == "阻塞" else "状态更新", content)
-    print(f"✅ {agent_name} → {status}: {task}")
+    suffix = ""
+    if not legacy_bitable_enabled():
+        suffix = "（local-only）"
+    elif not projection_ok:
+        suffix = "（legacy Bitable projection unavailable）"
+    print(f"✅ {agent_name} → {status}: {task}{suffix}")
 
 # ── 命令：log ─────────────────────────────────────────────────
 
 def cmd_log(agent_name, log_type, content, ref=""):
-    tid = WS(agent_name)
-    if not tid:
-        print(f"❌ 找不到 {agent_name} 的工作空间"); sys.exit(1)
-    d = _lark_base_create(BT(), tid,
-                          {"类型": log_type, "内容": content,
-                           "时间": now_ms(), "关联对象": ref})
-    _check_lark_result(d, f"工作空间日志 {agent_name}/{log_type}")
-    print(f"✅ [{log_type}] 已写入 {agent_name} 工作空间")
+    local_id = local_facts.append_log(agent_name, log_type, render_log_text(content), ref)
+    print(f"✅ [{log_type}] 已写入 {agent_name} 本地工作空间日志 [local_id: {local_id}]")
 
 # ── 命令：workspace ────────────────────────────────────────────
 
 def cmd_workspace(agent_name):
-    tid = WS(agent_name)
-    if not tid:
-        print(f"❌ 找不到 {agent_name} 的工作空间"); sys.exit(1)
-    d = _lark_base_list(BT(), tid, limit=20)
-    # ADR lark_read_error_propagation: 原版 (d or {}).get("items", []) 会把
-    # 失败折叠成"最近 0 条"，让人以为工作空间是空的。改为 fatal 校验。
-    _check_lark_result(d, f"工作空间查询 {agent_name}")
-    items = d.get("items", [])
-    print(f"📁 {agent_name} 工作空间 (最近 {len(items)} 条):\n")
+    items = local_facts.list_logs(agent_name, limit=20)
+    print(f"📁 {agent_name} 本地工作空间日志 (最近 {len(items)} 条):\n")
     for rec in items:
-        f = rec.get("fields", {})
-        t = f.get("时间", 0)
+        t = rec.get("created_at", 0)
         ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
-        lt = extract_text(f.get("类型", "?"))
-        c  = extract_text(f.get("内容", ""))
-        ref = extract_text(f.get("关联对象", ""))
+        lt = rec.get("type", "?")
+        c = rec.get("content", "")
+        ref = rec.get("ref", "")
         print(f"  [{ts}] {lt:8} {c[:10000]}")
-        if ref: print(f"           → {ref}")
-    bt = BT()
-    print(f"\n  飞书链接: https://feishu.cn/base/{bt}?table={tid}")
+        if ref:
+            print(f"           → {ref}")
 
 # ── main ──────────────────────────────────────────────────────
 
