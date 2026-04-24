@@ -19,7 +19,7 @@ REQUIRED_FILES = [
     "scripts/feishu_msg.py",
     "scripts/feishu_router.py",
     "scripts/slash_commands.py",
-    "scripts/tmux_utils.py",
+    "src/claudeteam/runtime/tmux_utils.py",
     "src/claudeteam/cli_adapters/resolve.py",
     "scripts/task_tracker.py",
     "scripts/memory_manager.py",
