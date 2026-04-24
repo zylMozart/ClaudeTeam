@@ -206,7 +206,7 @@ set_team_cli "codex-cli"
 
 # ── 5. 启动 codex ─────────────────────────────────────────────
 log "🚀 启动 codex"
-SPAWN_CMD=$(python3 "$SCRIPTS_DIR/cli_adapters/resolve.py" "$AGENT" spawn_cmd "" 2>/dev/null) || {
+SPAWN_CMD=$(python3 -m claudeteam.cli_adapters.resolve "$AGENT" spawn_cmd "" 2>/dev/null) || {
   echo "❌ 解析 codex spawn_cmd 失败" >&2
   exit 1
 }

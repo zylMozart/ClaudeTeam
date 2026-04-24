@@ -104,7 +104,7 @@ probe_agents() {
     FAILED_AGENTS=()
     for agent in "${agents_to_probe[@]}"; do
       pane=$(tmux capture-pane -t "$SESSION:$agent" -p -S -60 2>/dev/null)
-      ready_pattern=$(python3 "$_bringup_scripts_dir/cli_adapters/resolve.py" "$agent" ready_markers 2>/dev/null)
+      ready_pattern=$(python3 -m claudeteam.cli_adapters.resolve "$agent" ready_markers 2>/dev/null)
       if echo "$pane" | grep -q "$ready_pattern"; then
         :
       else

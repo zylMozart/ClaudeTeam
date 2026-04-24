@@ -107,7 +107,7 @@ _lifecycle_pids_for_agent() {
   session=$(_lifecycle_tmux_session)
   bash_pid=$(tmux display-message -t "$session:$agent" -p '#{pane_pid}' 2>/dev/null)
   [[ -z "$bash_pid" ]] && return 0
-  proc_name=$(python3 "$_LC_SCRIPTS_DIR/cli_adapters/resolve.py" "$agent" process_name 2>/dev/null)
+  proc_name=$(python3 -m claudeteam.cli_adapters.resolve "$agent" process_name 2>/dev/null)
   [[ -z "$proc_name" ]] && proc_name="claude"
   BASH_PID="$bash_pid" PROC_NAME="$proc_name" python3 - <<'PY' 2>/dev/null
 import os, glob
@@ -154,7 +154,7 @@ spawn_agent() {
   fi
 
   local spawn_cmd
-  spawn_cmd=$(python3 "$_LC_SCRIPTS_DIR/cli_adapters/resolve.py" "$agent" spawn_cmd "$model")
+  spawn_cmd=$(python3 -m claudeteam.cli_adapters.resolve "$agent" spawn_cmd "$model")
   tmux send-keys -t "$session:$agent" "$spawn_cmd" Enter
   echo "🟢 spawn_agent: $agent (model=$model)"
   return 0
@@ -241,11 +241,11 @@ wake_agent() {
 
   local sid resume_cmd spawn_cmd
   sid=$(_lifecycle_get_session "$agent")
-  if [[ -n "$sid" ]] && resume_cmd=$(python3 "$_LC_SCRIPTS_DIR/cli_adapters/resolve.py" "$agent" resume_cmd "$model" "$sid" 2>/dev/null); then
+  if [[ -n "$sid" ]] && resume_cmd=$(python3 -m claudeteam.cli_adapters.resolve "$agent" resume_cmd "$model" "$sid" 2>/dev/null); then
     tmux send-keys -t "$session:$agent" "$resume_cmd" Enter
     echo "🌅 wake_agent: $agent resume sid=${sid:0:8} (model=$model)"
   else
-    spawn_cmd=$(python3 "$_LC_SCRIPTS_DIR/cli_adapters/resolve.py" "$agent" spawn_cmd "$model")
+    spawn_cmd=$(python3 -m claudeteam.cli_adapters.resolve "$agent" spawn_cmd "$model")
     tmux send-keys -t "$session:$agent" "$spawn_cmd" Enter
     echo "🌅 wake_agent: $agent 冷启动 — 无 saved session 或 adapter 不支持 resume (model=$model)"
   fi
