@@ -22,7 +22,7 @@ REQUIRED_FILES = [
     "src/claudeteam/runtime/tmux_utils.py",
     "src/claudeteam/cli_adapters/resolve.py",
     "src/claudeteam/commands/task_tracker.py",
-    "scripts/memory_manager.py",
+    "src/claudeteam/commands/memory.py",
     "scripts/kanban_sync.py",
     "scripts/start-team.sh",
     "scripts/lib/agent_lifecycle.sh",
