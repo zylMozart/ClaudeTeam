@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Regression checks for Codex spawn command leakage into business messages."""
 import json
+import sys
 import tempfile
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+for _p in (_ROOT / "scripts", _ROOT / "src", _ROOT):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import feishu_msg
 import feishu_router
-import local_facts
-import msg_queue
+from claudeteam.storage import local_facts
+from claudeteam.runtime import queue as msg_queue
 
 
 SPAWN = "CODEX_AGENT=toolsmith codex --dangerously-bypass-approvals-and-sandbox"

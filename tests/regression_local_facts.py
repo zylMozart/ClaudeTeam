@@ -9,17 +9,44 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import sys
 import tempfile
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+for _p in (_ROOT / "scripts", _ROOT / "src", _ROOT):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import feishu_msg
-import local_facts
+from claudeteam.storage import local_facts
 
 
-def _redirect_facts(tmp: str):
-    local_facts.FACTS_DIR = local_facts.Path(tmp)
-    local_facts.INBOX_FILE = local_facts.FACTS_DIR / "inbox.json"
-    local_facts.STATUS_FILE = local_facts.FACTS_DIR / "status.json"
-    local_facts.LOCK_FILE = local_facts.FACTS_DIR / ".facts.lock"
+@contextlib.contextmanager
+def _redirected_facts(tmp: str):
+    """Redirect local_facts globals for both direct module and thin-wrapper mode."""
+    globals_dict = local_facts.append_message.__globals__
+    names = ("FACTS_DIR", "INBOX_FILE", "STATUS_FILE", "LOG_FILE", "LOCK_FILE")
+    old = {name: globals_dict[name] for name in names}
+    facts_dir = Path(tmp)
+    updates = {
+        "FACTS_DIR": facts_dir,
+        "INBOX_FILE": facts_dir / "inbox.json",
+        "STATUS_FILE": facts_dir / "status.json",
+        "LOG_FILE": facts_dir / "logs.jsonl",
+        "LOCK_FILE": facts_dir / ".facts.lock",
+    }
+    globals_dict.update(updates)
+    for name, value in updates.items():
+        if hasattr(local_facts, name):
+            setattr(local_facts, name, value)
+    try:
+        yield
+    finally:
+        globals_dict.update(old)
+        for name, value in old.items():
+            if hasattr(local_facts, name):
+                setattr(local_facts, name, value)
 
 
 def test_send_survives_bitable_projection_failure():
@@ -98,11 +125,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         old_env = os.environ.get("CLAUDETEAM_FACTS_DIR")
         os.environ["CLAUDETEAM_FACTS_DIR"] = tmp
-        _redirect_facts(tmp)
         try:
-            test_send_survives_bitable_projection_failure()
-            test_inbox_and_read_use_local_facts()
-            test_status_survives_bitable_projection_failure()
+            with _redirected_facts(tmp):
+                test_send_survives_bitable_projection_failure()
+                test_inbox_and_read_use_local_facts()
+                test_status_survives_bitable_projection_failure()
         finally:
             if old_env is None:
                 os.environ.pop("CLAUDETEAM_FACTS_DIR", None)

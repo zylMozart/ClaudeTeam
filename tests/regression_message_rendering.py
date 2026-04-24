@@ -7,10 +7,17 @@ docs/message_rendering_spec.md and verifies snapshot-like invariants.
 """
 from __future__ import annotations
 
+import sys
 import textwrap
 import re
+from pathlib import Path
 
-from message_renderer import (
+_ROOT = Path(__file__).resolve().parents[1]
+for _p in (_ROOT / "scripts", _ROOT / "src", _ROOT):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from claudeteam.messaging.renderer import (
     MessageEnvelope,
     render_envelope,
     render_feishu_markdown,
