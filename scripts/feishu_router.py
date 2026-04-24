@@ -130,7 +130,7 @@ def handle_event(event):
     if _state.first_event_at is None:
         _state.first_event_at = time.time()
     _m._refresh_heartbeat()
-    import slash_commands
+    from claudeteam.commands.slash.standalone import dispatch as _slash_dispatch
     agents = _state.reload_agents(_TEAM_FILE)
     result = classify_event(
         event,
@@ -140,13 +140,13 @@ def handle_event(event):
         sanitize=sanitize_agent_message,
         parse_targets=lambda t: _state.parse_targets(t, agents),
         parse_sender=lambda t: _state.parse_sender(t, agents),
-        is_slash=lambda t: slash_commands.dispatch(t)[0],
+        is_slash=lambda t: _slash_dispatch(t)[0],
     )
     if result.action == EventAction.DROP:
         return
     _state.mark_seen(result.msg_id)
     if result.action == EventAction.SLASH:
-        _, reply = slash_commands.dispatch(result.text)
+        _, reply = _slash_dispatch(result.text)
         try:
             from feishu_msg import _lark_im_send, CHAT, build_system_card
             chat_id = CHAT()

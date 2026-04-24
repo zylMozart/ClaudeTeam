@@ -27,7 +27,7 @@ toolchain, command, router, tmux, or deployment changes.
 ```bash
 python3 tests/static_skill_layout_check.py
 python3 tests/static_public_contract_check.py
-python3 -c "from slash_commands import dispatch; matched, r = dispatch('/help'); print(matched, r)"
+python3 -c "from claudeteam.commands.slash.standalone import dispatch; matched, r = dispatch('/help'); print(matched, r)"
 ```
 
 ## Evidence Format

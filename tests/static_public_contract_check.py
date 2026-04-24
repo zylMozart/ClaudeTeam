@@ -18,7 +18,7 @@ REQUIRED_FILES = [
     "docs/toolchain_skill_restructure.md",
     "scripts/feishu_msg.py",
     "scripts/feishu_router.py",
-    "scripts/slash_commands.py",
+    "src/claudeteam/commands/slash/standalone.py",
     "src/claudeteam/runtime/tmux_utils.py",
     "src/claudeteam/cli_adapters/resolve.py",
     "src/claudeteam/commands/task_tracker.py",
@@ -41,7 +41,7 @@ REQUIRED_SKILLS = [
 PUBLIC_CONTRACT_TOKENS = [
     "python3 scripts/feishu_msg.py",
     "python3 scripts/feishu_router.py --stdin",
-    "slash_commands.dispatch(text)",
+    "dispatch(text) -> (matched, reply)",
     "inject_when_idle(session, window, text",
     "python3 -m claudeteam.cli_adapters.resolve",
     "python3 scripts/task_tracker.py",

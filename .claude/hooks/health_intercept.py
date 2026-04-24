@@ -12,9 +12,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
                     Path(__file__).resolve().parents[2])
-sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-import slash_commands  # noqa: E402
+from claudeteam.commands.slash.standalone import dispatch as _slash_dispatch  # noqa: E402
 
 
 def block(reason: str) -> None:
@@ -32,7 +32,7 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        matched, reply = slash_commands.dispatch(prompt)
+        matched, reply = _slash_dispatch(prompt)
     except Exception as e:
         block(f"⚠️ /health 执行异常：{type(e).__name__}: {e}")
     if not matched:

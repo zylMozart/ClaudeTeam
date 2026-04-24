@@ -89,7 +89,7 @@ class _RouterRuntime:
 
         agents = self.state.reload_agents(self.team_file)
 
-        import slash_commands  # scripts-layer, available via sys.path
+        from claudeteam.commands.slash.standalone import dispatch as _slash_dispatch
         from feishu_msg import _lark_run, cmd_say, sanitize_agent_message, _lark_im_send, CHAT, build_system_card
 
         result = classify_event(
@@ -100,7 +100,7 @@ class _RouterRuntime:
             sanitize=sanitize_agent_message,
             parse_targets=lambda t: self.state.parse_targets(t, agents),
             parse_sender=lambda t: self.state.parse_sender(t, agents),
-            is_slash=lambda t: slash_commands.dispatch(t)[0],
+            is_slash=lambda t: _slash_dispatch(t)[0],
         )
 
         if result.action == EventAction.DROP:
@@ -109,7 +109,7 @@ class _RouterRuntime:
         self.state.mark_seen(result.msg_id)
 
         if result.action == EventAction.SLASH:
-            _, reply = slash_commands.dispatch(result.text)
+            _, reply = _slash_dispatch(result.text)
             self._handle_slash_reply(result, reply, cmd_say, _lark_im_send, CHAT, build_system_card)
             self._advance_cursor()
             return
