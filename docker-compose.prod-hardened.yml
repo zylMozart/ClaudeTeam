@@ -54,11 +54,13 @@ services:
 
       # Credential stores from runtime root.
       - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/lark-cli:/home/claudeteam/.lark-cli:rw
-      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/lark-cli/local-share:/home/claudeteam/.local/share/lark-cli:ro
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/lark-cli/local-share:/home/claudeteam/.local/share/lark-cli:rw
       - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/codex:/home/claudeteam/.codex:rw
       - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/kimi:/home/claudeteam/.kimi:rw
       - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/gemini:/home/claudeteam/.gemini:rw
       - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/qwen:/home/claudeteam/.qwen:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/claude:/home/claudeteam/.claude:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/claude/.claude.json:/home/claudeteam/.claude.json:rw
 
     tmpfs:
       - /tmp

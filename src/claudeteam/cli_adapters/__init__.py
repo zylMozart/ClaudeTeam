@@ -10,9 +10,11 @@ from .gemini_cli import GeminiCliAdapter
 from .codex_cli import CodexCliAdapter
 from .qwen_code import QwenCodeAdapter
 
+_kimi_adapter = KimiCodeAdapter()
 _REGISTRY: dict[str, CliAdapter] = {
     "claude-code": ClaudeCodeAdapter(),
-    "kimi-code": KimiCodeAdapter(),
+    "kimi-code": _kimi_adapter,
+    "kimi-cli": _kimi_adapter,  # alias: upstream package is kimi-cli
     "gemini-cli": GeminiCliAdapter(),
     "codex-cli": CodexCliAdapter(),
     "qwen-code": QwenCodeAdapter(),

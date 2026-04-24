@@ -8,7 +8,7 @@
 # 设计要点 (来自 lazy_wake_v2 ADR):
 #   - suspend 严格顺序: 状态表→保存 session_id→kill claude pid→tmux 窗口留💤
 #     顺序错了 router 会把消息路给"看似活着"的 agent,丢消息。
-#   - 模型解析全部走 scripts/config.py::resolve_model_for_agent (单事实源)。
+#   - 模型解析全部走 claudeteam.runtime.config::resolve_model_for_agent (单事实源)。
 #   - session_id 通过扫描 ~/.claude/projects/-app/*.jsonl 的 customTitle 字段
 #     发现最新会话,持久化到 scripts/.agent_sessions.json。
 #   - 函数失败用非零退出码报告,不 exit (库代码不替调用方做退出决策)。
@@ -140,7 +140,7 @@ spawn_agent() {
 
   local session model
   session=$(_lifecycle_tmux_session)
-  if ! model=$(python3 "$_LC_SCRIPTS_DIR/config.py" resolve-model "$agent"); then
+  if ! model=$(PYTHONPATH="${PYTHONPATH:-}:$_LC_PROJECT_ROOT/src" python3 -m claudeteam.runtime.config resolve-model "$agent"); then
     echo "❌ spawn_agent: 解析 $agent 模型失败" >&2
     return 1
   fi
@@ -220,7 +220,7 @@ wake_agent() {
 
   local session model
   session=$(_lifecycle_tmux_session)
-  if ! model=$(python3 "$_LC_SCRIPTS_DIR/config.py" resolve-model "$agent"); then
+  if ! model=$(PYTHONPATH="${PYTHONPATH:-}:$_LC_PROJECT_ROOT/src" python3 -m claudeteam.runtime.config resolve-model "$agent"); then
     echo "❌ wake_agent: 解析 $agent 模型失败" >&2
     return 1
   fi

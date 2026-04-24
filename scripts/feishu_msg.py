@@ -282,10 +282,11 @@ def _notify_agent_tmux(to_agent, from_agent, message):
     lazy-wake-v2 适配:
       - 目标窗口若还是 💤 占位 (pane 里没有 claude 进程) → 先调 agent_lifecycle.sh wake
       - lifecycle wake 幂等: 已活则立即返回, 所以对非 lazy-mode 也安全
-      - wake 失败时退化为老行为 (尝试直接 inject), 不阻塞主发送流程
+      - wake 返回后 CLI 进程刚起, UI 未就绪, 直接 inject 会把文字打进 bash →
+        调 wait_cli_ui_ready 先等 CLI TUI 就绪 (最长 30s), 就绪后才 inject;
+        超时则 enqueue 兜底,绝不回退到往 bash 乱 send-keys
     """
     try:
-        # lazy-wake: 检测 💤 → wake before inject
         import subprocess as _sp
         lifecycle = os.path.join(os.path.dirname(__file__), "lib",
                                  "agent_lifecycle.sh")
@@ -294,16 +295,34 @@ def _notify_agent_tmux(to_agent, from_agent, message):
                 _sp.run(["bash", lifecycle, "wake", to_agent],
                         capture_output=True, timeout=25, check=False)
             except Exception:
-                pass  # best-effort, 继续走 inject
+                pass  # best-effort, 继续走 ready 探测
 
         notify_text = (
             f"你有来自 {from_agent} 的新消息。"
             f"请执行: python3 scripts/feishu_msg.py inbox {to_agent}"
         )
-        ok = inject_when_idle(TMUX_SESSION, to_agent, notify_text,
-                              wait_secs=5, force_after_wait=False)
-        if ok:
-            return True
+
+        ready = False
+        try:
+            from claudeteam.messaging.router.wake import wait_cli_ui_ready
+            from claudeteam.cli_adapters import adapter_for_agent
+            from claudeteam.runtime.tmux_utils import capture_pane
+            ready = wait_cli_ui_ready(
+                to_agent,
+                capture_pane_fn=lambda n: capture_pane(TMUX_SESSION, n),
+                get_ready_markers=lambda n: adapter_for_agent(n).ready_markers(),
+                get_process_name=lambda n: adapter_for_agent(n).process_name(),
+                timeout_s=30,
+            )
+        except Exception:
+            ready = False  # 探测失败时宁可入队也不乱 inject
+
+        if ready:
+            ok = inject_when_idle(TMUX_SESSION, to_agent, notify_text,
+                                  wait_secs=5, force_after_wait=False)
+            if ok:
+                return True
+
         try:
             from claudeteam.runtime.queue import enqueue_message
             enqueue_message(
