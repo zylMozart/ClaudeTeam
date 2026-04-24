@@ -41,6 +41,8 @@ class SlashContext:
     send_to_agent: Callable[[str, str, str], bool] = field(default=_noop_send)
     query_usage: Callable[[str], list] = field(default=_noop_query_usage)
     now_bj: Callable[[], datetime] = field(default=_now_bj)
+    # Optional: injected by shell in P3.5b; None → handler shows stub message
+    collect_health: Optional[Callable[[], dict]] = field(default=None)
 
     @property
     def agent_set(self) -> frozenset:
