@@ -26,7 +26,7 @@ from claudeteam.commands import kanban_sync as _kanban_commands
 from claudeteam.commands import kanban_daemon as _kanban_daemon
 from claudeteam.integrations.feishu import kanban_projection as _kanban_projection
 from claudeteam.integrations.feishu import kanban_service as _kanban_service
-from config import load_runtime_config, save_runtime_config, LARK_CLI
+from claudeteam.runtime.config import load_runtime_config, save_runtime_config, LARK_CLI
 from claudeteam.runtime.paths import legacy_script_state_file, runtime_state_file, runtime_state_dir, ensure_parent
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")

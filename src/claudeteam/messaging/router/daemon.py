@@ -308,7 +308,7 @@ def main() -> None:
     if _scripts not in sys.path:
         sys.path.insert(0, _scripts)
 
-    from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
+    from claudeteam.runtime.config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
     from claudeteam.runtime.paths import runtime_state_file, legacy_script_state_file
 
     cfg_data = load_runtime_config()

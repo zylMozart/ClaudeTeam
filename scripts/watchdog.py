@@ -29,7 +29,7 @@ from claudeteam.supervision import watchdog_daemon as _watchdog_daemon
 from claudeteam.supervision import watchdog_messages as _watchdog_messages
 from claudeteam.supervision import watchdog_orphans as _watchdog_orphans
 from claudeteam.supervision import watchdog_proc_match as _watchdog_proc_match
-from config import PROJECT_ROOT, LARK_CLI
+from claudeteam.runtime.config import PROJECT_ROOT, LARK_CLI
 from claudeteam.runtime.paths import legacy_script_state_file, runtime_state_file, runtime_state_dir, ensure_parent
 
 CHECK_INTERVAL = 60  # 秒

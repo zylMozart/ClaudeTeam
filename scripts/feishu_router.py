@@ -83,7 +83,7 @@ def wake_on_deliver(agent_name):
     from claudeteam.messaging.router.wake import (
         wake_on_deliver as _wod, wait_cli_ui_ready, agent_has_live_cli)
     from claudeteam.cli_adapters import adapter_for_agent
-    from config import TMUX_SESSION
+    from claudeteam.runtime.config import TMUX_SESSION
     import claudeteam.runtime.tmux_utils as _tu
     _lsh = os.path.join(_SCRIPT_DIR, "lib", "agent_lifecycle.sh")
     return _wod(
@@ -104,7 +104,7 @@ def wake_on_deliver(agent_name):
 
 def wake_agent(agent_name, message_preview, sender_agent=None, full_text=None, msg_id=""):
     _m = sys.modules[__name__]
-    from config import TMUX_SESSION
+    from claudeteam.runtime.config import TMUX_SESSION
     _m.wake_on_deliver(agent_name)
     if sender_agent:
         prompt = (f"【Router】你有来自 {sender_agent} 的新消息。\n"
@@ -181,7 +181,7 @@ def _catchup_from_history(chat_id):
     start_iso = datetime.fromtimestamp(cursor - 1).astimezone().isoformat(timespec="seconds")
     print(f"📥 历史补抓: 从 {start_iso} 开始拉错过的群聊消息")
     from claudeteam.messaging.router.cursor import parse_create_time
-    from config import LARK_CLI
+    from claudeteam.runtime.config import LARK_CLI
     fetched = replayed = 0
     page_token = ""
     deadline = time.time() + 30

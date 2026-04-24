@@ -18,7 +18,7 @@ SCRIPTS_ROOT = THIS_FILE.parents[3] / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from config import TMUX_SESSION
+from claudeteam.runtime.config import TMUX_SESSION
 from feishu_msg import sanitize_agent_message
 from claudeteam.messaging.renderer import render_tmux_prompt
 from claudeteam.runtime.tmux_utils import inject_when_idle, is_agent_idle

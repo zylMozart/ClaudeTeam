@@ -15,7 +15,7 @@ SCRIPTS_ROOT = THIS_FILE.parents[4] / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from config import LARK_CLI
+from claudeteam.runtime.config import LARK_CLI
 
 # 服务器侧 /records/search 状态码:
 #   800080303 "unsafe_operation_blocked" = 端点在当前品牌(目前仅国际版 Lark)

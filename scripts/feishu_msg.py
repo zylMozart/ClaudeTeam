@@ -31,7 +31,7 @@ if _SRC_DIR not in sys.path:
 from claudeteam.integrations.feishu import client as _feishu_client
 from claudeteam.messaging import service as _message_service
 from claudeteam.commands import feishu_msg as _feishu_commands
-from config import AGENTS, TMUX_SESSION, load_runtime_config
+from claudeteam.runtime.config import AGENTS, TMUX_SESSION, load_runtime_config
 from claudeteam.messaging.renderer import render_inbox_text
 from claudeteam.runtime.tmux_utils import inject_when_idle
 from claudeteam.storage import local_facts

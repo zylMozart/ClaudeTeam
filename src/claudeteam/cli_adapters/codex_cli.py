@@ -20,7 +20,7 @@ class CodexCliAdapter(CliAdapter):
         # Codex CLI 0.121.0 consumes reasoning effort via -c
         # model_reasoning_effort="high". Keep "default"/"off" as no override.
         try:
-            from config import resolve_thinking_for_agent
+            from claudeteam.runtime.config import resolve_thinking_for_agent
             thinking = resolve_thinking_for_agent(agent)
         except Exception:
             return []
