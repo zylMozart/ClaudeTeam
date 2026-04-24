@@ -45,6 +45,8 @@ TESTS = (
     ("message rendering regression", ROOT / "tests" / "regression_message_rendering.py"),
     ("message sanitizer regression", ROOT / "tests" / "regression_message_sanitizer.py"),
     ("local facts regression", ROOT / "tests" / "regression_local_facts.py"),
+    ("router dispatch unit", ROOT / "tests" / "test_router_dispatch.py"),
+    ("router cursor unit", ROOT / "tests" / "test_router_cursor.py"),
 )
 
 
