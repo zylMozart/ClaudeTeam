@@ -43,11 +43,11 @@ class CodexCliAdapter(CliAdapter):
         )
 
     def ready_markers(self):
-        # 实测 (codex-cli 0.121.0): TUI 就绪时 pane 底部出现 "tab to queue
-        # message" 或模型 banner "gpt-5.x default · <cwd>"。"Implement
-        # {feature}" 是首次启动 placeholder；后续启动会被上次会话内容覆盖，
-        # 不如前两者可靠。
-        return ["tab to queue message", "gpt-5"]
+        # 实测 (codex-cli 0.124.0): TUI 就绪后 banner 显示 ">_ OpenAI Codex"
+        # 和 "permissions: YOLO mode" 两行。用这两个做主 marker,避免误匹配
+        # 冷启动时 tmux 回显的 spawn_cmd("--model gpt-5.4" 里含 "gpt-5")。
+        # "tab to queue message" 仅在已有排队消息时出现,不是稳定 ready 信号。
+        return ["OpenAI Codex", "permissions: YOLO"]
 
     def busy_markers(self):
         # 实测: codex 忙时 pane 出 "Working (Xs • esc to interrupt)",

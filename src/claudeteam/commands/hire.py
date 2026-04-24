@@ -272,6 +272,14 @@ def cmd_start_tmux(agent_name):
         f"2. python3 scripts/feishu_msg.py status {agent_name} 进行中 \"初始化完成，待命中\"\n\n"
         f"准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
     )
+    if agent_name == "manager":
+        init_msg += (
+            "\n\n【manager 硬约束】收到 \"所有员工报道\" / \"全员报到\" / \"全队集合\" "
+            "/ \"大家都 XXX\" 等集合类/广播类指令时,你必须对 team.json 里除 manager "
+            "外每个 agent 各跑一次 `python3 scripts/feishu_msg.py send <agent> manager "
+            "\"<精简转述>\" 高`。**你自己绝不代发汇总、绝不一条 say 代 N 次 send。** "
+            "老板要的是每个员工各自响应,不是你的代笔。"
+        )
     try:
         thinking = resolve_thinking_for_agent(agent_name)
         hint = adapter.thinking_init_hint(thinking)
