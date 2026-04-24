@@ -38,10 +38,7 @@ def _lark(args, label="", timeout=30):
     except json.JSONDecodeError:
         return None
 
-def load_team():
-    team_file = os.path.join(PROJECT_ROOT, "team.json")
-    with open(team_file) as f:
-        return json.load(f)
+from claudeteam.commands._team_io import load_team  # noqa: F401 (re-exported)
 
 def load_cfg():
     try:
