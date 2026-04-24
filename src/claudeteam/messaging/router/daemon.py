@@ -90,7 +90,8 @@ class _RouterRuntime:
         agents = self.state.reload_agents(self.team_file)
 
         from claudeteam.commands.slash.standalone import dispatch as _slash_dispatch
-        from feishu_msg import _lark_run, cmd_say, sanitize_agent_message, _lark_im_send, CHAT, build_system_card
+        from claudeteam.integrations.feishu.client import _lark_run, _lark_im_send, get_chat_id
+        from claudeteam.messaging.service import sanitize_agent_message, build_system_card
 
         result = classify_event(
             event,
@@ -110,7 +111,7 @@ class _RouterRuntime:
 
         if result.action == EventAction.SLASH:
             _, reply = _slash_dispatch(result.text)
-            self._handle_slash_reply(result, reply, cmd_say, _lark_im_send, CHAT, build_system_card)
+            self._handle_slash_reply(result, reply, _lark_im_send, get_chat_id, build_system_card)
             self._advance_cursor()
             return
 
@@ -121,7 +122,7 @@ class _RouterRuntime:
             self._deliver(target, result.text, result.sender, result.msg_id)
         self._advance_cursor()
 
-    def _handle_slash_reply(self, result, reply, cmd_say, _lark_im_send, CHAT, build_system_card):
+    def _handle_slash_reply(self, result, reply, _lark_im_send, get_chat_id, build_system_card):
         first = result.text.strip().split()[0] if result.text.strip() else ""
         ts = time.strftime('%Y-%m-%d %H:%M:%S')
         line = f"[{ts}] slash {first} msg_id={result.msg_id} → 群聊回显(无 agent 介入)"
@@ -133,7 +134,7 @@ class _RouterRuntime:
         except Exception:
             pass
         try:
-            chat_id = CHAT()
+            chat_id = get_chat_id()
             if not chat_id:
                 print("  ⚠️ chat_id 未配置,无法回显")
             elif isinstance(reply, dict) and reply.get("card"):
@@ -149,7 +150,7 @@ class _RouterRuntime:
 
     def _deliver(self, agent: str, text: str, sender: Optional[str], msg_id: str) -> None:
         """Deliver a routed message to one agent (wake if needed, then inject or enqueue)."""
-        from feishu_msg import sanitize_agent_message
+        from claudeteam.messaging.service import sanitize_agent_message
         text = sanitize_agent_message(text)
 
         wake_on_deliver(
@@ -209,7 +210,7 @@ class _RouterRuntime:
             time.sleep(3)
 
     def catchup_from_history(self, chat_id: str) -> int:
-        from feishu_msg import _lark_run
+        from claudeteam.integrations.feishu.client import _lark_run
         cursor = self._load_cursor()
         if cursor is None:
             self._advance_cursor()

@@ -4,22 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
-import sys
 import threading
 import time
 
 from claudeteam.runtime.paths import PROJECT_ROOT
 
-THIS_FILE = Path(__file__).resolve()
-SCRIPTS_ROOT = THIS_FILE.parents[3] / "scripts"
-
-# Keep legacy script dependencies importable when module is loaded via src path.
-if str(SCRIPTS_ROOT) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_ROOT))
-
 from claudeteam.runtime.config import TMUX_SESSION
-from feishu_msg import sanitize_agent_message
+from claudeteam.messaging.service import sanitize_agent_message
 from claudeteam.messaging.renderer import render_tmux_prompt
 from claudeteam.runtime.tmux_utils import inject_when_idle, is_agent_idle
 
