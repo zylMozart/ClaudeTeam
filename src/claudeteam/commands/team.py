@@ -60,7 +60,7 @@ def collect_team_status(session=None):
         sys.path.insert(0, _src_dir)
     from claudeteam.cli_adapters import adapter_for_agent
     from config import resolve_model_for_agent, resolve_thinking_for_agent
-    from tmux_utils import is_agent_idle
+    from claudeteam.runtime.tmux_utils import is_agent_idle
 
     rows = []
     for name, info in agents.items():

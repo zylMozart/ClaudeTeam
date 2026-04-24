@@ -90,7 +90,6 @@ class _RouterRuntime:
         agents = self.state.reload_agents(self.team_file)
 
         import slash_commands  # scripts-layer, available via sys.path
-        import tmux_command
         import team_command
         from feishu_msg import _lark_run, cmd_say, sanitize_agent_message, _lark_im_send, CHAT, build_system_card
 
@@ -185,7 +184,7 @@ class _RouterRuntime:
             else:
                 prompt = self._render_tmux("群聊消息", "用户在群里对你说:", content, agent)
 
-        from tmux_utils import inject_when_idle
+        from claudeteam.runtime.tmux_utils import inject_when_idle
         is_user_msg = (sender is None)
         has_pending = self._has_pending(agent)
         if not has_pending:

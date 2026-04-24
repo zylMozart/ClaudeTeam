@@ -620,7 +620,8 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 
     INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
 import os, sys
-from tmux_utils import inject_when_idle
+sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+from claudeteam.runtime.tmux_utils import inject_when_idle
 
 session, agent = sys.argv[1], sys.argv[2]
 ok = inject_when_idle(session, agent, os.environ["INIT_MSG"],

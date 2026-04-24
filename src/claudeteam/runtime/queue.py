@@ -21,7 +21,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 from config import TMUX_SESSION
 from feishu_msg import sanitize_agent_message
 from claudeteam.messaging.renderer import render_tmux_prompt
-from tmux_utils import inject_when_idle, is_agent_idle
+from claudeteam.runtime.tmux_utils import inject_when_idle, is_agent_idle
 
 PENDING_DIR = os.path.join(str(PROJECT_ROOT), "workspace", "shared", ".pending_msgs")
 _queue_lock = threading.Lock()

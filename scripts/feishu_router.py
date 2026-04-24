@@ -19,7 +19,7 @@ from claudeteam.runtime.queue import enqueue_message, has_pending_messages, dequ
 from claudeteam.runtime.paths import runtime_state_dir, legacy_script_state_file, ensure_parent
 from claudeteam.messaging.renderer import render_inbox_text, render_tmux_prompt
 from feishu_msg import _lark_run, cmd_say, sanitize_agent_message
-from tmux_utils import inject_when_idle
+from claudeteam.runtime.tmux_utils import inject_when_idle
 
 _state = RouterState()
 _TEAM_FILE = (os.environ.get("CLAUDETEAM_TEAM_FILE", "").strip()
@@ -84,7 +84,7 @@ def wake_on_deliver(agent_name):
         wake_on_deliver as _wod, wait_cli_ui_ready, agent_has_live_cli)
     from claudeteam.cli_adapters import adapter_for_agent
     from config import TMUX_SESSION
-    import tmux_utils as _tu
+    import claudeteam.runtime.tmux_utils as _tu
     _lsh = os.path.join(_SCRIPT_DIR, "lib", "agent_lifecycle.sh")
     return _wod(
         agent_name, _lsh,

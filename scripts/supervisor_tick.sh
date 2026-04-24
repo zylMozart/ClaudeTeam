@@ -27,8 +27,8 @@ if tmux has-session -t "$SESSION:$AGENT" 2>/dev/null; then
   if [[ -n "$(_lifecycle_pids_for_agent "$AGENT")" ]]; then
     # 路径 1: 窗口在 + 进程活 → 直接喂指令
     python3 - <<PY
-import sys; sys.path.insert(0, "$ROOT/scripts")
-from tmux_utils import inject_when_idle
+import sys; sys.path.insert(0, "$ROOT/src")
+from claudeteam.runtime.tmux_utils import inject_when_idle
 inject_when_idle("$SESSION", "$AGENT", """$TICK_PROMPT""", wait_secs=10, force_after_wait=False)
 PY
     echo "🔔 supervisor_tick: 已喂 tick 指令 (idle_min=$IDLE_MIN)"
@@ -37,8 +37,8 @@ PY
     wake_agent "$AGENT"
     sleep 3
     python3 - <<PY
-import sys; sys.path.insert(0, "$ROOT/scripts")
-from tmux_utils import inject_when_idle
+import sys; sys.path.insert(0, "$ROOT/src")
+from claudeteam.runtime.tmux_utils import inject_when_idle
 inject_when_idle("$SESSION", "$AGENT", """$TICK_PROMPT""", wait_secs=20, force_after_wait=False)
 PY
     echo "🌅 supervisor_tick: wake + 喂 tick (idle_min=$IDLE_MIN)"
@@ -48,8 +48,8 @@ else
   spawn_agent "$AGENT"
   sleep 5
   python3 - <<PY
-import sys; sys.path.insert(0, "$ROOT/scripts")
-from tmux_utils import inject_when_idle
+import sys; sys.path.insert(0, "$ROOT/src")
+from claudeteam.runtime.tmux_utils import inject_when_idle
 inject_when_idle("$SESSION", "$AGENT", """$TICK_PROMPT""", wait_secs=30, force_after_wait=False)
 PY
   echo "🟢 supervisor_tick: spawn + 喂 tick (idle_min=$IDLE_MIN)"

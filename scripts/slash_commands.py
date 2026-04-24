@@ -55,7 +55,7 @@ def _capture_pane(agent: str) -> str:
 def _send_to_agent(session: str, agent: str, msg: str) -> bool:
     target = f"{session}:{agent}"
     try:
-        from tmux_utils import inject_when_idle
+        from claudeteam.runtime.tmux_utils import inject_when_idle
         return inject_when_idle(session, agent, msg, wait_secs=5, force_after_wait=True)
     except Exception:
         pass
