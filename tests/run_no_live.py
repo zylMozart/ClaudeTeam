@@ -47,6 +47,8 @@ TESTS = (
     ("local facts regression", ROOT / "tests" / "regression_local_facts.py"),
     ("router dispatch unit", ROOT / "tests" / "test_router_dispatch.py"),
     ("router cursor unit", ROOT / "tests" / "test_router_cursor.py"),
+    ("slash dispatch unit", ROOT / "tests" / "test_slash_dispatch.py"),
+    ("slash handlers unit", ROOT / "tests" / "test_slash_handlers.py"),
 )
 
 
