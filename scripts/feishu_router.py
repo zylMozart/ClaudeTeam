@@ -18,7 +18,8 @@ from claudeteam.messaging.router.dispatch import classify_event, EventAction
 from claudeteam.runtime.queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
 from claudeteam.runtime.paths import runtime_state_dir, legacy_script_state_file, ensure_parent
 from claudeteam.messaging.renderer import render_inbox_text, render_tmux_prompt
-from feishu_msg import _lark_run, cmd_say, sanitize_agent_message
+from claudeteam.integrations.feishu.client import _lark_run
+from claudeteam.messaging.service import sanitize_agent_message
 from claudeteam.runtime.tmux_utils import inject_when_idle
 
 _state = RouterState()
@@ -148,8 +149,9 @@ def handle_event(event):
     if result.action == EventAction.SLASH:
         _, reply = _slash_dispatch(result.text)
         try:
-            from feishu_msg import _lark_im_send, CHAT, build_system_card
-            chat_id = CHAT()
+            from claudeteam.integrations.feishu.client import _lark_im_send, get_chat_id
+            from claudeteam.messaging.service import build_system_card
+            chat_id = get_chat_id()
             if chat_id:
                 if isinstance(reply, dict) and reply.get("card"):
                     _lark_im_send(chat_id, card=reply["card"])
