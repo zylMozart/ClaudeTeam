@@ -36,6 +36,11 @@ You don't need a smarter agent. You need a Harness — isolated agents, parallel
 
 ClaudeTeam turns Claude Code into a multi-agent system. Each agent runs in its own tmux window, has its own identity and memory, and communicates with teammates through a Feishu group chat. A manager agent coordinates the team — assigns tasks, reviews output, and reports to you.
 
+Current runtime stance (2026-04):
+- tmux is the runtime scheduler and execution boundary.
+- local facts are the default source of truth for inbox/status/log flows.
+- Feishu/Bitable remain explicit remote adapters for visibility and compatibility.
+
 ```
 You (Feishu group chat)
   ↕
@@ -46,7 +51,9 @@ Router (real-time WebSocket events from Feishu)
 │(assigns) │(executes)│(executes)│     (you define the roles)
 └──────────┴──────────┴──────────┘
   ↕
-Feishu Bitable (message storage, status board, kanban)
+Local Facts (`workspace/shared/facts`) as default core state
+  ↕
+Optional Feishu/Bitable/Docs projections
 ```
 
 ---
@@ -58,8 +65,25 @@ Feishu Bitable (message storage, status board, kanban)
 - **Autonomous agents** — Each agent has its own identity, memory, workspace, and task queue
 - **Team management** — `/hire` and `/fire` slash commands to add or remove agents on the fly
 - **Watchdog** — Crashed agents auto-restart, with notifications in Feishu
-- **Kanban board** — Task status synced to Feishu Bitable in real-time
+- **Kanban projection** — Optional task/status projection to Feishu Bitable
 - **Extensible** — Add any role you need: architect, tester, researcher, ops, educator...
+
+---
+
+## Documentation
+
+Use the docs index as the canonical navigation entry:
+
+- [Documentation Index](docs/README.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Operations](docs/OPERATIONS.md)
+- [Development](docs/DEVELOPMENT.md)
+- [Testing](docs/TESTING.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Roadmap](docs/ROADMAP.md)
+- [ADRs](docs/adrs/README.md)
+
+Legacy docs are intentionally kept in place and classified in `docs/README.md` during P0 cleanup.
 
 ---
 

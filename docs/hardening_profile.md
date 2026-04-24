@@ -1,87 +1,100 @@
-# Container Hardening Profile
+# Container Runtime Profiles
 
-The current Docker deployment is a dev/smoke profile.
-It uses root, auto-approve/yolo CLI modes, writable source mounts, and broad
-credential mounts to make multi-agent smoke testing practical.
-
-Production needs a separate hardening profile with a smaller trust boundary.
+The current owner guidance prioritizes container-internal manager availability:
+the manager must be able to start CLIs, dispatch agents, run tests, and repair
+the isolated container environment. Host and credential boundaries still matter,
+but `read_only=true` and non-root are no longer acceptance requirements for the
+TASK-032 live smoke path.
 
 ## Profile Split
 
 | Profile | Purpose | Boundary |
 |---|---|---|
 | `dev-smoke` | Fast rebuilds, CLI login, live Feishu smoke, debugging. | Root is allowed; yolo/full-auto is allowed; source bind mounts may be writable. |
-| `prod-hardened` | Long-running deployment after init has succeeded. | Non-root; read-only source; only workspace/state writable; no broad host credential mounts. |
+| `prod-hardened` | Current live-smoke / production-like validation profile. | Root inside the isolated container; writable rootfs/HOME/cache/state/workspace; no host HOME/socket/privileged/host-network; project-local credentials only. |
 
-## Prod-Hardened Requirements
+## Current Boundary Requirements
 
-1. Run as the image user, not root.
-2. Drop Linux capabilities and keep `no-new-privileges:true`.
-3. Mount source and static config read-only.
-4. Keep writable state in explicit state directories only:
+1. Run with full control inside the container when needed for manager
+   availability and CLI self-repair.
+2. Keep `no-new-privileges:true`, do not use `privileged`, do not use
+   `network_mode: host`, and do not mount `/var/run/docker.sock`.
+3. Do not mount host `~/.claude`, `~/.codex`, `~/.lark-cli`,
+   `~/.local/share/lark-cli`, or host HOME.
+4. Keep writable data in explicit isolated directories:
    - `/app/workspace`
    - `/app/state` or a future `CLAUDETEAM_STATE_DIR`
-   - CLI credential state directories only when that CLI is enabled
-5. Do not mount host `~/.lark-cli`.
-   Feishu credentials should come from a deployment secret or `.env` with mode
-   `0600`, materialized inside the container.
-6. Do not mount host `~/.claude.json` and OAuth files by default.
-   Prefer API key or a project-local credential volume with minimum ownership.
-7. Treat CLI auto-approve/yolo/full-auto as a dev/smoke setting.
-   Production should either disable autonomous shell writes or run agents in a
-   restricted workspace with read-only source.
-8. Runtime files must not be written under `scripts/`.
-   PID files, cursors, queues, and generated runtime config should move to a
-   state directory before this profile can be fully enforced.
+   - `/home/claudeteam/.cache` and `/home/claudeteam/.npm`
+   - project-local credential dirs under `/home/admin/projects/restructure`
+5. Live smoke enables Feishu remote only:
+   `CLAUDETEAM_ENABLE_FEISHU_REMOTE=1` and
+   `CLAUDETEAM_ENABLE_BITABLE_LEGACY=0`.
+6. Runtime must not repair missing Codex by running `npm install -g` or `npx`.
+   The image build must install and verify `@openai/codex` plus its native
+   platform package, and the runtime launcher must fail before Codex reaches
+   its own install-remediation path.
 
 ## Current Blockers
 
-The present entrypoint still writes or expects mutable files under paths that
-are normally source-controlled:
+The default `docker-compose.yml` remains a dev/smoke profile.
+`docker-compose.prod-hardened.yml` is now the isolated full-control profile used
+for TASK-032 validation after the owner clarified that manager availability has
+priority over read-only rootfs.
 
-- `scripts/runtime_config.json`
-- `scripts/.router.pid`
-- `scripts/.router.cursor`
-- `scripts/.kanban_sync.pid`
-- `scripts/.watchdog.pid`
-- generated CLI auto-approve files under `$HOME`
+The router/watchdog runtime files have been moved to state:
 
-Because of that, a strict read-only `/app/scripts` production container is a
-target architecture, not a fully compatible switch today.
+- `/app/state/router.pid`
+- `/app/state/router.cursor`
+- `/app/state/watchdog.pid`
+- `/app/state/kanban_sync.pid` when explicit legacy kanban is enabled
+- `/app/state/tmux_intercept.log`
+- `/app/state/router_messages/`
+
+Legacy `scripts/.router.pid` and `scripts/.router.cursor` are read only for
+compatibility if present; default writes go to `CLAUDETEAM_STATE_DIR`.
+Entrypoint/watchdog gate live router startup behind
+`CLAUDETEAM_ENABLE_FEISHU_REMOTE=1` and legacy kanban startup behind
+`CLAUDETEAM_ENABLE_BITABLE_LEGACY=1`.
+
+Codex launch is guarded by `scripts/lib/run_codex_cli.sh`. In the container,
+`CLAUDETEAM_CODEX_REQUIRE_NPM_PACKAGE=1` requires the build-time npm package and
+native optional dependency before invoking `codex`.
 
 ## Proposed Compose Shape
 
-This is the intended production boundary after state-dir support is in place:
+The concrete profile is `docker-compose.prod-hardened.yml`:
 
-```yaml
-services:
-  team:
-    build: .
-    user: "claudeteam"
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp
-      - /home/claudeteam/.cache
-      - /home/claudeteam/.claude
-      - /home/claudeteam/.local
-    environment:
-      - HOME=/home/claudeteam
-      - CLAUDETEAM_STATE_DIR=/app/state
-      - CLAUDETEAM_LAZY_MODE=on
-    volumes:
-      - ./team.json:/app/team.json:ro
-      - ./scripts:/app/scripts:ro
-      - ./docs:/app/docs:ro
-      - ./config:/app/config:ro
-      - ./templates:/app/templates:ro
-      - ./agents:/app/agents:ro
-      - ./workspace:/app/workspace:rw
-      - ./runtime_state:/app/state:rw
+```bash
+cd /home/admin/projects/restructure
+mkdir -p state workspace agents .lark-cli-credentials .claude-credentials \
+  .codex-credentials .kimi-credentials .gemini-credentials .qwen-credentials
+touch scripts/runtime_config.json
+chmod 700 .lark-cli-credentials .claude-credentials .codex-credentials \
+  .kimi-credentials .gemini-credentials .qwen-credentials
+chmod 640 team.json scripts/runtime_config.json
+chmod 770 state workspace agents
+
+COMPOSE_PROJECT_NAME=claudeteam-restructure-live \
+CLAUDETEAM_ENABLE_FEISHU_REMOTE=1 \
+CLAUDETEAM_ENABLE_BITABLE_LEGACY=0 \
+  docker compose -f docker-compose.prod-hardened.yml \
+  --profile prod-hardened config --quiet
+
+COMPOSE_PROJECT_NAME=claudeteam-restructure-live \
+CLAUDETEAM_ENABLE_FEISHU_REMOTE=1 \
+CLAUDETEAM_ENABLE_BITABLE_LEGACY=0 \
+  docker compose -f docker-compose.prod-hardened.yml \
+  --profile prod-hardened up -d --build team-prod-hardened
 ```
+
+This profile does not mount host `~/.claude`, `~/.claude.json`, `~/.lark-cli`,
+or `~/.local/share/lark-cli`. Project-local credential directories are the only
+writable credential mounts.
+
+For lark-cli keychain profiles, mount project-local
+`.lark-cli-credentials/local-share` read-only to
+`/home/claudeteam/.local/share/lark-cli`. For Claude OAuth, mount project-local
+`.claude-credentials/.claude.json` to `/home/claudeteam/.claude.json`.
 
 ## Validation Commands
 
@@ -91,6 +104,11 @@ Dev/smoke no-live validation:
 cd /home/admin/projects/restructure
 python3 tests/run_no_live.py
 docker compose config --quiet
+docker compose -f docker-compose.prod-hardened.yml --profile prod-hardened config --quiet
+docker inspect claudeteam-restructure-live-team-prod-hardened-1 \
+  --format 'user={{.Config.User}} readonly={{.HostConfig.ReadonlyRootfs}} privileged={{.HostConfig.Privileged}} network={{.HostConfig.NetworkMode}} health={{.State.Health.Status}}'
+docker exec claudeteam-restructure-live-team-prod-hardened-1 \
+  sh -lc 'ps -eo pid,args | grep -E "[c]odex|[f]eishu_router.py|[w]atchdog.py"; ps -eo pid,args | grep -E "[k]anban_sync" || true; ls -la /app/state; touch /app/.write_test /app/scripts/.write_test /home/claudeteam/.cache/write_test /app/state/write_test /app/workspace/write_test && rm -f /app/.write_test /app/scripts/.write_test /home/claudeteam/.cache/write_test /app/state/write_test /app/workspace/write_test'
 ```
 
 Container no-live validation:
@@ -107,7 +125,9 @@ Credential boundary check without printing secrets:
 cd /home/admin/projects/restructure
 python3 - <<'PY'
 from pathlib import Path
-for p in [".env", ".codex-credentials", ".kimi-credentials", ".gemini-credentials"]:
+for p in [".env", ".lark-cli-credentials", ".claude-credentials",
+          ".codex-credentials", ".kimi-credentials", ".gemini-credentials",
+          ".qwen-credentials", ".live-smoke-credentials", "state"]:
     path = Path(p)
     if path.exists():
         print(f"{p}: mode={oct(path.stat().st_mode & 0o777)}")
@@ -122,8 +142,10 @@ PY
 
 ## Operator Rule
 
-Do not present a root/yolo/full-auto container as production hardened.
-It is acceptable for dev and smoke only.
+Do not describe this profile as host-hardened. It is an isolated, full-control
+container profile: powerful inside the container, bounded at the host and
+credential mount layer.
 
-Production acceptance requires a follow-up code change that moves runtime state
-out of `scripts/` and lets the entrypoint consume `CLAUDETEAM_STATE_DIR`.
+Acceptance requires manager Codex alive, router/watchdog alive, no `kanban_sync`
+by default, no runtime npm/npx repair prompt, no secret leakage, and QA evidence
+for real boss/test-user live smoke plus tmux raw cleanliness.
