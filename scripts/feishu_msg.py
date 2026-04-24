@@ -20,13 +20,21 @@
 状态:   进行中 | 已完成 | 阻塞 | 待命
 类型:   状态更新 | 任务日志 | 消息发出 | 消息收到 | 产出记录 | 阻塞上报
 """
-import sys, os, json, time, subprocess
+import sys, os, json, time
 
-sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
-from message_renderer import render_feishu_markdown, render_inbox_text, render_log_text
+_SCRIPT_DIR = os.path.dirname(__file__)
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from claudeteam.integrations.feishu import client as _feishu_client
+from claudeteam.messaging import service as _message_service
+from claudeteam.commands import feishu_msg as _feishu_commands
+from config import AGENTS, TMUX_SESSION, load_runtime_config
+from claudeteam.messaging.renderer import render_inbox_text
 from tmux_utils import inject_when_idle
-import local_facts
+from claudeteam.storage import local_facts
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
 
@@ -76,176 +84,83 @@ def extract_text(v):
 
 
 def sanitize_agent_message(text: str) -> str:
-    """Remove Codex CLI spawn command fragments accidentally mixed into messages."""
-    return render_inbox_text(text)
+    """Compatibility wrapper for messaging.service.sanitize_agent_message."""
+    return _message_service.sanitize_agent_message(text)
 
 
 # ── lark-cli 封装 ────────────────────────────────────────────
 
 def _lark_run(args, timeout=30):
-    """执行 lark-cli 命令，返回 data 层 JSON（失败返回 None）。"""
-    r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
-    if r.returncode != 0:
-        print(f"  ⚠️ lark-cli 失败: {r.stderr.strip()[:200]}")
-        return None
-    if not r.stdout.strip():
-        return {}
-    try:
-        full = json.loads(r.stdout)
-        return full.get("data", full)
-    except json.JSONDecodeError:
-        return None
+    """Compatibility wrapper for integrations.feishu.client._lark_run."""
+    return _feishu_client._lark_run(args, timeout=timeout)
 
 
 def _check_lark_result(result, action, *, fatal=True):
-    """统一校验 _lark_* 调用返回值（ADR: lark_result_check）。
-
-    参数
-    ----
-    result : _lark_run / _lark_im_send / _lark_base_* 的返回值
-             约定 None = lark-cli 侧失败，其他 (含 {}) = 成功
-    action : 人类可读的动作描述，形如 "<动作> <from>→<to>"
-             例如 "状态写入 manager→进行中"、"群通知 coder→*"
-    fatal  : True  → 失败时打印 ❌ 错误 + sys.exit(1)
-             False → 失败时打印 ⚠️ 警告，返回 False
-
-    返回
-    ----
-    True  : 成功（result is not None）
-    False : 失败且 fatal=False
-
-    调用方如需 "已写入 A 但 B 失败" 的 exit 2 等混合语义，应 fatal=False
-    拿到返回值后自行 sys.exit(2)。helper 不负责自定义退出码。
-    """
-    if result is not None:
-        return True
-    prefix = "❌" if fatal else "⚠️"
-    print(f"{prefix} lark-cli 调用失败: {action}", file=sys.stderr)
-    if fatal:
-        sys.exit(1)
-    return False
+    """Compatibility wrapper for integrations.feishu.client._check_lark_result."""
+    return _feishu_client._check_lark_result(result, action, fatal=fatal)
 
 
 def _lark_im_send(chat_id, content=None, markdown=None, image=None, card=None):
-    """通过 lark-cli 向群组发送消息。"""
-    args = ["im", "+messages-send", "--chat-id", chat_id, "--as", "bot"]
-    if markdown:
-        args += ["--markdown", markdown]
-    elif image:
-        args += ["--image", image]
-    elif card:
-        args += ["--content", json.dumps(card, ensure_ascii=False), "--msg-type", "interactive"]
-    elif content:
-        args += ["--text", content]
-    return _lark_run(args)
+    """Compatibility wrapper for integrations.feishu.client._lark_im_send."""
+    return _feishu_client._lark_im_send_with_run(
+        _lark_run,
+        chat_id,
+        content,
+        markdown,
+        image,
+        card,
+    )
 
 
 def _lark_base_create(base_token, table_id, fields_json):
-    """向 Bitable 写入一条记录，返回响应 JSON。"""
-    payload = json.dumps({"fields": list(fields_json.keys()),
-                          "rows": [list(fields_json.values())]},
-                         ensure_ascii=False)
-    d = _lark_run(["base", "+record-batch-create",
-                   "--base-token", base_token, "--table-id", table_id,
-                   "--json", payload, "--as", "bot"])
-    return d
+    """Compatibility wrapper for integrations.feishu.client._lark_base_create."""
+    return _feishu_client._lark_base_create_with_run(
+        _lark_run,
+        base_token,
+        table_id,
+        fields_json,
+    )
 
 
-# 服务器侧 /records/search 状态码:
-#   800080303 "unsafe_operation_blocked" = 端点在当前品牌(目前仅国际版 Lark)
-#   还未放出,再多重试也没用,必须走客户端过滤兜底。
-_BITABLE_SEARCH_PATH_BLOCKED_CODE = 800080303
+_BITABLE_SEARCH_PATH_BLOCKED_CODE = _feishu_client._BITABLE_SEARCH_PATH_BLOCKED_CODE
 
 
 def _lark_base_search(base_token, table_id, search_json):
-    """单次调用 +record-search。返回三元 status:
-
-        ("ok", data_dict)    成功,data_dict 形如 {data, fields, record_id_list}
-        ("blocked", None)    服务器返回 800080303 (端点未放出,仅国际版 Lark)
-        ("error",   msg)     其他失败,msg 是 stderr 截断后的文本
-
-    刻意**不**走 _lark_run —— 调用方需要区分"端点被平台屏蔽"和"一般失败"
-    来决定是否 fallback 到 _lark_base_list + 客户端过滤,而 _lark_run 把
-    所有失败都归并成 None,无从辨别。
-    """
-    args = LARK_CLI + ["base", "+record-search",
-                       "--base-token", base_token, "--table-id", table_id,
-                       "--json", json.dumps(search_json, ensure_ascii=False),
-                       "--as", "bot"]
-    r = subprocess.run(args, capture_output=True, text=True, timeout=30)
-    if r.returncode == 0:
-        try:
-            return "ok", json.loads(r.stdout).get("data", {})
-        except json.JSONDecodeError:
-            return "error", (r.stdout or "")[:200]
-    try:
-        err = json.loads(r.stderr).get("error") or {}
-        if err.get("code") == _BITABLE_SEARCH_PATH_BLOCKED_CODE:
-            return "blocked", None
-        msg = err.get("message") or r.stderr.strip()
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        msg = r.stderr.strip()
-    return "error", msg[:200]
+    """Compatibility wrapper for integrations.feishu.client._lark_base_search."""
+    return _feishu_client._lark_base_search(base_token, table_id, search_json)
 
 
 def _lark_base_update(base_token, table_id, record_ids, patch):
-    """批量更新 Bitable 记录。"""
-    payload = json.dumps({"record_id_list": record_ids, "patch": patch},
-                         ensure_ascii=False)
-    return _lark_run(["base", "+record-batch-update",
-                      "--base-token", base_token, "--table-id", table_id,
-                      "--json", payload, "--as", "bot"])
+    """Compatibility wrapper for integrations.feishu.client._lark_base_update."""
+    return _feishu_client._lark_base_update_with_run(
+        _lark_run,
+        base_token,
+        table_id,
+        record_ids,
+        patch,
+    )
 
 
 def _lark_base_list(base_token, table_id, limit=20, offset=0):
-    """列出 Bitable 记录（支持 offset 翻页）。"""
-    args = ["base", "+record-list",
-            "--base-token", base_token, "--table-id", table_id,
-            "--limit", str(limit), "--as", "bot"]
-    if offset:
-        args += ["--offset", str(offset)]
-    return _lark_run(args)
+    """Compatibility wrapper for integrations.feishu.client._lark_base_list."""
+    return _feishu_client._lark_base_list_with_run(
+        _lark_run,
+        base_token,
+        table_id,
+        limit=limit,
+        offset=offset,
+    )
 
 # ── 消息卡片构建 ──────────────────────────────────────────────
 
 def build_system_card(content: str, template: str = "grey") -> dict:
-    """系统消息卡片（给 slash 命令的文本回显用），不带 sender · role 标签。"""
-    content = render_feishu_markdown(content)
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": template,
-            "title": {"tag": "plain_text", "content": "🛠️ 系统消息"},
-        },
-        "elements": [{"tag": "markdown", "content": content}],
-    }
+    """Compatibility wrapper for messaging.service.build_system_card."""
+    return _message_service.build_system_card(content, template=template)
 
 
 def build_card(from_agent, to_agent, content, priority="中"):
-    """构建飞书消息卡片 JSON"""
-    content = render_feishu_markdown(content)
-    info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})
-    emoji = info["emoji"]
-    role  = info["role"]
-    color = info.get("color", "grey")
-
-    if to_agent and to_agent != "*":
-        title = f"{emoji} {from_agent} · {role} → @{to_agent}"
-    else:
-        title = f"{emoji} {from_agent} · {role}"
-
-    pri_tag = {"高": "🔴 ", "中": "", "低": "🟢 "}.get(priority, "")
-
-    return {
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "template": color,
-            "title": {"tag": "plain_text", "content": title}
-        },
-        "elements": [
-            {"tag": "markdown", "content": f"{pri_tag}{content}"}
-        ]
-    }
+    """Compatibility wrapper for messaging.service.build_card."""
+    return _message_service.build_card(from_agent, to_agent, content, priority=priority)
 
 # ── 群组发消息 ─────────────────────────────────────────────────
 
@@ -273,9 +188,8 @@ def post_to_group(from_agent, to_agent, content, priority="中"):
 # ── 工作空间日志 ───────────────────────────────────────────────
 
 def ws_log(agent, log_type, content, ref=""):
-    """Write local workspace audit log for core state/evidence."""
-    content = render_log_text(content)
-    local_facts.append_log(agent, log_type, content, ref)
+    """Compatibility wrapper for messaging.service.ws_log."""
+    return _message_service.ws_log(agent, log_type, content, ref=ref)
 
 # ── 命令：say（直接发群消息，用于回复用户）──────────────────────
 
@@ -391,7 +305,7 @@ def _notify_agent_tmux(to_agent, from_agent, message):
         if ok:
             return True
         try:
-            from msg_queue import enqueue_message
+            from claudeteam.runtime.queue import enqueue_message
             enqueue_message(
                 to_agent, notify_text,
                 f"notify_{to_agent}_{int(time.time() * 1000)}",
@@ -405,10 +319,13 @@ def _notify_agent_tmux(to_agent, from_agent, message):
 
 
 def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
-    message = sanitize_agent_message(message)
-    actual_message = f"[{task_id}] {message}" if task_id else message
-    local_id = local_facts.append_message(
-        to_agent, from_agent, actual_message, priority, task_id=task_id)
+    local_id, actual_message = _message_service.record_local_send(
+        to_agent,
+        from_agent,
+        message,
+        priority=priority,
+        task_id=task_id,
+    )
     rid = ""
     if legacy_bitable_enabled():
         rid = _project_message_to_bitable(
@@ -436,17 +353,18 @@ def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
 
 def cmd_direct(to_agent, from_agent, message):
     """直连发消息：写入收件箱，自动抄送 manager。"""
-    message = sanitize_agent_message(message)
-    local_id = local_facts.append_message(to_agent, from_agent, message, "中")
+    local_result = _message_service.record_local_direct(to_agent, from_agent, message)
+    message = local_result["message"]
+    local_id = local_result["local_id"]
+    cc_local_id = local_result["cc_local_id"]
+    cc_content = local_result["cc_content"]
+
     rid = ""
     if legacy_bitable_enabled():
         rid = _project_message_to_bitable(to_agent, from_agent, message, "中", local_id)
 
     cc_rid = None
-    cc_local_id = None
-    if to_agent != "manager" and from_agent != "manager":
-        cc_content = f"[抄送] {from_agent}→{to_agent}: {message}"
-        cc_local_id = local_facts.append_message("manager", from_agent, cc_content, "低")
+    if cc_local_id:
         if legacy_bitable_enabled():
             cc_rid = _project_message_to_bitable(
                 "manager", from_agent, cc_content, "低", cc_local_id)
@@ -603,28 +521,13 @@ def _search_records(base_token, table_id, keyword, search_fields):
 
 
 def cmd_inbox(agent_name):
-    unread = local_facts.list_messages(agent_name, unread_only=True)
-    if not unread:
-        print(f"📭 {agent_name} 暂无未读消息")
-        return
-    print(f"📬 {agent_name} 有 {len(unread)} 条未读消息:\n")
-    for rec in unread:
-        rid = rec["local_id"]
-        t = rec.get("created_at", 0)
-        ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
-        frm = rec.get("from", "?")
-        pri = rec.get("priority", "?")
-        content = sanitize_agent_message(rec.get("content", ""))
-        print(f"── [{ts}] 来自 {frm} [优先级:{pri}]")
-        print(f"   {content}")
-        print(f"   标记已读: python3 scripts/feishu_msg.py read {rid}")
-        print()
+    """Compatibility wrapper for messaging.service.cmd_inbox."""
+    return _message_service.cmd_inbox(agent_name)
 
 # ── 命令：read ────────────────────────────────────────────────
 
 def cmd_read(record_id):
-    if local_facts.mark_read(record_id):
-        print(f"✅ 已标记本地已读: {record_id}")
+    if _message_service.mark_local_read(record_id):
         return
     if legacy_bitable_enabled():
         d = _lark_base_update(BT(), MT(), [record_id], {"已读": True})
@@ -637,7 +540,7 @@ def cmd_read(record_id):
 # ── 命令：status ──────────────────────────────────────────────
 
 def cmd_status(agent_name, status, task, blocker=""):
-    local_facts.upsert_status(agent_name, status, task, blocker)
+    _message_service.upsert_local_status(agent_name, status, task, blocker)
 
     projection_ok = True
     if legacy_bitable_enabled():
@@ -680,84 +583,44 @@ def cmd_status(agent_name, status, task, blocker=""):
 # ── 命令：log ─────────────────────────────────────────────────
 
 def cmd_log(agent_name, log_type, content, ref=""):
-    local_id = local_facts.append_log(agent_name, log_type, render_log_text(content), ref)
-    print(f"✅ [{log_type}] 已写入 {agent_name} 本地工作空间日志 [local_id: {local_id}]")
+    """Compatibility wrapper for messaging.service.cmd_log."""
+    return _message_service.cmd_log(agent_name, log_type, content, ref=ref)
 
 # ── 命令：workspace ────────────────────────────────────────────
 
 def cmd_workspace(agent_name):
-    items = local_facts.list_logs(agent_name, limit=20)
-    print(f"📁 {agent_name} 本地工作空间日志 (最近 {len(items)} 条):\n")
-    for rec in items:
-        t = rec.get("created_at", 0)
-        ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
-        lt = rec.get("type", "?")
-        c = rec.get("content", "")
-        ref = rec.get("ref", "")
-        print(f"  [{ts}] {lt:8} {c[:10000]}")
-        if ref:
-            print(f"           → {ref}")
+    """Compatibility wrapper for messaging.service.cmd_workspace."""
+    return _message_service.cmd_workspace(agent_name)
 
 # ── main ──────────────────────────────────────────────────────
 
 def main():
     args = sys.argv[1:]
-    if not args: print(__doc__); sys.exit(0)
-    cmd = args[0]
-    if cmd == "say":
-        say_args = list(args[1:])
-        image_path = ""
-        if "--image" in say_args:
-            idx = say_args.index("--image")
-            image_path = say_args[idx + 1] if idx + 1 < len(say_args) else ""
-            say_args = [a for i, a in enumerate(say_args) if i != idx and i != idx + 1]
-        if len(say_args) < 1:
-            print("用法: say <发件人> [\"<消息>\"] [--image <路径>]"); sys.exit(1)
-        from_agent = say_args[0]
-        message    = say_args[1] if len(say_args) > 1 else ""
-        cmd_say(from_agent, message, image_path)
-    elif cmd == "send":
-        if len(args) < 4: print("用法: send <收件人> <发件人> \"<消息>\" [优先级] [--task <task_id>] [--file <路径>]"); sys.exit(1)
-        rest = list(args[1:])
-        task_id = ""
-        file_path = ""
-        for flag in ("--task", "--file"):
-            if flag in rest:
-                idx = rest.index(flag)
-                if idx + 1 < len(rest):
-                    val = rest[idx + 1]
-                    rest.pop(idx + 1)
-                    rest.pop(idx)
-                    if flag == "--task": task_id = val
-                    else: file_path = val
-        to_agent, from_agent = rest[0], rest[1]
+    if not args:
+        print(__doc__)
+        sys.exit(0)
+
+    def _handle_send(to_agent, from_agent, message, priority="中", task_id="", file_path=""):
         if file_path:
-            with open(file_path, encoding="utf-8") as _f:
-                message = _f.read().strip()
-        else:
-            message = rest[2] if len(rest) > 2 else ""
-        priority = rest[3] if len(rest) > 3 else "中"
-        cmd_send(to_agent, from_agent, message, priority, task_id)
-    elif cmd == "direct":
-        if len(args) < 4: print("用法: direct <收件人> <发件人> '<消息>'"); sys.exit(1)
-        cmd_direct(args[1], args[2], args[3])
-    elif cmd == "inbox":
-        if len(args) < 2: print("用法: inbox <agent>"); sys.exit(1)
-        cmd_inbox(args[1])
-    elif cmd == "read":
-        if len(args) < 2: print("用法: read <record_id>"); sys.exit(1)
-        cmd_read(args[1])
-    elif cmd == "status":
-        if len(args) < 4: print("用法: status <agent> <状态> \"<任务>\" [\"<阻塞>\"]"); sys.exit(1)
-        cmd_status(args[1], args[2], args[3], args[4] if len(args) > 4 else "")
-    elif cmd == "log":
-        if len(args) < 4: print("用法: log <agent> <类型> \"<内容>\" [\"<ref>\"]"); sys.exit(1)
-        cmd_log(args[1], args[2], args[3], args[4] if len(args) > 4 else "")
-    elif cmd == "workspace":
-        if len(args) < 2: print("用法: workspace <agent>"); sys.exit(1)
-        cmd_workspace(args[1])
-    else:
-        print(f"未知命令: {cmd}"); sys.exit(1)
+            with open(file_path, encoding="utf-8") as fh:
+                message = fh.read().strip()
+        return cmd_send(to_agent, from_agent, message, priority, task_id)
+
+    handlers = {
+        "say": cmd_say,
+        "send": _handle_send,
+        "direct": cmd_direct,
+        "inbox": cmd_inbox,
+        "read": cmd_read,
+        "status": cmd_status,
+        "log": cmd_log,
+        "workspace": cmd_workspace,
+    }
+    result = _feishu_commands.run(args, handlers=handlers)
+    if result.exit_code != 0:
+        if result.message:
+            print(result.message)
+        sys.exit(result.exit_code)
 
 if __name__ == "__main__":
     main()

@@ -18,11 +18,15 @@
 """
 import sys, os, json, time, re, subprocess
 
-sys.path.insert(0, os.path.dirname(__file__))
+_SCRIPT_DIR = os.path.dirname(__file__)
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 from config import (PROJECT_ROOT, load_runtime_config, save_runtime_config,
                     LARK_CLI, resolve_model_for_agent, InvalidModelError,
                     ALLOWED_MODELS)
-from cli_adapters import adapter_for_agent
+from claudeteam.cli_adapters import adapter_for_agent
 
 # ── 基础工具 ──────────────────────────────────────────────────
 

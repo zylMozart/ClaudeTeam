@@ -21,6 +21,7 @@ REQUIRED_FILES = [
     "scripts/slash_commands.py",
     "scripts/tmux_utils.py",
     "scripts/cli_adapters/resolve.py",
+    "src/claudeteam/cli_adapters/resolve.py",
     "scripts/task_tracker.py",
     "scripts/memory_manager.py",
     "scripts/kanban_sync.py",

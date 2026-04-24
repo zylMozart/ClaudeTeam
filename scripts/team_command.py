@@ -55,7 +55,10 @@ def collect_team_status(session=None):
     # 延迟导入避免循环依赖
     import sys
     sys.path.insert(0, _SCRIPTS_DIR)
-    from cli_adapters import adapter_for_agent
+    _src_dir = os.path.join(_SCRIPTS_DIR, "..", "src")
+    if _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
+    from claudeteam.cli_adapters import adapter_for_agent
     from config import resolve_model_for_agent, resolve_thinking_for_agent
     from tmux_utils import is_agent_idle
 

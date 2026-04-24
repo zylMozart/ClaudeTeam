@@ -14,12 +14,18 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from message_renderer import render_feishu_markdown
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from claudeteam.messaging.renderer import render_feishu_markdown
 
 PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
                     Path(__file__).resolve().parent.parent)

@@ -15,10 +15,19 @@
   Python 3.6+, lark-cli, runtime_config.json（先运行 setup.py）
 """
 import sys, os, json, time, subprocess, atexit, signal
-from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(__file__))
+_SCRIPT_DIR = os.path.dirname(__file__)
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from claudeteam.commands import kanban_sync as _kanban_commands
+from claudeteam.commands import kanban_daemon as _kanban_daemon
+from claudeteam.integrations.feishu import kanban_projection as _kanban_projection
+from claudeteam.integrations.feishu import kanban_service as _kanban_service
 from config import load_runtime_config, save_runtime_config, LARK_CLI
+from claudeteam.runtime.paths import legacy_script_state_file, runtime_state_file
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")
 
@@ -45,20 +54,15 @@ def load_tasks():
         return json.load(f)
 
 def extract_text(v):
-    if isinstance(v, list): return v[0].get("text", "") if v else ""
-    return str(v) if v else ""
+    return _kanban_projection.extract_text(v)
 
 txt = extract_text
 
 def to_ms(iso_str):
-    try:
-        return int(datetime.fromisoformat(iso_str).timestamp() * 1000)
-    except Exception:
-        return 0
+    return _kanban_projection.to_ms(iso_str)
 
 def chunks(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i+n]
+    return _kanban_projection.chunks(lst, n)
 
 # ── Bitable 操作（lark-cli）──────────────────────────────────
 
@@ -71,30 +75,7 @@ def fetch_all_agent_status(cfg):
     None  : 查询失败 —— 调用方应跳过本轮同步,避免用空 dict 覆盖掉上一轮的
             真实状态 (ADR silent_swallow_remaining P0 ②)
     """
-    bt = cfg["bitable_app_token"]
-    st = cfg["sta_table_id"]
-    d = _lark(["base", "+record-list", "--base-token", bt,
-               "--table-id", st, "--limit", "100", "--as", "bot"],
-              label="拉取状态表")
-    if d is None:
-        print("   🚨 状态表查询失败,本轮同步放弃以保留上一轮数据", file=sys.stderr)
-        return None
-    result = {}
-    seen = set()
-    for item in d.get("items", []):
-        f = item.get("fields", {})
-        agent = txt(f.get("Agent名称", ""))
-        if agent and agent not in seen:
-            seen.add(agent)
-            updated_ms = f.get("更新时间", 0)
-            if isinstance(updated_ms, list):
-                updated_ms = updated_ms[0].get("value", 0) if updated_ms else 0
-            result[agent] = {
-                "状态":     txt(f.get("状态", "")),
-                "当前任务": txt(f.get("当前任务", "")),
-                "更新时间": updated_ms,
-            }
-    return result
+    return _kanban_service.fetch_all_agent_status_with_run(cfg, _lark)
 
 def get_all_kanban_record_ids(cfg):
     """获取看板表所有记录 ID。
@@ -106,13 +87,7 @@ def get_all_kanban_record_ids(cfg):
                 空 list 会被当成"没东西可删"从而让旧记录残留,新记录叠加
                 写入导致看板卡片重复 (ADR silent_swallow_remaining P0 ③)
     """
-    bt, kt = cfg["bitable_app_token"], cfg["kanban_table_id"]
-    d = _lark(["base", "+record-list", "--base-token", bt,
-               "--table-id", kt, "--limit", "500", "--as", "bot"],
-              label="获取看板记录")
-    if d is None:
-        return None
-    return [item["record_id"] for item in d.get("items", [])]
+    return _kanban_service.get_all_kanban_record_ids_with_run(cfg, _lark)
 
 BITABLE_BATCH_DELETE_LIMIT = 500  # Feishu bitable v1 batch_delete 单次上限
 
@@ -135,27 +110,11 @@ def delete_all_kanban_records(cfg):
     任一批失败会静默继续,do_sync 紧接着 bitable_batch_create 写新数据 →
     旧+新并存 → 看板卡片重复。现在返回 True/False 让上游决定。
     """
-    ids = get_all_kanban_record_ids(cfg)
-    # ADR silent_swallow_remaining P0 ③: None 表示查询失败,必须跳过整轮
-    if ids is None:
-        print("   🚨 获取看板记录列表失败,跳过本轮以保留旧数据", file=sys.stderr)
-        return False
-    if not ids:
-        return True
-    bt, kt = cfg["bitable_app_token"], cfg["kanban_table_id"]
-    path = f"/open-apis/bitable/v1/apps/{bt}/tables/{kt}/records/batch_delete"
-
-    for batch_start in range(0, len(ids), BITABLE_BATCH_DELETE_LIMIT):
-        batch = ids[batch_start:batch_start + BITABLE_BATCH_DELETE_LIMIT]
-        payload = json.dumps({"records": batch}, ensure_ascii=False)
-        d = _lark(["api", "POST", path, "--data", payload, "--as", "bot"],
-                  label=f"批删记录 {batch_start+1}-{batch_start+len(batch)}/{len(ids)}")
-        if d is None:
-            print(f"   🚨 批删记录失败 (batch {batch_start+1}-"
-                  f"{batch_start+len(batch)}/{len(ids)}),跳过本轮 sync 写入,"
-                  f"保留旧看板状态等下一轮")
-            return False
-    return True
+    return _kanban_service.delete_all_kanban_records_with_run(
+        cfg,
+        _lark,
+        batch_delete_limit=BITABLE_BATCH_DELETE_LIMIT,
+    )
 
 def bitable_batch_create(cfg, records_json):
     """批量写入看板记录。
@@ -167,100 +126,28 @@ def bitable_batch_create(cfg, records_json):
             (ADR silent_swallow_remaining P0 ①: 原版丢弃返回值导致部分写入
             失败时看板显示"✅ 看板已同步"但实际缺数据,用户看到看板一直少行)
     """
-    bt, kt = cfg["bitable_app_token"], cfg["kanban_table_id"]
-    d = _lark(["base", "+record-batch-create", "--base-token", bt,
-               "--table-id", kt, "--json", records_json, "--as", "bot"],
-              label="批量写入看板")
-    if d is None:
-        print("   🚨 看板批写失败,跳过本轮剩余批次,等下一轮重刷",
-              file=sys.stderr)
-        return False
-    return True
+    return _kanban_service.bitable_batch_create_with_run(cfg, records_json, _lark)
 
 # ── 命令：init ────────────────────────────────────────────────
 
 def cmd_init():
     cfg = load_cfg()
-
-    if cfg.get("kanban_table_id"):
-        print(f"⚠️  项目看板表已存在: {cfg['kanban_table_id']}，跳过创建")
-        return
-
-    bt = cfg["bitable_app_token"]
-    fields = json.dumps([
-        {"name": "任务ID", "type": "text"},
-        {"name": "标题", "type": "text"},
-        {"name": "状态", "type": "text"},
-        {"name": "负责人", "type": "text"},
-        {"name": "Agent当前状态", "type": "text"},
-        {"name": "Agent当前任务", "type": "text"},
-        {"name": "任务更新时间", "type": "date_time"},
-        {"name": "Agent状态更新", "type": "date_time"},
-    ], ensure_ascii=False)
-    d = _lark(["base", "+table-create", "--base-token", bt,
-               "--name", "项目看板", "--fields", fields, "--as", "bot"],
-              label="创建看板表")
-    # +table-create 返回 data.table.id
-    tid = ""
-    if d:
-        if isinstance(d.get("table"), dict):
-            tid = d["table"].get("id", d["table"].get("table_id", ""))
-        else:
-            tid = d.get("table_id", "")
-    if not tid:
-        print(f"❌ 创建项目看板表失败: {d}"); sys.exit(1)
-
-    cfg["kanban_table_id"] = tid
-    save_cfg(cfg)
-    print(f"✅ 项目看板表已创建: {tid}")
+    ok, payload = _kanban_service.ensure_kanban_table_with_run(cfg, _lark, save_cfg)
+    if not ok:
+        print(f"❌ 创建项目看板表失败: {payload}")
+        sys.exit(1)
 
 # ── 命令：sync ────────────────────────────────────────────────
 
 def do_sync(cfg):
     tasks = load_tasks().get("tasks", [])
-    # ADR silent_swallow_remaining P0 ②: 状态查询失败 → None, 跳过本轮,
-    # 避免用空 dict 覆盖掉上一轮的真实 agent 状态
-    agent_status = fetch_all_agent_status(cfg)
-    if agent_status is None:
-        print("  ─ 跳过本轮(状态表查询失败)")
-        return
-    # reviewer CR#2 (波次2): delete 失败必须跳过写入,否则旧+新并存导致看板
-    # 卡片重复。宁要上一轮的旧状态,不要一半一半的破损状态。
-    if not delete_all_kanban_records(cfg):
-        print("  ─ 跳过本轮看板写入(删除失败,保留旧状态)")
-        return
-
-    if not tasks:
-        print("  ─ 无任务记录")
-        return
-
-    field_names = ["任务ID", "标题", "状态", "负责人", "Agent当前状态", "Agent当前任务"]
-    rows = []
-    for task in tasks:
-        assignee = task["assignee"]
-        ast = agent_status.get(assignee, {})
-        rows.append([
-            task["task_id"],
-            task["title"],
-            task["status"],
-            assignee,
-            ast.get("状态", "未知"),
-            ast.get("当前任务", ""),
-        ])
-
-    # ADR silent_swallow_remaining P0 ①: 任一批写入失败必须退出循环,不能
-    # 继续写下一批(数据已经不一致了,再写只会让看板更错乱)。下一轮 60s
-    # 后 do_sync 会重新全量 delete + create,自动修复。
-    written = 0
-    for batch in chunks(rows, 500):
-        payload = json.dumps({"fields": field_names, "rows": batch}, ensure_ascii=False)
-        if not bitable_batch_create(cfg, payload):
-            print(f"  ─ 看板部分写入失败 (已写 {written}/{len(rows)}),"
-                  f"等下一轮全量重刷")
-            return
-        written += len(batch)
-
-    print(f"✅ 看板已同步: {len(rows)} 条任务")
+    return _kanban_service.sync_kanban_snapshot_with_run(
+        cfg,
+        tasks,
+        _lark,
+        batch_delete_limit=BITABLE_BATCH_DELETE_LIMIT,
+        batch_size=500,
+    )
 
 def cmd_sync():
     cfg = load_cfg()
@@ -271,27 +158,39 @@ def cmd_sync():
 
 # ── 命令：daemon ──────────────────────────────────────────────
 
-_PID_FILE = os.path.join(os.path.dirname(__file__), ".kanban_sync.pid")
+_PID_FILE = runtime_state_file("kanban_sync.pid")
+_LEGACY_PID_FILE = legacy_script_state_file(".kanban_sync.pid")
+
+
+def _pid_file_is_live_kanban(path):
+    def _read_text(file_path):
+        with open(file_path) as f:
+            return f.read()
+
+    def _pid_is_alive(pid):
+        os.kill(pid, 0)
+        return True
+
+    def _read_cmdline(pid):
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().decode("utf-8", errors="ignore")
+
+    return _kanban_daemon.pid_file_is_live(
+        path,
+        path_exists=os.path.exists,
+        read_text=_read_text,
+        pid_is_alive=_pid_is_alive,
+        read_cmdline=_read_cmdline,
+        expected_fragment="kanban_sync.py",
+    )
 
 def _acquire_pid_lock():
-    if os.path.exists(_PID_FILE):
-        try:
-            with open(_PID_FILE) as f:
+    for path in (_PID_FILE, _LEGACY_PID_FILE):
+        if _pid_file_is_live_kanban(path):
+            with open(path) as f:
                 old_pid = int(f.read().strip())
-            os.kill(old_pid, 0)
-            # PID 复用校验 (同 074a7dc 给 router 加的 match_str):
-            # compose down/up 后旧 PID 可能被不相关进程复用,kill -0 仍返回存活。
-            try:
-                with open(f"/proc/{old_pid}/cmdline", "rb") as f:
-                    cmdline = f.read().decode("utf-8", errors="ignore")
-                if "kanban_sync.py" not in cmdline:
-                    raise OSError("PID reuse: not kanban_sync")
-            except (FileNotFoundError, PermissionError):
-                raise OSError("proc gone")
             print(f"❌ kanban_sync daemon 已在运行 (PID {old_pid})")
             sys.exit(1)
-        except (ValueError, OSError):
-            pass
     with open(_PID_FILE, "w") as f:
         f.write(str(os.getpid()))
     atexit.register(_cleanup_pid)
@@ -327,23 +226,21 @@ def cmd_daemon(interval=60):
 def main():
     args = sys.argv[1:]
     if not args:
-        print(__doc__); sys.exit(0)
+        print(__doc__)
+        sys.exit(0)
 
-    cmd = args[0]
-
-    if cmd == "init":
-        cmd_init()
-    elif cmd == "sync":
-        cmd_sync()
-    elif cmd == "daemon":
-        interval = 60
-        if "--interval" in args:
-            idx = args.index("--interval")
-            if idx + 1 < len(args):
-                interval = int(args[idx + 1])
-        cmd_daemon(interval)
-    else:
-        print(f"未知命令: {cmd}"); sys.exit(1)
+    handlers = {
+        "init": cmd_init,
+        "sync": cmd_sync,
+        "daemon": cmd_daemon,
+    }
+    result = _kanban_commands.run(args, handlers=handlers)
+    if result.exit_code != 0:
+        if result.message:
+            print(result.message)
+        sys.exit(result.exit_code)
+    if not result.handled and result.message:
+        print(result.message)
 
 if __name__ == "__main__":
     main()
