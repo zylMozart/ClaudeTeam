@@ -7,7 +7,8 @@
 保持纯标准库，方便两处直接 import 或独立运行。
 """
 import re
-import subprocess
+
+from claudeteam.runtime.tmux_utils import capture_pane as _capture_pane
 
 DEFAULT_AGENT = "manager"
 DEFAULT_LINES = 10
@@ -32,16 +33,17 @@ def parse(text: str):
 
 
 def capture(session: str, agent: str, lines: int) -> str:
-    """跑 tmux capture-pane 并格式化返回文本。失败给可读错误。"""
+    """调用 tmux_utils.capture_pane 并格式化返回文本。失败给可读错误。"""
     target = f"{session}:{agent}"
-    try:
-        r = subprocess.run(
-            ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"],
-            capture_output=True, text=True, timeout=5)
-    except Exception as e:
-        return f"\u26a0\ufe0f tmux 调用失败: {e}"
-    if r.returncode != 0:
-        err = (r.stderr or "").strip() or "unknown error"
-        return f"\u26a0\ufe0f 读取 tmux 窗口 `{target}` 失败: {err}"
-    body = r.stdout.rstrip() or "(窗口为空)"
+    content = _capture_pane(session, agent, lines=lines)
+    if content == "" and not _window_exists(session, agent):
+        return f"\u26a0\ufe0f 读取 tmux 窗口 `{target}` 失败: 窗口不存在"
+    body = content.rstrip() or "(窗口为空)"
     return f"=== {target} 最后 {lines} 行 ===\n{body}"
+
+
+def _window_exists(session: str, agent: str) -> bool:
+    import subprocess
+    r = subprocess.run(["tmux", "has-session", "-t", f"{session}:{agent}"],
+                       capture_output=True, timeout=5)
+    return r.returncode == 0

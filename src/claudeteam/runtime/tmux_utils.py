@@ -25,16 +25,16 @@ _BUSY_MARKERS = [
 
 # ── 核心函数 ──────────────────────────────────────────────────
 
-def capture_pane(session, window):
+def capture_pane(session, window, lines: int | None = None):
     """
-    获取 tmux pane 当前可见内容，返回字符串。
+    获取 tmux pane 内容，返回字符串。lines 指定向上回溯行数（-S -N）。
     失败（窗口不存在等）返回空字符串。
     """
     try:
-        r = subprocess.run(
-            ["tmux", "capture-pane", "-t", f"{session}:{window}", "-p"],
-            capture_output=True, text=True, timeout=5
-        )
+        cmd = ["tmux", "capture-pane", "-t", f"{session}:{window}", "-p"]
+        if lines is not None:
+            cmd += ["-S", f"-{lines}"]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         return r.stdout if r.returncode == 0 else ""
     except Exception:
         return ""
