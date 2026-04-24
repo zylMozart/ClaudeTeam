@@ -81,74 +81,6 @@ def redirected_local_facts(local_facts_module, root: Path):
                 setattr(local_facts_module, name, value)
 
 
-def test_local_facts_legacy_import_contract() -> None:
-    local_facts = importlib.import_module("local_facts")
-    for name in (
-        "append_message",
-        "attach_bitable_record",
-        "list_messages",
-        "mark_read",
-        "upsert_status",
-        "get_status",
-        "append_log",
-        "list_logs",
-    ):
-        assert hasattr(local_facts, name), f"local_facts missing {name}"
-
-    with tempfile.TemporaryDirectory() as tmp:
-        with redirected_local_facts(local_facts, Path(tmp)):
-            local_id = local_facts.append_message(
-                "manager", "toolsmith", "compat message", "高", task_id="TASK-COMPAT"
-            )
-            unread = local_facts.list_messages("manager", unread_only=True)
-            assert len(unread) == 1
-            assert unread[0]["local_id"] == local_id
-            assert unread[0]["task_id"] == "TASK-COMPAT"
-
-            # Compatibility: legacy mirrored Bitable record id must still mark read.
-            mirrored_id = local_facts.append_message(
-                "manager",
-                "toolsmith",
-                "compat mirrored",
-                "中",
-                bitable_record_id="rec_legacy_1",
-            )
-            assert local_facts.mark_read("rec_legacy_1") is True
-            remaining = local_facts.list_messages("manager", unread_only=True)
-            assert all(row["local_id"] != mirrored_id for row in remaining)
-
-            local_facts.upsert_status("toolsmith", "进行中", "兼容门禁", "")
-            status = local_facts.get_status("toolsmith")
-            assert status and status["status"] == "进行中" and status["task"] == "兼容门禁"
-
-            log_id = local_facts.append_log("toolsmith", "任务日志", "compat-log", "TASK-COMPAT")
-            logs = local_facts.list_logs("toolsmith", limit=10)
-            assert logs and logs[-1]["local_id"] == log_id
-
-
-def test_cli_adapters_legacy_import_contract() -> None:
-    cli_adapters = importlib.import_module("cli_adapters")
-    for name in ("get_adapter", "adapter_for_agent"):
-        assert hasattr(cli_adapters, name), f"cli_adapters missing {name}"
-
-    for cli_name in ("claude-code", "kimi-code", "gemini-cli", "codex-cli", "qwen-code"):
-        adapter = cli_adapters.get_adapter(cli_name)
-        assert adapter.process_name(), f"adapter {cli_name} missing process_name"
-        assert isinstance(adapter.ready_markers(), list)
-        assert isinstance(adapter.busy_markers(), list)
-        assert isinstance(adapter.spawn_cmd("toolsmith", "sonnet"), str)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        team_file = Path(tmp) / "team.json"
-        team_file.write_text(
-            """{"session":"compat","agents":{"toolsmith":{"cli":"codex-cli"}}}\n""",
-            encoding="utf-8",
-        )
-        with patched_env("CLAUDETEAM_TEAM_FILE", str(team_file)):
-            adapter = cli_adapters.adapter_for_agent("toolsmith")
-            assert adapter.process_name() == "codex"
-
-
 def test_feishu_msg_lark_compat_contract() -> None:
     feishu_msg = importlib.import_module("feishu_msg")
     lark_helpers = (
@@ -262,7 +194,7 @@ def test_feishu_msg_helper_compat_contract() -> None:
 
 def test_feishu_msg_workspace_log_compat_contract() -> None:
     feishu_msg = importlib.import_module("feishu_msg")
-    local_facts = importlib.import_module("local_facts")
+    from claudeteam.storage import local_facts
     helper_names = (
         "ws_log",
         "cmd_log",
@@ -346,7 +278,7 @@ def test_feishu_msg_workspace_log_compat_contract() -> None:
 
 def test_feishu_msg_inbox_compat_contract() -> None:
     feishu_msg = importlib.import_module("feishu_msg")
-    local_facts = importlib.import_module("local_facts")
+    from claudeteam.storage import local_facts
 
     assert hasattr(feishu_msg, "cmd_inbox"), "feishu_msg missing helper cmd_inbox"
     assert callable(feishu_msg.cmd_inbox), "feishu_msg helper cmd_inbox not callable"
@@ -408,7 +340,7 @@ def test_feishu_msg_inbox_compat_contract() -> None:
 
 def test_feishu_msg_read_compat_contract() -> None:
     feishu_msg = importlib.import_module("feishu_msg")
-    local_facts = importlib.import_module("local_facts")
+    from claudeteam.storage import local_facts
 
     assert hasattr(feishu_msg, "cmd_read"), "feishu_msg missing helper cmd_read"
     assert callable(feishu_msg.cmd_read), "feishu_msg helper cmd_read not callable"
@@ -466,7 +398,7 @@ def test_feishu_msg_read_compat_contract() -> None:
 
 def test_feishu_msg_status_compat_contract() -> None:
     feishu_msg = importlib.import_module("feishu_msg")
-    local_facts = importlib.import_module("local_facts")
+    from claudeteam.storage import local_facts
 
     assert hasattr(feishu_msg, "cmd_status"), "feishu_msg missing helper cmd_status"
     assert callable(feishu_msg.cmd_status), "feishu_msg helper cmd_status not callable"
@@ -524,7 +456,7 @@ def test_feishu_msg_status_compat_contract() -> None:
 
 def test_feishu_msg_send_local_persistence_compat_contract() -> None:
     feishu_msg = importlib.import_module("feishu_msg")
-    local_facts = importlib.import_module("local_facts")
+    from claudeteam.storage import local_facts
 
     assert hasattr(feishu_msg, "cmd_send"), "feishu_msg missing helper cmd_send"
     assert callable(feishu_msg.cmd_send), "feishu_msg helper cmd_send not callable"
@@ -609,7 +541,7 @@ def test_feishu_msg_send_local_persistence_compat_contract() -> None:
 
 def test_feishu_msg_direct_local_persistence_compat_contract() -> None:
     feishu_msg = importlib.import_module("feishu_msg")
-    local_facts = importlib.import_module("local_facts")
+    from claudeteam.storage import local_facts
 
     assert hasattr(feishu_msg, "cmd_direct"), "feishu_msg missing helper cmd_direct"
     assert callable(feishu_msg.cmd_direct), "feishu_msg helper cmd_direct not callable"
@@ -706,19 +638,10 @@ def test_kanban_projection_compat_contract() -> None:
         "load_tasks",
         "load_cfg",
         "save_cfg",
-        "extract_text",
-        "txt",
-        "to_ms",
-        "chunks",
     )
     for name in legacy_names:
         assert hasattr(kanban_sync, name), f"kanban_sync missing {name}"
         assert callable(getattr(kanban_sync, name)), f"kanban_sync {name} not callable"
-
-    assert kanban_sync.extract_text([{"text": "v"}]) == "v"
-    assert kanban_sync.txt([{"text": "v"}]) == "v"
-    assert kanban_sync.to_ms("not-a-time") == 0
-    assert list(kanban_sync.chunks([1, 2, 3], 2)) == [[1, 2], [3]]
 
     projection_file = ROOT / "src" / "claudeteam" / "integrations" / "feishu" / "kanban_projection.py"
     if not projection_file.exists():
@@ -898,39 +821,10 @@ def test_kanban_projection_compat_contract() -> None:
 
 
 def test_optional_src_module_paths_match_when_present() -> None:
-    mapping = {
-        "local_facts": "claudeteam.storage.local_facts",
-        "cli_adapters": "claudeteam.cli_adapters",
-    }
-    for legacy_name, new_name in mapping.items():
-        legacy_mod = importlib.import_module(legacy_name)
-        try:
-            new_mod = importlib.import_module(new_name)
-        except ModuleNotFoundError:
-            # Pre-migration state: new package may not exist yet.
-            continue
-
-        assert new_mod is not None, f"failed to import {new_name}"
-
-        if legacy_name == "cli_adapters":
-            assert (
-                legacy_mod.get_adapter("claude-code").process_name()
-                == new_mod.get_adapter("claude-code").process_name()
-            )
-        elif legacy_name == "local_facts":
-            for name in (
-                "append_message",
-                "list_messages",
-                "mark_read",
-                "upsert_status",
-                "append_log",
-            ):
-                assert hasattr(new_mod, name), f"{new_name} missing {name}"
+    pass  # All compat shims removed; mapping is now empty
 
 
 def main() -> int:
-    test_local_facts_legacy_import_contract()
-    test_cli_adapters_legacy_import_contract()
     test_feishu_msg_lark_compat_contract()
     test_feishu_msg_helper_compat_contract()
     test_feishu_msg_workspace_log_compat_contract()

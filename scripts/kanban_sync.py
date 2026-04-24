@@ -27,7 +27,7 @@ from claudeteam.commands import kanban_daemon as _kanban_daemon
 from claudeteam.integrations.feishu import kanban_projection as _kanban_projection
 from claudeteam.integrations.feishu import kanban_service as _kanban_service
 from config import load_runtime_config, save_runtime_config, LARK_CLI
-from claudeteam.runtime.paths import legacy_script_state_file, runtime_state_file
+from claudeteam.runtime.paths import legacy_script_state_file, runtime_state_file, runtime_state_dir, ensure_parent
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")
 
@@ -53,80 +53,7 @@ def load_tasks():
     with open(TASKS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
-def extract_text(v):
-    return _kanban_projection.extract_text(v)
-
-txt = extract_text
-
-def to_ms(iso_str):
-    return _kanban_projection.to_ms(iso_str)
-
-def chunks(lst, n):
-    return _kanban_projection.chunks(lst, n)
-
-# ── Bitable 操作（lark-cli）──────────────────────────────────
-
-def fetch_all_agent_status(cfg):
-    """拉取 Agent 状态表。
-
-    返回
-    ----
-    dict  : {agent_name: {状态, 当前任务, 更新时间}}  查询成功(可能为空)
-    None  : 查询失败 —— 调用方应跳过本轮同步,避免用空 dict 覆盖掉上一轮的
-            真实状态 (ADR silent_swallow_remaining P0 ②)
-    """
-    return _kanban_service.fetch_all_agent_status_with_run(cfg, _lark)
-
-def get_all_kanban_record_ids(cfg):
-    """获取看板表所有记录 ID。
-
-    返回
-    ----
-    list[str] : record_id 列表(可能为空)
-    None      : 查询失败 —— 调用方**必须**跳过 delete+create 整轮,否则
-                空 list 会被当成"没东西可删"从而让旧记录残留,新记录叠加
-                写入导致看板卡片重复 (ADR silent_swallow_remaining P0 ③)
-    """
-    return _kanban_service.get_all_kanban_record_ids_with_run(cfg, _lark)
-
 BITABLE_BATCH_DELETE_LIMIT = 500  # Feishu bitable v1 batch_delete 单次上限
-
-
-def delete_all_kanban_records(cfg):
-    """删除看板表所有记录。
-
-    返回
-    ----
-    True  : 所有批次都成功（或无记录可删）
-    False : 任一批失败 —— 调用方应**跳过本轮写入**，保留旧看板状态等下一轮
-            （宁要旧状态，不要新旧叠加）
-
-    P1-7 修复: 原版逐条 `+record-delete`,500 条就是 500 次 API 调用,直接撞
-    OpenAPIBatchAddRecords / record-delete 限流。改用通用 `lark-cli api POST
-    /open-apis/bitable/v1/apps/{token}/tables/{tid}/records/batch_delete
-    --data '{"records":[...]}' --as bot`,按 500/批分组。
-
-    reviewer CR#2 (波次2 round1): 原 P1-7 patch 的 for 循环丢弃了 `_lark` 返回值,
-    任一批失败会静默继续,do_sync 紧接着 bitable_batch_create 写新数据 →
-    旧+新并存 → 看板卡片重复。现在返回 True/False 让上游决定。
-    """
-    return _kanban_service.delete_all_kanban_records_with_run(
-        cfg,
-        _lark,
-        batch_delete_limit=BITABLE_BATCH_DELETE_LIMIT,
-    )
-
-def bitable_batch_create(cfg, records_json):
-    """批量写入看板记录。
-
-    返回
-    ----
-    True  : 写入成功
-    False : 写入失败 —— 调用方应退出本轮剩余批次,下一轮 60s 后全量重刷
-            (ADR silent_swallow_remaining P0 ①: 原版丢弃返回值导致部分写入
-            失败时看板显示"✅ 看板已同步"但实际缺数据,用户看到看板一直少行)
-    """
-    return _kanban_service.bitable_batch_create_with_run(cfg, records_json, _lark)
 
 # ── 命令：init ────────────────────────────────────────────────
 
@@ -158,7 +85,7 @@ def cmd_sync():
 
 # ── 命令：daemon ──────────────────────────────────────────────
 
-_PID_FILE = runtime_state_file("kanban_sync.pid")
+_PID_FILE = str(runtime_state_dir() / "kanban_sync.pid")
 _LEGACY_PID_FILE = legacy_script_state_file(".kanban_sync.pid")
 
 
@@ -191,6 +118,7 @@ def _acquire_pid_lock():
                 old_pid = int(f.read().strip())
             print(f"❌ kanban_sync daemon 已在运行 (PID {old_pid})")
             sys.exit(1)
+    ensure_parent(_PID_FILE)
     with open(_PID_FILE, "w") as f:
         f.write(str(os.getpid()))
     atexit.register(_cleanup_pid)

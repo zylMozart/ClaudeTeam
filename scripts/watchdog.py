@@ -30,14 +30,15 @@ from claudeteam.supervision import watchdog_messages as _watchdog_messages
 from claudeteam.supervision import watchdog_orphans as _watchdog_orphans
 from claudeteam.supervision import watchdog_proc_match as _watchdog_proc_match
 from config import PROJECT_ROOT, LARK_CLI
-from claudeteam.runtime.paths import legacy_script_state_file, runtime_state_file
+from claudeteam.runtime.paths import legacy_script_state_file, runtime_state_file, runtime_state_dir, ensure_parent
 
 CHECK_INTERVAL = 60  # 秒
-ROUTER_PID_FILE = runtime_state_file("router.pid")
-ROUTER_CURSOR_FILE = runtime_state_file("router.cursor")
+_state_dir = runtime_state_dir()
+ROUTER_PID_FILE = str(_state_dir / "router.pid")
+ROUTER_CURSOR_FILE = str(_state_dir / "router.cursor")
 LEGACY_ROUTER_PID_FILE = legacy_script_state_file(".router.pid")
-KANBAN_PID_FILE = runtime_state_file("kanban_sync.pid")
-WATCHDOG_PID_FILE = runtime_state_file("watchdog.pid")
+KANBAN_PID_FILE = str(_state_dir / "kanban_sync.pid")
+WATCHDOG_PID_FILE = str(_state_dir / "watchdog.pid")
 
 # ADR watchdog_startup_grace: 冷启动时 router pipeline (lark-cli 冷 npm 解
 # 析 + feishu_router.py import) 可能 ≥ 30s 才 touch .router.pid。watchdog 若
@@ -454,6 +455,7 @@ def _acquire_pid_lock():
             sys.exit(1)
         except (ValueError, OSError):
             pass
+    ensure_parent(_PID_FILE)
     with open(_PID_FILE, "w") as f:
         f.write(str(os.getpid()))
     atexit.register(_cleanup_pid)

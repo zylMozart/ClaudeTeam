@@ -20,7 +20,6 @@ REQUIRED_FILES = [
     "scripts/feishu_router.py",
     "scripts/slash_commands.py",
     "scripts/tmux_utils.py",
-    "scripts/cli_adapters/resolve.py",
     "src/claudeteam/cli_adapters/resolve.py",
     "scripts/task_tracker.py",
     "scripts/memory_manager.py",
@@ -44,7 +43,7 @@ PUBLIC_CONTRACT_TOKENS = [
     "python3 scripts/feishu_router.py --stdin",
     "slash_commands.dispatch(text)",
     "inject_when_idle(session, window, text",
-    "python3 scripts/cli_adapters/resolve.py",
+    "python3 -m claudeteam.cli_adapters.resolve",
     "python3 scripts/task_tracker.py",
     "python3 scripts/kanban_sync.py",
 ]

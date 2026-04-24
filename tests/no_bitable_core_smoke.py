@@ -26,7 +26,7 @@ for path in (SCRIPTS, TESTS, ROOT):
 
 from no_live_guard import install  # noqa: E402
 import feishu_msg  # noqa: E402
-import local_facts  # noqa: E402
+from claudeteam.storage import local_facts  # noqa: E402
 import task_tracker  # noqa: E402
 
 
@@ -189,12 +189,29 @@ def test_task_facts_and_local_kanban_source_are_files():
 
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmp, no_remote_env():
+        tmp_path = Path(tmp)
+        old_state_dir = os.environ.get("CLAUDETEAM_STATE_DIR")
+        old_pending_dir = os.environ.get("CLAUDETEAM_PENDING_DIR")
+        os.environ["CLAUDETEAM_STATE_DIR"] = str(tmp_path / "state")
+        os.environ["CLAUDETEAM_PENDING_DIR"] = str(
+            tmp_path / "state" / "queue" / "pending_msgs"
+        )
         install()
-        _redirect_facts(tmp)
-        test_static_default_remote_boundaries()
-        test_send_inbox_read_status_log_workspace_real_default_path()
-        test_direct_and_say_real_default_path()
-        test_task_facts_and_local_kanban_source_are_files()
+        try:
+            _redirect_facts(tmp)
+            test_static_default_remote_boundaries()
+            test_send_inbox_read_status_log_workspace_real_default_path()
+            test_direct_and_say_real_default_path()
+            test_task_facts_and_local_kanban_source_are_files()
+        finally:
+            if old_state_dir is None:
+                os.environ.pop("CLAUDETEAM_STATE_DIR", None)
+            else:
+                os.environ["CLAUDETEAM_STATE_DIR"] = old_state_dir
+            if old_pending_dir is None:
+                os.environ.pop("CLAUDETEAM_PENDING_DIR", None)
+            else:
+                os.environ["CLAUDETEAM_PENDING_DIR"] = old_pending_dir
     print("OK: no_bitable_core_smoke passed")
     return 0
 

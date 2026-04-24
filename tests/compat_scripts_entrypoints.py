@@ -26,12 +26,10 @@ for path in (SCRIPTS, SRC, ROOT):
     if path.exists() and str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-RESOLVE_SCRIPT = ROOT / "scripts" / "cli_adapters" / "resolve.py"
+RESOLVE_SCRIPT = ROOT / "src" / "claudeteam" / "cli_adapters" / "resolve.py"
 FEISHU_MSG_SCRIPT = ROOT / "scripts" / "feishu_msg.py"
 WATCHDOG_SCRIPT = ROOT / "scripts" / "watchdog.py"
-MODULE_WRAPPERS = (
-    ROOT / "scripts" / "local_facts.py",
-)
+MODULE_WRAPPERS = ()
 
 
 def run_python(script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -2045,11 +2043,7 @@ def test_kanban_sync_wrapper_uses_service_contract() -> None:
     assert "from claudeteam.integrations.feishu import kanban_service as _kanban_service" in text
     assert "ok, payload = _kanban_service.ensure_kanban_table_with_run(cfg, _lark, save_cfg)" in text
     assert "if not ok:" in text and "sys.exit(1)" in text
-    assert "return _kanban_service.fetch_all_agent_status_with_run(cfg, _lark)" in text
-    assert "return _kanban_service.get_all_kanban_record_ids_with_run(cfg, _lark)" in text
-    assert "return _kanban_service.delete_all_kanban_records_with_run(" in text
-    assert "return _kanban_service.bitable_batch_create_with_run(cfg, records_json, _lark)" in text
-    assert "return _kanban_service.sync_kanban_snapshot_with_run(" in text
+    assert "_kanban_service.sync_kanban_snapshot_with_run(" in text
 
 
 def test_kanban_cmd_init_service_delegate_contract() -> None:
