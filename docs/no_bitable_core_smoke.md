@@ -39,7 +39,7 @@ Wrapper:
 
 ```bash
 cd /home/admin/projects/restructure
-python3 scripts/run_no_live_tests.py
+python3 tests/run_no_live.py
 ```
 
 Container with an isolated Docker config:

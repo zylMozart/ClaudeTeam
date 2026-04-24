@@ -34,7 +34,7 @@ Every skill should declare:
 | Skill | Status | Purpose | First Version |
 |---|---|---|---|
 | `feishu-doc-publish` | draft added | Publish or update formal Feishu docs from Markdown with a review/report checklist. | SOP only; uses lark-cli docs command when executing live. |
-| `smoke-evidence` | draft added | Collect smoke evidence without losing command/output context. | Starts with no-live `slash_smoke_test.py --dry-run`; live cases require manager/devops approval. |
+| `smoke-evidence` | draft added | Collect smoke evidence without losing command/output context. | Runs no-live dispatch verification; live cases require manager/devops approval. |
 | `rate-limit-triage` | draft added | Diagnose Feishu/Bitable OpenAPI rate limits and decide degradation behavior. | Read logs, inbox/workspace symptoms, and wrapper outputs; no automatic retries. |
 | `runtime-doctor` | draft added | Check runtime/profile/credential/config boundaries without exposing secrets. | Uses local files and existing wrapper help; no token printing. |
 | `tmux-boundary-diagnose` | draft added | Diagnose tmux injection boundaries, unsafe residual input, lazy wake, and shell pollution. | Starts read-only; live injection tests require explicit approval. |

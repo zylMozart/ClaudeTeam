@@ -2,7 +2,7 @@
 
 Date: 2026-04-23
 Owner: toolsmith
-Status: initial implementation plan and compatibility contract
+Status: phase-2 complete
 
 ## Scope
 
