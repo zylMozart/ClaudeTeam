@@ -139,49 +139,6 @@ def sync_kanban_snapshot_with_run(
     batch_delete_limit: int = 500,
     batch_size: int = 500,
 ) -> None:
-    """Run one full snapshot sync round for the kanban table."""
-    # ADR silent_swallow_remaining P0 ②
-    agent_status = fetch_all_agent_status_with_run(cfg, lark_run)
-    if agent_status is None:
-        print("  ─ 跳过本轮(状态表查询失败)")
-        return
-
-    # reviewer CR#2 (波次2): delete 失败必须跳过写入,否则旧+新并存导致看板卡片重复。
-    if not delete_all_kanban_records_with_run(
-        cfg,
-        lark_run,
-        batch_delete_limit=batch_delete_limit,
-    ):
-        print("  ─ 跳过本轮看板写入(删除失败,保留旧状态)")
-        return
-
-    if not tasks:
-        print("  ─ 无任务记录")
-        return
-
-    field_names = kanban_projection.KANBAN_FIELD_NAMES
-    rows = kanban_projection.build_kanban_rows(tasks, agent_status)
-
-    # ADR silent_swallow_remaining P0 ①
-    written = 0
-    for batch in kanban_projection.chunks(rows, batch_size):
-        payload = json.dumps({"fields": field_names, "rows": batch}, ensure_ascii=False)
-        if not bitable_batch_create_with_run(cfg, payload, lark_run):
-            print(f"  ─ 看板部分写入失败 (已写 {written}/{len(rows)}),等下一轮全量重刷")
-            return
-        written += len(batch)
-
-    print(f"✅ 看板已同步: {len(rows)} 条任务")
-
-
-def sync_kanban_snapshot_with_run(
-    cfg: dict[str, Any],
-    tasks: list[dict[str, Any]],
-    lark_run: Callable[..., Any],
-    *,
-    batch_delete_limit: int = 500,
-    batch_size: int = 500,
-) -> None:
     """Run one kanban full-refresh round with injected I/O runner."""
     agent_status = fetch_all_agent_status_with_run(cfg, lark_run)
     if agent_status is None:
