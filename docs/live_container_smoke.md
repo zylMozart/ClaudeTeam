@@ -124,6 +124,75 @@ Rehearsal-only event injection is not currently automated. Inject a tmux event
 manually for local rehearsal before the real boss/test-user sends the Feishu
 group message.
 
+## Extended Roll-Call Smoke (P5 expanded scope, added 2026-04-24)
+
+Owner feedback (2026-04-24) tightened the smoke bar. A passing live smoke now
+requires all three gates below, not just a single boss→manager exchange.
+
+### Gate A — Full-team roll call
+
+Boss identity (own user or `lark-cli --as user` impersonation via device-flow
+user_access_token) posts exactly this into the test group:
+
+```text
+所有员工报道
+```
+
+Expected behavior:
+
+- router catches the message and routes it to `manager`
+- `manager` does **not** self-reply a status summary. `manager` must dispatch an
+  individual wake/report task to each worker via
+  `python3 scripts/feishu_msg.py send <worker> manager "<task>" 高`
+- every worker in `team.json` (lazy-mode ones must wake from the inbox event)
+  posts its own message in the group via
+  `python3 scripts/feishu_msg.py say <worker> "..."` carrying at minimum its
+  agent name and CLI type (e.g. `我是 worker_codex，CLI=codex-cli，已就绪`)
+- the group shows one reply per worker plus an optional manager summary
+- no Bitable/kanban daemon is started
+
+Pass criterion: count of distinct worker `say` messages in the group within 90s
+of the boss prompt equals the count of workers declared in `team.json` minus
+`manager` itself.
+
+### Gate B — Tmux window cleanliness for every agent
+
+For each window in the container tmux session (`manager`, every worker, plus
+`router`, `kanban`, `watchdog-*`, `supervisor_ticker`), run:
+
+```bash
+docker exec <container> tmux capture-pane -pt <session>:<window> -S -50
+```
+
+Each window must be free of:
+
+- garbled prompt head/tail, literal `\n`, or command-fragment prefixes
+- stray inbox/send/spawn lines left from prior dispatches
+- broken escape sequences or UTF-8 artifacts
+- any error banner or crash trace still on screen
+
+Lazy-mode worker windows idling with only the banner
+`💤 待 wake  (agent=<name>, ...)\n   router 收到业务消息后会唤醒本窗口\nroot@<id>:/app#`
+count as clean.
+
+### Gate C — ClaudeTeam slash commands render correctly
+
+Run each custom slash command end-to-end at least once during the smoke and
+confirm the rendered reply/card arrives in the test group without truncation or
+schema error:
+
+| command    | entry point                                          | expected render                                                |
+|------------|------------------------------------------------------|----------------------------------------------------------------|
+| `/help`    | typed in group by boss identity                      | help text card listing the six commands                        |
+| `/team`    | typed in group                                       | team composition card (one row per agent, status + CLI)        |
+| `/usage`   | typed in group                                       | 飞书 card with weekly quota + per-CLI Extra usage snapshot     |
+| `/tmux`    | typed in group                                       | tmux window list for the container session                     |
+| `/send`    | typed in group with `/send <agent> <text>`           | confirmation of delivery, target agent inbox receives message  |
+| `/compact` | typed in group                                       | per-agent context compaction ack                               |
+
+Any command that returns a raw JSON dump, a traceback, a "card schema invalid"
+error, or fails silently blocks the smoke. Re-run after the fix.
+
 ## Raw Tmux Capture
 
 QA evidence should sample container tmux panes manually:
@@ -145,3 +214,7 @@ commands, spawn command fragments, or broken escape text.
 - `docker compose logs --tail` excerpt after secret scan
 - raw tmux capture output path and `summary.json` verdict
 - confirmation that `CLAUDETEAM_ENABLE_BITABLE_LEGACY=0`
+- **Gate A** (roll call): message_id list of each worker's individual reply
+- **Gate B** (cleanliness): per-window `tmux capture-pane` excerpt with verdict
+- **Gate C** (slash commands): screenshot or text of the rendered reply for each
+  of `/help /team /usage /tmux /send /compact`
