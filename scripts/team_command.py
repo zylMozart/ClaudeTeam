@@ -1,8 +1,0 @@
-"""Thin compat shell — delegates to src/claudeteam/commands/team."""
-import os as _os, sys as _sys
-_SCRIPT_DIR = _os.path.dirname(_os.path.abspath(__file__))
-_SRC_DIR = _os.path.join(_os.path.dirname(_SCRIPT_DIR), "src")
-for _p in (_SCRIPT_DIR, _SRC_DIR):
-    if _p not in _sys.path: _sys.path.insert(0, _p)
-import claudeteam.commands.team as _impl
-_sys.modules[__name__] = _impl

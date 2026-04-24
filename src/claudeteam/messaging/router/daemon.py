@@ -90,7 +90,6 @@ class _RouterRuntime:
         agents = self.state.reload_agents(self.team_file)
 
         import slash_commands  # scripts-layer, available via sys.path
-        import team_command
         from feishu_msg import _lark_run, cmd_say, sanitize_agent_message, _lark_im_send, CHAT, build_system_card
 
         result = classify_event(
