@@ -58,7 +58,7 @@ resolve_all_agent_models() {
   unset AGENT_MODELS
   declare -gA AGENT_MODELS
   for agent in "${AGENTS[@]}"; do
-    if ! model=$(python3 scripts/config.py resolve-model "$agent" 2>&1); then
+    if ! model=$(python3 -m claudeteam.runtime.config resolve-model "$agent" 2>&1); then
       echo "❌ 解析 $agent 的模型失败: $model" >&2
       echo "   请检查 team.json 中 $agent 的 model 字段,或 CLAUDETEAM_DEFAULT_MODEL 环境变量。" >&2
       FAILED_MODEL_AGENT="$agent"

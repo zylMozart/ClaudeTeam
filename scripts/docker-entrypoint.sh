@@ -613,7 +613,7 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 
     # thinking init hint (F2: per-agent thinking level)
     THINKING_HINT=$(python3 -m claudeteam.cli_adapters.resolve "$agent" thinking_init_hint \
-      "$(python3 scripts/config.py resolve-thinking "$agent" 2>/dev/null)" 2>/dev/null) && \
+      "$(python3 -m claudeteam.runtime.config resolve-thinking "$agent" 2>/dev/null)" 2>/dev/null) && \
       INIT_MSG="${INIT_MSG}
 
 【Thinking 指引】${THINKING_HINT}"
