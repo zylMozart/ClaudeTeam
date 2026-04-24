@@ -20,7 +20,7 @@ if _SRC_DIR not in sys.path:
 
 from claudeteam.commands.slash.context import SlashContext
 from claudeteam.commands.slash.dispatch import dispatch as _src_dispatch
-from claudeteam.commands.slash.health import collect_health as _collect_health_impl
+from claudeteam.runtime.health import collect_health as _collect_health_impl
 from claudeteam.runtime.config import PROJECT_ROOT
 
 BJ_TZ = timezone(timedelta(hours=8))
