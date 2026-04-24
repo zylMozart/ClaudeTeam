@@ -43,3 +43,7 @@ docker-compose.override.yml
 .codex-credentials/
 .gemini-credentials/
 .qwen-credentials/
+.lark-cli-credentials/
+.claude-credentials/
+.live-smoke-credentials/
+state/

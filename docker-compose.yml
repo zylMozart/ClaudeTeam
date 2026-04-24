@@ -52,6 +52,8 @@ services:
       - FEISHU_APP_ID=${FEISHU_APP_ID:-}
       - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
       - FEISHU_BRAND=${FEISHU_BRAND:-feishu}
+      - CLAUDETEAM_ENABLE_FEISHU_REMOTE=${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-0}
+      - CLAUDETEAM_ENABLE_BITABLE_LEGACY=${CLAUDETEAM_ENABLE_BITABLE_LEGACY:-0}
       - TERM=xterm-256color
       # 强制 HOME 指向 /home/claudeteam — 即使以 root 运行容器(user: "0:0"),
       # claude / lark-cli 等工具仍然通过 $HOME 读取 ~/.claude、~/.lark-cli,

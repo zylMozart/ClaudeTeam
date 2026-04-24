@@ -1,0 +1,6 @@
+services:
+  team-prod-hardened:
+    user: "999:999"
+    volumes:
+      - ./.lark-cli-credentials/local-share:/home/claudeteam/.local/share/lark-cli:ro
+      - ./.claude-credentials/.claude.json:/home/claudeteam/.claude.json:rw
