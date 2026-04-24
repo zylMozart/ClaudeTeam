@@ -27,7 +27,7 @@ for path in (SCRIPTS, TESTS, ROOT):
 from no_live_guard import install  # noqa: E402
 import feishu_msg  # noqa: E402
 from claudeteam.storage import local_facts  # noqa: E402
-import task_tracker  # noqa: E402
+import claudeteam.commands.task_tracker as task_tracker  # noqa: E402
 
 
 REMOTE_ENV = (
