@@ -16,7 +16,7 @@ from claudeteam.messaging.router.state import RouterState
 from claudeteam.messaging.router.cursor import load_cursor, save_cursor, refresh_heartbeat as _rh
 from claudeteam.messaging.router.dispatch import classify_event, EventAction
 from claudeteam.runtime.queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
-from claudeteam.runtime.paths import runtime_state_file, legacy_script_state_file, ensure_parent
+from claudeteam.runtime.paths import runtime_state_dir, legacy_script_state_file, ensure_parent
 from claudeteam.messaging.renderer import render_inbox_text, render_tmux_prompt
 from feishu_msg import _lark_run, cmd_say, sanitize_agent_message
 from tmux_utils import inject_when_idle
@@ -25,11 +25,14 @@ _state = RouterState()
 _TEAM_FILE = (os.environ.get("CLAUDETEAM_TEAM_FILE", "").strip()
               or os.path.join(os.path.dirname(_SCRIPT_DIR), "team.json"))
 
-# Public path constants (patchable by tests)
-CURSOR_FILE = runtime_state_file("router.cursor")
-PID_FILE = runtime_state_file("router.pid")
-TMUX_INTERCEPT_LOG = runtime_state_file("tmux_intercept.log")
-ROUTER_MSG_DIR = runtime_state_file("router_msgs")
+# Public path constants (patchable by tests).
+# Computed via runtime_state_dir() (no mkdir side-effect) so import never
+# touches the filesystem even when CLAUDETEAM_STATE_DIR is unset.
+_sd = runtime_state_dir()
+CURSOR_FILE = str(_sd / "router.cursor")
+PID_FILE = str(_sd / "router.pid")
+TMUX_INTERCEPT_LOG = str(_sd / "tmux_intercept.log")
+ROUTER_MSG_DIR = str(_sd / "router_msgs")
 LEGACY_CURSOR_FILE = legacy_script_state_file(".router.cursor")
 LEGACY_PID_FILE = legacy_script_state_file(".router.pid")
 
