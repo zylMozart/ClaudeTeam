@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from config import AGENTS
+from claudeteam.runtime.config import AGENTS
 from claudeteam.storage import local_facts
 from claudeteam.messaging.renderer import render_feishu_markdown, render_inbox_text, render_log_text
 
