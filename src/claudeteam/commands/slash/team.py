@@ -3,30 +3,7 @@ from __future__ import annotations
 
 import re
 from .context import SlashContext
-
-
-# ── /team state parsing (pure) ────────────────────────────────
-
-def parse_agent_state(buf: str) -> tuple[str, str]:
-    """Classify tmux pane content → (emoji, label)."""
-    if not buf:
-        return ("❔", "无窗口")
-    low = buf.lower()
-    tail_lines = [l for l in buf.splitlines() if l.strip()]
-    tail = tail_lines[-1] if tail_lines else ""
-    if re.search(r"root@[0-9a-f]+:[^#]*#\s*$", tail):
-        return ("🛑", "Claude Code 未运行（bash）")
-    if "hit your limit" in low:
-        return ("🔴", "超额度 / 被限速")
-    if re.search(r"[⣾⣽⣻⢿⡿⣟⣯⣷◐◑◒◓]", tail):
-        return ("⚡", "处理中")
-    if re.search(r"thinking|running tool", low):
-        return ("⚡", "处理中")
-    if re.search(r"[>❯]\s*$", tail):
-        return ("✅", "空闲等待输入")
-    if re.search(r"do you want to proceed", low):
-        return ("⏸️", "等待确认")
-    return ("🔵", "运行中")
+from claudeteam.commands.team import parse_agent_state  # noqa: F401 (re-exported)
 
 
 def handle_team(text: str, ctx: SlashContext) -> dict | None:

@@ -7,10 +7,13 @@
 import json
 import os
 import re
-import subprocess
+
+from claudeteam.runtime.tmux_utils import capture_pane as _capture_pane, is_agent_idle
+from claudeteam.runtime.config import resolve_model_for_agent, resolve_thinking_for_agent
+from claudeteam.cli_adapters import adapter_for_agent
+from claudeteam.commands._team_io import load_team
 
 _CMD_RE = re.compile(r"^/team\s*$")
-_SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")
 _PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
 
 
@@ -21,46 +24,34 @@ def parse(text: str):
     return True if _CMD_RE.match(text.strip()) else None
 
 
-def _load_team():
-    team_file = os.path.join(_PROJECT_ROOT, "team.json")
-    try:
-        with open(team_file) as f:
-            return json.load(f)
-    except Exception:
-        return {"agents": {}}
-
-
-def _tmux_session():
-    return _load_team().get("session", "ClaudeTeam")
-
-
-def _capture_last(session, agent, lines=3):
-    try:
-        r = subprocess.run(
-            ["tmux", "capture-pane", "-t", f"{session}:{agent}", "-p",
-             "-S", f"-{lines}"],
-            capture_output=True, text=True, timeout=5)
-        return r.stdout.rstrip() if r.returncode == 0 else None
-    except Exception:
-        return None
+def parse_agent_state(buf: str) -> tuple[str, str]:
+    """Classify tmux pane content → (emoji, label)."""
+    if not buf:
+        return ("❔", "无窗口")
+    low = buf.lower()
+    tail_lines = [l for l in buf.splitlines() if l.strip()]
+    tail = tail_lines[-1] if tail_lines else ""
+    if re.search(r"root@[0-9a-f]+:[^#]*#\s*$", tail):
+        return ("🛑", "Claude Code 未运行（bash）")
+    if "hit your limit" in low:
+        return ("🔴", "超额度 / 被限速")
+    if re.search(r"[⣾⣽⣻⢿⡿⣟⣯⣷◐◑◒◓]", tail):
+        return ("⚡", "处理中")
+    if re.search(r"thinking|running tool", low):
+        return ("⚡", "处理中")
+    if re.search(r"[>❯]\s*$", tail):
+        return ("✅", "空闲等待输入")
+    if re.search(r"do you want to proceed", low):
+        return ("⏸️", "等待确认")
+    return ("🔵", "运行中")
 
 
 def collect_team_status(session=None):
     """采集每个 agent 的状态, 返回 list[dict]。"""
+    team = load_team()
     if session is None:
-        session = _tmux_session()
-    team = _load_team()
+        session = team.get("session", "ClaudeTeam")
     agents = team.get("agents", {})
-
-    # 延迟导入避免循环依赖
-    import sys
-    sys.path.insert(0, _SCRIPTS_DIR)
-    _src_dir = os.path.join(_SCRIPTS_DIR, "..", "src")
-    if _src_dir not in sys.path:
-        sys.path.insert(0, _src_dir)
-    from claudeteam.cli_adapters import adapter_for_agent
-    from claudeteam.runtime.config import resolve_model_for_agent, resolve_thinking_for_agent
-    from claudeteam.runtime.tmux_utils import is_agent_idle
 
     rows = []
     for name, info in agents.items():
@@ -77,7 +68,7 @@ def collect_team_status(session=None):
         cli = info.get("cli", "claude-code")
         role = info.get("role", name)
 
-        pane = _capture_last(session, name)
+        pane = _capture_pane(session, name, lines=3)
         if pane is None:
             status = "offline"
         elif "\U0001f4a4 待 wake" in pane or "\U0001f4a4" in pane.split("\n")[-1]:
