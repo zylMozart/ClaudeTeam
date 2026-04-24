@@ -13,8 +13,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
                     Path(__file__).resolve().parents[2])
 
-sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-import team_command
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+from claudeteam.commands import team as team_command
 
 
 def block(reason: str) -> None:
