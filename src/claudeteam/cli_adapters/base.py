@@ -13,7 +13,9 @@ class CliAdapter(ABC):
 
     @abstractmethod
     def busy_markers(self) -> list:
-        """pane 末尾出现任一 → agent 正忙。"""
+        """pane 末尾出现任一 → agent 正忙。
+        since 2026-04-25 only used by quick_idle_hint（is_agent_idle 已切到 pane-diff）。
+        """
 
     @abstractmethod
     def process_name(self) -> str:

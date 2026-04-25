@@ -45,7 +45,7 @@ def check_sanitizer():
         "whole line": (f"{SPAWN}\n真实任务", "真实任务"),
         "glued prefix": (f"{SPAWN}真实任务", "真实任务"),
         "prefix with model": (f"{SPAWN_MODEL} 真实任务", "真实任务"),
-        "suffix": (f"真实任务 {SPAWN}", "真实任务"),
+        "suffix example preserved": (f"真实任务 {SPAWN}", f"真实任务 {SPAWN}"),
         "middle multiline": (f"第一行\n{SPAWN_MODEL}\n第二行", "第一行\n第二行"),
     }
     for label, (raw, expected) in cases.items():
@@ -85,7 +85,7 @@ def check_send_direct():
             captured.append(("notify", to, frm, content))
         )
         feishu_msg.cmd_send("devops", "manager", f"{SPAWN}真实任务", "高")
-        feishu_msg.cmd_direct("toolsmith", "manager", f"直连任务 {SPAWN_MODEL}")
+        feishu_msg.cmd_direct("toolsmith", "manager", f"直连任务\n{SPAWN_MODEL}")
     finally:
         (
             feishu_msg.bitable_insert_message,
@@ -153,7 +153,7 @@ def check_router_default_route():
             "message_id": "regression-msg-1",
             "chat_id": "",
             "sender_id": "user-open-id",
-            "text": f"{SPAWN_MODEL} 默认路由任务 {SPAWN}",
+            "text": f"{SPAWN_MODEL}\n默认路由任务",
             "message_type": "text",
         })
     finally:
@@ -200,7 +200,7 @@ def check_history_replay_route():
                 "sender": {"sender_type": "user", "id": "user-open-id"},
                 "msg_type": "text",
                 "content": json.dumps({
-                    "text": f"{SPAWN} replay任务 {SPAWN_MODEL}"
+                    "text": f"{SPAWN}\nreplay任务\n{SPAWN_MODEL}"
                 }),
             }],
             "has_more": False,

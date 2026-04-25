@@ -162,6 +162,13 @@ def build_card(from_agent, to_agent, content, priority="中"):
     """Compatibility wrapper for messaging.service.build_card."""
     return _message_service.build_card(from_agent, to_agent, content, priority=priority)
 
+
+def build_cards(from_agent, to_agent, content, priority="中", *, max_chars=3500):
+    """Compatibility wrapper for messaging.service.build_cards."""
+    return _message_service.build_cards(
+        from_agent, to_agent, content, priority=priority, max_chars=max_chars,
+    )
+
 # ── 群组发消息 ─────────────────────────────────────────────────
 
 def post_to_group(from_agent, to_agent, content, priority="中"):
@@ -181,9 +188,14 @@ def post_to_group(from_agent, to_agent, content, priority="中"):
     if not chat_id:
         print("  ⚠️ chat_id 未配置，跳过群通知", file=sys.stderr)
         return False
-    card = build_card(from_agent, to_agent, content, priority)
-    d = _lark_im_send(chat_id, card=card)
-    return _check_lark_result(d, f"群通知 {from_agent}→{to_agent or '*'}", fatal=False)
+    cards = build_cards(from_agent, to_agent, content, priority)
+    ok = True
+    for card in cards:
+        d = _lark_im_send(chat_id, card=card)
+        ok = _check_lark_result(d, f"群通知 {from_agent}→{to_agent or '*'}", fatal=False) and ok
+        if not ok:
+            break
+    return ok
 
 # ── 工作空间日志 ───────────────────────────────────────────────
 
@@ -205,9 +217,9 @@ def cmd_say(from_agent, message="", image_path=""):
 
     if message:
         message = sanitize_agent_message(message)
-        card = build_card(from_agent, None, message)
-        d = _lark_im_send(chat_id, card=card)
-        _check_lark_result(d, f"群聊发言 {from_agent}→*")
+        for card in build_cards(from_agent, None, message):
+            d = _lark_im_send(chat_id, card=card)
+            _check_lark_result(d, f"群聊发言 {from_agent}→*")
         ws_log(from_agent, "消息发出", f"→ 群聊：{message[:10000]}")
         print(f"✅ 已发送到群聊")
 

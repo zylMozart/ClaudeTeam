@@ -203,8 +203,10 @@ def _catchup_from_history(chat_id):
             ct_f = parse_create_time(msg.get("create_time"))
             if ct_f and (max_ct is None or ct_f > max_ct):
                 max_ct = ct_f
-            if msg.get("sender", {}).get("sender_type") != "user":
-                continue
+            sender_type = msg.get("sender", {}).get("sender_type")
+            if sender_type != "user":
+                if not (_state._boss_mock and sender_type == "app"):
+                    continue
             if msg.get("msg_type") != "text":
                 continue
             raw = msg.get("content") or msg.get("body", {}).get("content", "")

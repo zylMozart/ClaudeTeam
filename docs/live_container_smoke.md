@@ -218,3 +218,70 @@ commands, spawn command fragments, or broken escape text.
 - **Gate B** (cleanliness): per-window `tmux capture-pane` excerpt with verdict
 - **Gate C** (slash commands): screenshot or text of the rendered reply for each
   of `/help /team /usage /tmux /send /compact`
+
+## Lazy-Wake Resume Smoke
+
+Verifies that `agent_lifecycle.sh` truly resumes a suspended agent's Claude
+session (via `claude --resume <sid>`), not just cold-boots a fresh one. First
+run: 2026-04-25 (`docs/lazy_wake_resume_smoke_2026-04-25.md`).
+
+### Preflight
+
+1. **worker_cc API credentials are fresh.** `.credentials.json` OAuth tokens
+   expire ~6 hours after device-flow login. Before smoke: send a trivial prompt
+   to worker_cc and confirm it does not return `API Error: 401`. If 401, run
+   `/login` on host first — this is a credential issue, not a lazy-wake bug.
+2. **Ticker reset script** (optional, to shorten idle threshold): heredoc a
+   short `/tmp/qa_ticker_loop.sh` with `CLAUDETEAM_SUSPEND_IDLE_MIN=3` +
+   `CLAUDETEAM_SUPERVISOR_INTERVAL=60`, launch inside `supervisor_ticker`
+   window. Do not send the long one-liner via `tmux send-keys` — pane width
+   wrap triggers `syntax error near unexpected token do`.
+3. `.agent_sessions.json` at `/app/scripts/.agent_sessions.json` should not
+   exist or should not contain `worker_cc` before the test.
+
+### Narrow-scope (Plan B) mechanism run
+
+Use when creds can't be refreshed in time — verifies the suspend/resume code
+path only, skips the anchor-word semantic round-trip.
+
+1. **Plant a context marker** (optional — if creds fresh, send worker_cc "记住
+   紫罗兰-42"; if 401, note as scope exclusion).
+2. **Manual suspend**: `source /app/scripts/lib/agent_lifecycle.sh &&
+   suspend_agent worker_cc`. Expect output `💾 保存 session_id=<uuid>`, `🔪 kill
+   pid=<n>`, `💤 done`. Pane shows 💤 banner; `pgrep -fa claude` no longer lists
+   the pid.
+3. **Evidence B**: `cat /app/scripts/.agent_sessions.json` — expect
+   `{"worker_cc": "<uuid v4 36 chars>"}`, not empty, not placeholder.
+4. **Trigger wake**: `python3 /app/scripts/feishu_msg.py direct worker_cc
+   manager "ping"`. Router sees休眠 status, calls `wake_agent`.
+5. **Evidence C (HARD)**: `ps -eo pid,cmd | grep claude` — new claude pid's
+   cmdline must contain `--resume <uuid>` **where the uuid exactly matches the
+   sid saved in step 3**. This is the load-bearing assertion.
+6. **Evidence D**: pane shows fresh Claude Code banner
+   (`Claude Code v2.x.x / Sonnet 4.x · Claude Max`) + prompt awaiting input.
+   If creds expired, subsequent API calls will 401 — that is expected and
+   actually confirms the resumed process is in charge of I/O.
+
+### Full-scope (Plan A) semantic run
+
+Same as above, plus after Evidence C:
+
+7. Auto-submit the injected `feishu_msg.py inbox worker_cc` prompt; resumed
+   session must (a) read the new message, (b) recall the anchor word from
+   before suspend, (c) reply with it. Passing anchor recall is the definitive
+   proof that the Claude Code session JSONL replay + OpenAI/Anthropic API
+   context reload both worked — not just the CLI flag.
+
+### Known Pitfalls
+
+- **OAuth token 过期 ≠ lazy-wake bug.** If worker_cc returns 401 on every
+  prompt, don't chown `.credentials.json` (ownership is irrelevant once token
+  is expired). Host-side `claude /login` to refresh.
+- **`supervisor` window may not exist / auto-SUSPEND path unverified.** This
+  smoke validates the suspend→resume execution chain via manual trigger. The
+  supervisor's "idle ≥ N min → auto-suspend" decision loop is a separate
+  concern — verify in a follow-up run once supervisor's own cold-start issue
+  is resolved.
+- **Only worker_cc has a real resume.** codex/kimi/gemini cold-start on wake
+  (adapter's `resume_cmd` returns nothing). Do not expect a `--resume` flag in
+  their cmdlines.

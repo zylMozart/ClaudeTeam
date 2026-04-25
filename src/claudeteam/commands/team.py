@@ -7,6 +7,7 @@
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from claudeteam.runtime.tmux_utils import capture_pane as _capture_pane, is_agent_idle
 from claudeteam.runtime.config import resolve_model_for_agent, resolve_thinking_for_agent
@@ -53,8 +54,10 @@ def collect_team_status(session=None):
         session = team.get("session", "ClaudeTeam")
     agents = team.get("agents", {})
 
-    rows = []
-    for name, info in agents.items():
+    items = list(agents.items())
+
+    def probe(item):
+        name, info = item
         adapter = adapter_for_agent(name)
         try:
             model = resolve_model_for_agent(name)
@@ -64,10 +67,8 @@ def collect_team_status(session=None):
             thinking = resolve_thinking_for_agent(name)
         except Exception:
             thinking = "?"
-
         cli = info.get("cli", "claude-code")
         role = info.get("role", name)
-
         pane = _capture_pane(session, name, lines=3)
         if pane is None:
             status = "offline"
@@ -77,11 +78,14 @@ def collect_team_status(session=None):
             status = "busy"
         else:
             status = "idle"
-
-        rows.append({
+        return {
             "name": name, "role": role, "cli": cli,
             "model": model, "thinking": thinking, "status": status,
-        })
+        }
+
+    # 并行 is_agent_idle：N agent × 3s 串行 → 整体 ~3s。
+    with ThreadPoolExecutor(max_workers=max(1, len(items))) as ex:
+        rows = list(ex.map(probe, items))
     return rows
 
 

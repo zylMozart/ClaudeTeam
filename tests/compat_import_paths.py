@@ -155,9 +155,9 @@ def test_feishu_msg_helper_compat_contract() -> None:
             "CODEX_AGENT=devops codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.4 真实任务",
             "真实任务",
         ),
-        "suffix": (
+        "suffix example preserved": (
             "真实任务 CODEX_AGENT=toolsmith codex --dangerously-bypass-approvals-and-sandbox",
-            "真实任务",
+            "真实任务 CODEX_AGENT=toolsmith codex --dangerously-bypass-approvals-and-sandbox",
         ),
         "middle multiline": (
             "第一行\nCODEX_AGENT=devops codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.4\n第二行",
