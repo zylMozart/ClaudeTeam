@@ -12,13 +12,20 @@ Router Daemon — 从 lark-cli event 事件流读取消息，路由到 tmux 窗�
 import sys, os, json, time, re, subprocess, atexit, signal, threading, glob
 from collections import OrderedDict
 
-sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
-from tmux_utils import inject_when_idle, is_agent_idle, capture_pane
-from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
-from feishu_msg import _lark_run, cmd_say, sanitize_agent_message
-from message_renderer import render_inbox_text, render_tmux_prompt
-from cli_adapters import adapter_for_agent
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from claudeteam.runtime.config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
+from claudeteam.runtime.tmux_utils import inject_when_idle, is_agent_idle, capture_pane
+from claudeteam.runtime.queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
+from claudeteam.integrations.feishu.client import _lark_run
+from claudeteam.messaging.service import sanitize_agent_message
+from feishu_msg import cmd_say
+from claudeteam.messaging.renderer import render_inbox_text, render_tmux_prompt
+from claudeteam.cli_adapters import adapter_for_agent
 import tmux_command
 import team_command
 import slash_commands

@@ -23,15 +23,20 @@
 import sys, os, json, time, subprocess, fcntl, uuid, hashlib
 from contextlib import contextmanager
 
-sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
-from message_renderer import (
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from claudeteam.runtime.config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
+from claudeteam.messaging.renderer import (
     render_inbox_text,
     render_log_text,
     split_feishu_markdown,
 )
-from tmux_utils import inject_when_idle
-from cli_adapters import adapter_for_agent
+from claudeteam.runtime.tmux_utils import inject_when_idle
+from claudeteam.cli_adapters import adapter_for_agent
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
 

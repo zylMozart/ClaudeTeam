@@ -16,10 +16,15 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+_SRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 from cli_credentials import (
     STATUS_API_FAILED,
@@ -1519,7 +1524,7 @@ def _clear_local(session: str, agent: str) -> bool:
         scripts_dir = str(Path(__file__).resolve().parent)
         if scripts_dir not in _sys.path:
             _sys.path.insert(0, scripts_dir)
-        from tmux_utils import inject_when_idle
+        from claudeteam.runtime.tmux_utils import inject_when_idle
         return inject_when_idle(session, agent, _init_msg(agent), wait_secs=15)
     except Exception:
         # 降级：直接 send-keys -l 字面模式 + Enter

@@ -11,6 +11,8 @@
   或"Thinking"等流式输出特征。inject_when_idle 轮询最多 wait_secs 秒，
   确认空闲后用 send-keys -l（字面模式）注入，避免 # $ 等字符被 tmux/shell 解释。
 """
+from __future__ import annotations
+
 import hashlib
 import re
 import subprocess, time, os, tempfile
