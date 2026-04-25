@@ -372,13 +372,27 @@ def notify_manager(proc_name):
         log_label=f"{proc_name} 重启",
     )
 
+def _pgrep_alive(match_str):
+    """pgrep 兜底判活: PID 文件缺失/损坏/PID 复用时, 用 pgrep -f 确认进程是否仍在。"""
+    if not match_str:
+        return False
+    try:
+        r = subprocess.run(["pgrep", "-f", match_str], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def is_healthy(proc):
     """进程存在 + 健康检查通过"""
     pid_file = proc.get("pid_file")
     if pid_file:
         # 传 match 防 PID 复用误判 (Bug 14)
         if not is_running_by_pid_file(pid_file, proc.get("match")):
-            return False
+            # pgrep 兜底: PID 文件可能落后于实际进程状态
+            if not _pgrep_alive(proc.get("match")):
+                return False
+            log(f"ℹ️ {proc['name']} PID 文件异常但 pgrep 找到进程, 视为存活")
     elif not is_running(proc["match"]):
         return False
     now = time.time()
@@ -402,6 +416,39 @@ def is_healthy(proc):
         log(f"⚠️ {proc['name']} 健康检查失败：输出文件 {health_file_age_secs:.0f}s 未更新")
         return False
     return True
+
+# ── 告警去重/节流 ────────────────────────────────────────────────
+# 每个进程独立维护: 上次告警时间 + 是否处于 unhealthy 状态。
+# 同一进程 300s 内不重复告警 (burst 期间每分钟检查一次, 5 分钟最多 1 条)。
+# 进程从 unhealthy → healthy 时发一条恢复通知。
+_ALERT_THROTTLE_SECS = 300
+_alert_state: dict = {}  # proc_name -> {"last_alert_ts": float, "was_unhealthy": bool}
+
+
+def _throttled_alert(proc_name, msg, log_label):
+    """发告警, 但同一进程 _ALERT_THROTTLE_SECS 内最多发一次。"""
+    now = time.time()
+    st = _alert_state.setdefault(proc_name, {"last_alert_ts": 0, "was_unhealthy": False})
+    st["was_unhealthy"] = True
+    if now - st["last_alert_ts"] < _ALERT_THROTTLE_SECS:
+        log(f"   ⏳ {proc_name} 告警节流中 (距上次 {now - st['last_alert_ts']:.0f}s)")
+        return
+    st["last_alert_ts"] = now
+    _send_manager_alert(msg, log_label)
+
+
+def _notify_recovered(proc_name):
+    """进程恢复健康时发一条恢复通知 (仅当之前处于 unhealthy 状态时)。"""
+    st = _alert_state.get(proc_name)
+    if not st or not st.get("was_unhealthy"):
+        return
+    st["was_unhealthy"] = False
+    log(f"✅ {proc_name} 已恢复健康")
+    _send_manager_alert(
+        f"[watchdog] ✅ {proc_name} 已恢复健康",
+        log_label=f"{proc_name} 恢复",
+    )
+
 
 def check_once():
     """ADR watchdog_max_retries_cooldown: burst + cooldown 状态机.
@@ -442,6 +489,7 @@ def check_once():
             log(line)
 
         if not plan.mark_unhealthy:
+            _notify_recovered(name)
             continue
 
         # ── 不健康分支 ──
@@ -450,9 +498,8 @@ def check_once():
             continue
 
         if plan.effect == _watchdog_effect_plan.EFFECT_ALERT_ONLY:
-            # 直接走自定义文案,不走 notify_manager 的默认 "已崩溃并自动重启" 模板,
-            # 避免两段文案拼在一起自相矛盾(reviewer CR#1)
-            _send_manager_alert(
+            _throttled_alert(
+                name,
                 _watchdog_messages.build_cooldown_alert(
                     name,
                     decision.max_retries,
@@ -464,7 +511,11 @@ def check_once():
 
         restart_process(proc)
         time.sleep(2)
-        notify_manager(name)
+        _throttled_alert(
+            name,
+            _watchdog_messages.build_burst_alert(name),
+            log_label=f"{name} 重启",
+        )
 
     if all_ok:
         log("✅ 所有守护进程运行正常")
