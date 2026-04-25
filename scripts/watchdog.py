@@ -264,11 +264,32 @@ def restart_process(proc):
         # F-ROUTER-1: 在 tmux pane 内复活,蒙眼 capture-pane 看得到新 banner;
         # send-keys 失败 (pane 锁/session 没了/tmux 不在 PATH) 立刻 fallback
         # 到旧 Popen,保证老部署行为不变。
+        # F-FIX-2: router 的 launch 命令必须从 scripts/lib/router_launch.sh
+        # 取,因为它读 runtime_config.json 的 lark_profile 注入 --profile;
+        # build_lark_event_subscribe_cmd 不带 profile, 多 profile host
+        # (team01/team02/life-pm/...) watchdog 自愈会订阅错 App。
+        launch_str = ""
         cmd_list = proc.get("cmd") or []
-        if isinstance(cmd_list, list) and cmd_list[:2] == ["bash", "-c"] and len(cmd_list) >= 3:
-            launch_str = cmd_list[2]
-        else:
-            launch_str = " ".join(cmd_list) if isinstance(cmd_list, list) else str(cmd_list)
+        is_router_pipeline = (isinstance(cmd_list, list) and cmd_list[:2] == ["bash", "-c"]
+                              and len(cmd_list) >= 3 and "feishu_router.py" in cmd_list[2])
+        if is_router_pipeline:
+            try:
+                rs = subprocess.run(
+                    ["bash", os.path.join(PROJECT_ROOT, "scripts/lib/router_launch.sh")],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=5,
+                )
+                candidate = (rs.stdout or "").strip()
+                if rs.returncode == 0 and candidate and "feishu_router.py" in candidate:
+                    launch_str = candidate
+                else:
+                    log(f"⚠️ router_launch.sh 输出异常 (rc={rs.returncode}); fallback 到内置 cmd")
+            except Exception as e:
+                log(f"⚠️ router_launch.sh 调用失败 ({e}); fallback 到内置 cmd")
+        if not launch_str:
+            if isinstance(cmd_list, list) and cmd_list[:2] == ["bash", "-c"] and len(cmd_list) >= 3:
+                launch_str = cmd_list[2]
+            else:
+                launch_str = " ".join(cmd_list) if isinstance(cmd_list, list) else str(cmd_list)
         try:
             subprocess.run(["tmux", "send-keys", "-t", target, "C-c"],
                            check=False, timeout=5)
