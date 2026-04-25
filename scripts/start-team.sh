@@ -7,6 +7,13 @@
 # env bash shebang 让同机器的多 bash 版本按 PATH 顺序决定。
 
 set -e
+
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo "❌ bash 4+ 必须。当前版本: $BASH_VERSION"
+  echo "   macOS: brew install bash  然后确保 /usr/local/bin/bash 在 PATH 前面"
+  exit 1
+fi
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -152,7 +159,7 @@ spawn_agent_window() {
       Enter
   else
     local spawn_cmd
-    spawn_cmd=$(python3 -m claudeteam.cli_adapters.resolve "$agent" spawn_cmd "${AGENT_MODELS[$agent]}")
+    spawn_cmd=$(python3 scripts/cli_adapters/resolve.py "$agent" spawn_cmd "${AGENT_MODELS[$agent]}")
     tmux send-keys -t "$SESSION:$agent" "$spawn_cmd" Enter
   fi
 }
@@ -210,7 +217,7 @@ else
 fi
 export PROBE_AGENTS="${ACTIVE_AGENTS[*]}"
 
-if ! probe_agents 15; then
+if ! probe_agents "${CLAUDETEAM_PROBE_TIMEOUT:-30}"; then
   diagnose_failed_agents
   echo ""
   echo "⚠️  中止:不向死掉的 agent 窗口发送 init 消息,以免污染 bash 历史。"
@@ -233,16 +240,15 @@ for agent in "${ACTIVE_AGENTS[@]}"; do
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
   # thinking init hint (F2: per-agent thinking level)
-  THINKING_HINT=$(python3 -m claudeteam.cli_adapters.resolve "$agent" thinking_init_hint \
-    "$(python3 -m claudeteam.runtime.config resolve-thinking "$agent" 2>/dev/null)" 2>/dev/null) && \
+  THINKING_HINT=$(python3 scripts/cli_adapters/resolve.py "$agent" thinking_init_hint \
+    "$(python3 scripts/config.py resolve-thinking "$agent" 2>/dev/null)" 2>/dev/null) && \
     INIT_MSG="${INIT_MSG}
 
 【Thinking 指引】${THINKING_HINT}"
 
   INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
 import os, sys
-sys.path.insert(0, os.path.join(os.getcwd(), "src"))
-from claudeteam.runtime.tmux_utils import inject_when_idle
+from tmux_utils import inject_when_idle
 
 session, agent = sys.argv[1], sys.argv[2]
 ok = inject_when_idle(session, agent, os.environ["INIT_MSG"],

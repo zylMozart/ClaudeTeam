@@ -9,6 +9,8 @@
   matched=True 时 reply 是要回显给用户的文本；matched=False 时交给正常路径。
   任何 side effect（tmux send-keys / subprocess）都在这里执行。
 """
+from __future__ import annotations
+
 import json
 import os
 import re
