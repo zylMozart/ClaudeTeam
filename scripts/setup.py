@@ -705,6 +705,10 @@ def main():
     _backup_team_json()
     if share_link:
         print(f"\n📎 飞书群聊邀请链接（发给用户）:\n   {share_link}")
+        print("   ⚠️  bot 已在群里, 但老板默认不在。蒙眼 / 远程部署应急路径:")
+        print("       host 端 `python3 scripts/feishu_msg.py boss \"<applink>\"` 把上面")
+        print("       的链接发给老板,老板点链接入群。详见 docs/OPERATIONS.md")
+        print("       \"新群老板入群\" 段。")
     print("=" * 50)
 
 if __name__ == "__main__":

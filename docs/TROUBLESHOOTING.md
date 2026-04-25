@@ -16,7 +16,7 @@ Last updated: 2026-04-25
 Quick checks:
 
 - router process alive (`pgrep -f feishu_router.py`)
-- router cursor heartbeat freshness (`scripts/.router.cursor` mtime)
+- router cursor heartbeat freshness (`/app/state/router.cursor` mtime; legacy `scripts/.router.cursor` still read for backwards compat but deprecated)
 - subscription profile/app mismatch
 
 Likely causes:

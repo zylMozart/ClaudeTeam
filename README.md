@@ -152,6 +152,12 @@ $EDITOR .env                        # fill FEISHU_APP_ID / FEISHU_APP_SECRET
                                     # (optional) HOST_UID=$(id -u) HOST_GID=$(id -g)
                                     # so files written by the container land
                                     # back on the host as your admin user.
+#
+# Or, option A (re-use host lark-cli credentials): leave FEISHU_APP_ID /
+# FEISHU_APP_SECRET empty in .env, then uncomment the ~/.lark-cli and
+# ~/.local/share/lark-cli bind-mounts in docker-compose.yml §85-94 to reuse
+# host lark-cli credentials. Useful if you already ran
+# `npx @larksuite/cli config init --new` on the host.
 
 # 2. Define the team you want.
 $EDITOR team.json                   # session name + agents (see templates/)

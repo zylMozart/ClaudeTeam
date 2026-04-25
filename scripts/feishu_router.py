@@ -41,6 +41,13 @@ LEGACY_PID_FILE = legacy_script_state_file(".router.pid")
 _CURSOR = CURSOR_FILE
 _LEGACY_CURSOR = LEGACY_CURSOR_FILE
 
+# F-G2-USAGE-DUP: belt-and-suspenders dedup by (msg_id, slash_command_head).
+# RouterState.is_seen 已经按 msg_id 去重,但极端情况 (双 router / hot-restart
+# 之间 race) 偶发同 msg_id 漏拉 → 这里再按 (msg_id, /usage 这一段) 30s 内只发
+# 一次。窗口比"用户耐心"短,正常重发不会被吞。
+_SLASH_EMIT_CACHE: dict = {}
+_SLASH_DEDUP_WINDOW_SECS = 30
+
 
 # ── cursor wrappers (module-level so tests can patch) ────────────────────────
 
@@ -148,6 +155,18 @@ def handle_event(event):
         return
     _state.mark_seen(result.msg_id)
     if result.action == EventAction.SLASH:
+        cmd_head = (result.text or "").strip().split(" ", 1)[0] if result.text else ""
+        dedup_key = (result.msg_id, cmd_head)
+        now = time.time()
+        last = _SLASH_EMIT_CACHE.get(dedup_key, 0)
+        if now - last < _SLASH_DEDUP_WINDOW_SECS:
+            print(f"  ⚠️ 跳过重复 slash: {dedup_key} (上次 {now - last:.1f}s 前)")
+            _m._advance_cursor()
+            return
+        _SLASH_EMIT_CACHE[dedup_key] = now
+        cutoff = now - _SLASH_DEDUP_WINDOW_SECS
+        for k in [k for k, t in _SLASH_EMIT_CACHE.items() if t < cutoff]:
+            del _SLASH_EMIT_CACHE[k]
         _, reply = _slash_dispatch(result.text)
         try:
             from claudeteam.integrations.feishu.client import _lark_im_send, get_chat_id

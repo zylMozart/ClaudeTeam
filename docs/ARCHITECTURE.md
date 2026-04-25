@@ -298,7 +298,7 @@ ClaudeTeam is a Feishu-driven multi-agent coordination system where tmux is the 
 - Pending queue:
   - `workspace/shared/.pending_msgs/<agent>.json`
 - Router health/cursor:
-  - `scripts/.router.cursor`
+  - `/app/state/router.cursor` (legacy `scripts/.router.cursor` still read for backwards compat but deprecated)
 
 ## Message Flow: Group Message To Agent Response
 

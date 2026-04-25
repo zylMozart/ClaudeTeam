@@ -123,3 +123,20 @@ docker compose exec team ls -l /app/state/router.cursor
 docker compose exec team pgrep -af 'lark-cli.*event.*subscribe'
 docker compose exec team tmux capture-pane -t "$CLAUDETEAM_TMUX_SESSION:router" -p | tail -10
 ```
+
+## 新群老板入群（applink 应急 · F-CHAT-1）
+
+`python3 scripts/setup.py` 创建新飞书群成功后,只有 bot 在群里 — 真用户老板
+默认**不在**。蒙眼 / 远程员工无法替老板扫码入群,得靠 applink 转发:
+
+1. setup.py 输出末尾会打印一行 `📎 飞书群聊邀请链接（发给用户）: https://...`,
+   这就是 applink。
+2. 在 host 端 (有老板飞书 device-flow 凭证的机器) 把链接发给老板:
+   ```bash
+   python3 scripts/feishu_msg.py boss "<applink>"
+   ```
+3. 老板手机 / 桌面端点链接, 点"加入群聊"即可。
+4. 老板入群后 manager 收到 `member_added` 事件,从此正常路由。
+
+如果你身边没有装着老板凭证的 host (蒙眼员工常态), 把 applink 贴回汇报给
+manager / 老板的对接人, 让他们用上面的命令转发。
