@@ -415,7 +415,7 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
 
     if not has_pending:
         ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
-                              wait_secs=15, force_after_wait=False,
+                              wait_secs=30, force_after_wait=False,
                               submit_keys=adapter_for_agent(agent_name).submit_keys())
         if ok:
             print(f"  → 已触发 {agent_name} 窗口（直接投递）")
