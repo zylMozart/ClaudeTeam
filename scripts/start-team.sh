@@ -2,15 +2,12 @@
 # 启动完整 Agent 团队 + Router + Watchdog
 # 用法：cd <项目目录> && bash scripts/start-team.sh
 #
-# 依赖: bash 4+ (使用 declare -A 关联数组存 per-agent 模型分配)。
-# macOS 自带 bash 3.2,需 `brew install bash` 后确保 PATH 命中 bash 4。
-# env bash shebang 让同机器的多 bash 版本按 PATH 顺序决定。
+# 依赖: bash 3.2+ (使用 eval 方式存 per-agent 模型分配,兼容 macOS 自带 bash)。
 
 set -e
 
-if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
-  echo "❌ bash 4+ 必须。当前版本: $BASH_VERSION"
-  echo "   macOS: brew install bash  然后确保 /usr/local/bin/bash 在 PATH 前面"
+if [ "${BASH_VERSINFO[0]:-0}" -lt 3 ]; then
+  echo "❌ bash 3+ 必须。当前版本: $BASH_VERSION"
   exit 1
 fi
 
@@ -133,6 +130,88 @@ fi
 print_agent_models_table
 echo ""
 
+# ── B2: CLI trust 预配置 ─────────────────────────────────────
+# 在 spawn 之前把各 CLI 的 trust / project onboarding 写好,
+# 避免首次启动弹 trust dialog 卡住 tmux pane。
+if [ -f "$HOME/.claude.json" ]; then
+  python3 - "$ROOT" <<'PY'
+import json, os, sys
+
+root = sys.argv[1]
+p = os.path.expanduser("~/.claude.json")
+with open(p) as f:
+    d = json.load(f)
+projects = d.setdefault("projects", {})
+proj = projects.setdefault(root, {})
+if not proj.get("hasTrustDialogAccepted"):
+    proj["hasTrustDialogAccepted"] = True
+    proj.setdefault("hasCompletedProjectOnboarding", True)
+    proj.setdefault("projectOnboardingSeenCount", 1)
+    with open(p, "w") as f:
+        json.dump(d, f, indent=2)
+    print(f"✅ Claude Code trust 已为 {root} 预写")
+PY
+fi
+
+if command -v codex >/dev/null 2>&1; then
+  CODEX_TOML="$HOME/.codex/config.toml"
+  mkdir -p "$(dirname "$CODEX_TOML")"
+  touch "$CODEX_TOML"
+  python3 - "$ROOT" "$CODEX_TOML" <<'PY'
+import sys
+from pathlib import Path
+
+root, toml_path = sys.argv[1], sys.argv[2]
+p = Path(toml_path)
+text = p.read_text(errors="ignore")
+block = f'[projects."{root}"]\ntrust_level = "trusted"\n'
+if f'[projects."{root}"]' not in text:
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text:
+        text += "\n"
+    text += block
+    p.write_text(text)
+    print(f"✅ Codex trust 已为 {root} 预写")
+PY
+fi
+
+if command -v gemini >/dev/null 2>&1; then
+  GEMINI_TRUSTED="$HOME/.gemini/trustedFolders.json"
+  mkdir -p "$(dirname "$GEMINI_TRUSTED")"
+  python3 - "$ROOT" "$GEMINI_TRUSTED" <<'PY'
+import json, sys
+from pathlib import Path
+
+root, tf_path = sys.argv[1], sys.argv[2]
+p = Path(tf_path)
+try:
+    data = json.loads(p.read_text()) if p.exists() else {}
+except Exception:
+    data = {}
+if data.get(root) != "TRUST_FOLDER":
+    data[root] = "TRUST_FOLDER"
+    p.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    print(f"✅ Gemini trust 已为 {root} 预写")
+PY
+fi
+
+# ── B3: 升级弹窗抑制 ─────────────────────────────────────────
+if [ -f "$HOME/.claude.json" ]; then
+  python3 - <<'PY'
+import json, os
+
+p = os.path.expanduser("~/.claude.json")
+with open(p) as f:
+    d = json.load(f)
+if d.get("autoUpdates") is not False:
+    d["autoUpdates"] = False
+    with open(p, "w") as f:
+        json.dump(d, f, indent=2)
+    print("✅ Claude Code autoUpdates=false 已写入")
+PY
+fi
+
 # ── 创建 tmux session ─────────────────────────────────────────
 
 # spawn_agent_window <agent_name> [--first]
@@ -147,19 +226,28 @@ spawn_agent_window() {
   local agent="$1" first="${2:-}"
   if [ "$first" = "--first" ]; then
     tmux new-session -d -s "$SESSION" -n "$agent" -c "$ROOT"
+    # B4: 注入环境变量白名单到 tmux session (bash 3.2 兼容)
+    for _var in ANTHROPIC_API_KEY CLAUDETEAM_LAZY_MODE CLAUDETEAM_LAZY_AGENTS \
+                CLAUDETEAM_DEFAULT_MODEL CLAUDETEAM_ENABLE_FEISHU_REMOTE \
+                CLAUDETEAM_PROBE_TIMEOUT PYTHONPATH PATH; do
+      eval "_val=\${$_var+SET}"
+      if [ "$_val" = "SET" ]; then
+        eval "tmux set-environment -t \"\$SESSION\" \"\$_var\" \"\${$_var}\""
+      fi
+    done
   else
     tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
   fi
 
   if should_skip_agent_in_lazy_mode "$agent"; then
     # 占位: 留 bash prompt,不 spawn cli。router 唤醒时会覆盖这条。
-    local banner="💤 待 wake  (agent=$agent, model=${AGENT_MODELS[$agent]}, lazy-mode)"
+    local banner="💤 待 wake  (agent=$agent, model=$(get_agent_model "$agent"), lazy-mode)"
     tmux send-keys -t "$SESSION:$agent" \
       "clear && echo '$banner' && echo '   router 收到业务消息后会唤醒本窗口'" \
       Enter
   else
     local spawn_cmd
-    spawn_cmd=$(python3 scripts/cli_adapters/resolve.py "$agent" spawn_cmd "${AGENT_MODELS[$agent]}")
+    spawn_cmd=$(python3 scripts/cli_adapters/resolve.py "$agent" spawn_cmd "$(get_agent_model "$agent")")
     tmux send-keys -t "$SESSION:$agent" "$spawn_cmd" Enter
   fi
 }

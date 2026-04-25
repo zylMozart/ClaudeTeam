@@ -302,6 +302,21 @@ if not app.get("hasTrustDialogAccepted"):
     print("✅ 已为 /app 写入 Claude Code 信任标记")
 PY
 
+  # B3: 升级弹窗抑制
+  python3 - <<'PY'
+import json, os
+p = "/home/claudeteam/.claude.json"
+if not os.path.exists(p):
+    raise SystemExit(0)
+with open(p) as f:
+    d = json.load(f)
+if d.get("autoUpdates") is not False:
+    d["autoUpdates"] = False
+    with open(p, "w") as f:
+        json.dump(d, f, indent=2)
+    print("✅ Claude Code autoUpdates=false 已写入")
+PY
+
   # 预置 Claude Code settings.local.json。
   mkdir -p /home/claudeteam/.claude
   python3 - <<'PY'
@@ -512,15 +527,24 @@ spawn_one() {
   local agent="$1" first="${2:-}"
   if [ "$first" = "--first" ]; then
     tmux new-session -d -s "$SESSION" -n "$agent" -c "$ROOT"
+    # B4: 注入环境变量白名单到 tmux session (bash 3.2 兼容)
+    for _var in ANTHROPIC_API_KEY CLAUDETEAM_LAZY_MODE CLAUDETEAM_LAZY_AGENTS \
+                CLAUDETEAM_DEFAULT_MODEL CLAUDETEAM_ENABLE_FEISHU_REMOTE \
+                CLAUDETEAM_PROBE_TIMEOUT PYTHONPATH PATH; do
+      eval "_val=\${$_var+SET}"
+      if [ "$_val" = "SET" ]; then
+        eval "tmux set-environment -t \"\$SESSION\" \"\$_var\" \"\${$_var}\""
+      fi
+    done
   else
     tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
   fi
   if should_skip_agent_in_lazy_mode "$agent"; then
     tmux send-keys -t "$SESSION:$agent" \
-      "clear && echo '💤 待 wake  (agent=$agent, model=${AGENT_MODELS[$agent]}, lazy-mode)' && echo '   router 收到业务消息后会唤醒本窗口'" Enter
+      "clear && echo '💤 待 wake  (agent=$agent, model=$(get_agent_model "$agent"), lazy-mode)' && echo '   router 收到业务消息后会唤醒本窗口'" Enter
   else
     local spawn_cmd
-    spawn_cmd=$(python3 -m claudeteam.cli_adapters.resolve "$agent" spawn_cmd "${AGENT_MODELS[$agent]}")
+    spawn_cmd=$(python3 -m claudeteam.cli_adapters.resolve "$agent" spawn_cmd "$(get_agent_model "$agent")")
     tmux send-keys -t "$SESSION:$agent" "$spawn_cmd" Enter
   fi
 }

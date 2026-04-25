@@ -57,18 +57,19 @@ should_skip_agent_in_lazy_mode() {
 # resolve_all_agent_models
 # 前置条件: 调用方已填充 bash array $AGENTS (来自 team.json)。
 # 效果:
-#   填充全局关联数组 AGENT_MODELS[agent]=model_id,基于
-#   scripts/config.py resolve-model 的 fallback 链 + 白名单校验。
+#   填充全局变量 AGENT_MODEL_<agent>=model_id (eval 方式,bash 3.2 兼容),
+#   基于 scripts/config.py resolve-model 的 fallback 链 + 白名单校验。
 #   任一 agent 解析失败立即返回,保证"起了一半才发现非法 model"不会发生。
+#   用 get_agent_model <agent> 读取。
 # 返回:
-#   0 — 全部解析成功,AGENT_MODELS 可直接用于 claude --model $...
+#   0 — 全部解析成功
 #   1 — 至少一个失败,失败的 agent 名写入全局 FAILED_MODEL_AGENT,
 #       错误详情已打到 stderr。调用方应据此 exit(库不自行 exit)。
+get_agent_model() { eval "echo \"\$AGENT_MODEL_${1}\""; }
+
 resolve_all_agent_models() {
   local agent model
   FAILED_MODEL_AGENT=""
-  unset AGENT_MODELS
-  declare -gA AGENT_MODELS
   for agent in "${AGENTS[@]}"; do
     if ! model=$(python3 -m claudeteam.runtime.config resolve-model "$agent" 2>&1); then
       echo "❌ 解析 $agent 的模型失败: $model" >&2
@@ -76,7 +77,7 @@ resolve_all_agent_models() {
       FAILED_MODEL_AGENT="$agent"
       return 1
     fi
-    AGENT_MODELS[$agent]=$model
+    eval "AGENT_MODEL_${agent}=\$model"
   done
   return 0
 }
@@ -88,7 +89,7 @@ print_agent_models_table() {
   local agent
   echo "📋 模型分配:"
   for agent in "${AGENTS[@]}"; do
-    echo "     $agent → ${AGENT_MODELS[$agent]}"
+    echo "     $agent → $(get_agent_model "$agent")"
   done
 }
 
