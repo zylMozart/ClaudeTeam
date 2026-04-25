@@ -68,10 +68,11 @@ services:
       # 容器内 root 写入的文件 host 端 owner 也是 root,admin 后续 cp/编辑要 sudo。
       # .env 里设 HOST_UID=$(id -u) HOST_GID=$(id -g) 后,entrypoint 会把
       # /home/claudeteam/.{kimi,codex,gemini} chown 回 host admin。
-      # 缺省值 1000:1000 兼容老部署 (大多数 Linux admin 用户就是 1000)。
-      # 不设 HOST_UID 时 entrypoint 会跳过 chown — 行为完全不变。
-      - HOST_UID=${HOST_UID:-1000}
-      - HOST_GID=${HOST_GID:-1000}
+      # 缺省空串 → entrypoint 见空就跳过 chown,行为完全不变 (老部署兼容)。
+      # 这是 spec §12 "HOST_UID 缺省即跳过" 的边界,不能给 1000 兜底
+      # (那样容器永远看到 HOST_UID=1000,chown 就总跑了)。
+      - HOST_UID=${HOST_UID:-}
+      - HOST_GID=${HOST_GID:-}
 
     # ── 数据持久化 ────────────────────────────────────────────
     volumes:
