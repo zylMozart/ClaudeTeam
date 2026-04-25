@@ -265,17 +265,21 @@ def inject_when_idle(session, window, text,
                                           delete=False, encoding="utf-8")
         tmp.write(text)
         tmp.close()
-        subprocess.run(["tmux", "load-buffer", "-b", "_inject", tmp.name],
-                       capture_output=True)
-        subprocess.run(["tmux", "paste-buffer", "-b", "_inject", "-d", "-t", target],
-                       capture_output=True)
+        r1 = subprocess.run(["tmux", "load-buffer", "-b", "_inject", tmp.name],
+                            capture_output=True)
+        r2 = subprocess.run(["tmux", "paste-buffer", "-b", "_inject", "-d", "-t", target],
+                            capture_output=True)
         os.unlink(tmp.name)
+        if r1.returncode != 0 or r2.returncode != 0:
+            return False
     else:
         # 短文本：用 -l 字面模式发送
-        subprocess.run(
+        r = subprocess.run(
             ["tmux", "send-keys", "-l", "-t", target, text],
             capture_output=True
         )
+        if r.returncode != 0:
+            return False
 
     # 等待 TUI 处理完文本输入后再按 Enter。Codex/Kimi/Claude 的 TUI 对
     # paste-buffer 和 literal send-keys 的消化时机不同；Enter 后再补 C-m，

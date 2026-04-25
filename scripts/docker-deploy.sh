@@ -15,7 +15,7 @@
 #   - docker compose build + up -d
 #   - 等容器 healthy, 打印关键状态
 
-set -e
+set -eo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
