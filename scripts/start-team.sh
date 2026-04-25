@@ -78,7 +78,12 @@ fi
 SESSION=$(python3 -c "import json; print(json.load(open('team.json'))['session'])")
 AGENTS=($(python3 -c "import json; print(' '.join(json.load(open('team.json'))['agents'].keys()))"))
 
-# AGENT_TEAMS 冲突检测: 同机其他部署是否声明了同名 session
+# CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS 环境变量冲突检测
+if ! check_agent_teams_env; then
+  exit 1
+fi
+
+# session 名冲突检测: 同机其他部署是否声明了同名 session
 if ! check_session_conflict "$ROOT" "$SESSION"; then
   exit 1
 fi

@@ -504,7 +504,12 @@ case "$LAZY_MODE" in
 esac
 source "$ROOT/scripts/lib/tmux_team_bringup.sh"
 
-# AGENT_TEAMS 冲突检测 — 容器场景只告警不 exit (restart 循环救不了配置错)
+# CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS 环境变量冲突检测
+if ! check_agent_teams_env; then
+  echo "   ⚠️  容器继续启动,但 tmux 注入可能被 Claude Code 内置团队功能干扰。"
+fi
+
+# session 名冲突检测 — 容器场景只告警不 exit (restart 循环救不了配置错)
 check_session_conflict "$ROOT" "$SESSION" || \
   echo "   ⚠️  存在 session 冲突,但容器继续启动。请尽快修正 team.json session 名。"
 

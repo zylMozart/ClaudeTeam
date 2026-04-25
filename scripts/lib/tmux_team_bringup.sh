@@ -180,7 +180,22 @@ diagnose_failed_agents() {
   fi
 }
 
-# ── AGENT_TEAMS 冲突检测 ─────────────────────────────────────────
+# ── CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS 环境变量检测 ────────────
+# Claude Code 内置团队功能会和我们的 tmux 注入冲突。检测到就告警。
+# 库不调 exit,决策权留给调用方。返回 0=安全, 1=检测到冲突变量。
+check_agent_teams_env() {
+  if [ -n "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" ]; then
+    echo "⛔ 检测到 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS 环境变量"
+    echo "   Claude Code 内置团队功能会接管 agent 生命周期，与 ClaudeTeam"
+    echo "   的 tmux 注入机制冲突（消息丢失、窗口争抢）。"
+    echo "   修复: unset CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
+    echo "   或从 .env / shell profile 中移除该变量后重新启动。"
+    return 1
+  fi
+  return 0
+}
+
+# ── session 名冲突检测 ───────────────────────────────────────────
 # check_session_conflict <project_root> <session_name>
 #   扫描同机其他 ClaudeTeam 部署是否声明了相同的 tmux session 名。
 #   冲突且对方 session 存活 → 返回 1 + 打印诊断；否则返回 0。
@@ -189,16 +204,15 @@ check_session_conflict() {
   local self_root="$1" self_session="$2"
   local conflict_found=0
 
-  # 扫描已知部署目录 (与 setup.py _scan_other_deployments 同逻辑)
   local search_roots="/home /opt /app /root"
   local tj other_session other_root
-  for tj in $(find $search_roots -maxdepth 5 -name team.json -path '*/ClaudeTeam/team.json' 2>/dev/null); do
+  while IFS= read -r tj; do
     other_root="$(cd "$(dirname "$tj")" && pwd)"
     [ "$other_root" = "$self_root" ] && continue
-    other_session="$(python3 -c "import json; print(json.load(open('$tj')).get('session',''))" 2>/dev/null)" || continue
+    other_session="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('session',''))" "$tj" 2>/dev/null)" || continue
     [ -z "$other_session" ] && continue
     if [ "$other_session" = "$self_session" ]; then
-      echo "⚠️  AGENT_TEAMS 冲突检测:"
+      echo "⚠️  session 名冲突检测:"
       echo "   本部署: $self_root (session=$self_session)"
       echo "   冲突方: $other_root (session=$other_session)"
       if tmux has-session -t "$other_session" 2>/dev/null; then
@@ -209,6 +223,6 @@ check_session_conflict() {
         echo "   ℹ️  对方 session 未运行,不阻塞启动,但建议修改避免未来冲突。"
       fi
     fi
-  done
+  done < <(find $search_roots -maxdepth 3 -name team.json -path '*/ClaudeTeam/team.json' 2>/dev/null)
   return "$conflict_found"
 }
