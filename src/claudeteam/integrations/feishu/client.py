@@ -68,8 +68,12 @@ def _check_lark_result(result, action, *, fatal=True):
 
 
 def _lark_im_send_with_run(run_fn, chat_id, content=None, markdown=None, image=None, card=None):
-    """通过 lark-cli 向群组发送消息。"""
-    args = ["im", "+messages-send", "--chat-id", chat_id, "--as", "bot"]
+    """通过 lark-cli 向群组发送消息。
+
+    默认 --as user：以授权用户（老板）身份发言，群里看不到 bot 标识。
+    要求该 lark-cli profile 已通过 device-flow 拿到 user_access_token。
+    """
+    args = ["im", "+messages-send", "--chat-id", chat_id, "--as", "user"]
     if markdown:
         args += ["--markdown", markdown]
     elif image:
