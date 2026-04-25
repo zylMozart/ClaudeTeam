@@ -6,6 +6,7 @@ in scripts/feishu_msg.py during migration.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -70,10 +71,11 @@ def _check_lark_result(result, action, *, fatal=True):
 def _lark_im_send_with_run(run_fn, chat_id, content=None, markdown=None, image=None, card=None):
     """通过 lark-cli 向群组发送消息。
 
-    默认 --as user：以授权用户（老板）身份发言，群里看不到 bot 标识。
-    要求该 lark-cli profile 已通过 device-flow 拿到 user_access_token。
+    默认 --as bot：以机器人身份发言。若部署已完成 user OAuth device-flow,
+    可通过环境变量 CLAUDETEAM_LARK_SEND_AS=user 切换为用户身份（无 bot 标识）。
     """
-    args = ["im", "+messages-send", "--chat-id", chat_id, "--as", "user"]
+    send_as = os.environ.get("CLAUDETEAM_LARK_SEND_AS", "bot")
+    args = ["im", "+messages-send", "--chat-id", chat_id, "--as", send_as]
     if markdown:
         args += ["--markdown", markdown]
     elif image:
