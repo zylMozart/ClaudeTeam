@@ -96,6 +96,39 @@ def build_context() -> SlashContext:
     )
 
 
+_scripts_slash_mod = None
+
+def _try_scripts_slash(text: str):
+    """Delegate to scripts/slash_commands.py if available (richer card format)."""
+    global _scripts_slash_mod
+    if _scripts_slash_mod is False:
+        return None
+    if _scripts_slash_mod is None:
+        sc = Path(PROJECT_ROOT) / "scripts" / "slash_commands.py"
+        if not sc.exists():
+            _scripts_slash_mod = False
+            return None
+        try:
+            scripts_dir = str(Path(PROJECT_ROOT) / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_slash_commands_scripts", str(sc))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _scripts_slash_mod = mod
+        except Exception:
+            _scripts_slash_mod = False
+            return None
+    try:
+        return _scripts_slash_mod.dispatch(text)
+    except Exception:
+        return None
+
+
 def dispatch(text: str):
     """Route text to a slash handler. Returns (matched: bool, reply)."""
+    result = _try_scripts_slash(text)
+    if result is not None and result[0]:
+        return result
     return _src_dispatch(text, build_context())
