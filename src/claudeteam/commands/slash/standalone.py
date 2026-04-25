@@ -65,6 +65,17 @@ def _query_usage(tool: str) -> list:
         r = subprocess.run([tool], capture_output=True, text=True, timeout=15)
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.splitlines()
+    except FileNotFoundError:
+        if "claude" in tool:
+            snapshot = Path(PROJECT_ROOT) / "scripts" / "usage_snapshot.py"
+            if snapshot.exists():
+                try:
+                    r = subprocess.run(["python3", str(snapshot)],
+                                       capture_output=True, text=True, timeout=30)
+                    if r.returncode == 0 and r.stdout.strip():
+                        return r.stdout.splitlines()
+                except Exception:
+                    pass
     except Exception:
         pass
     return []
