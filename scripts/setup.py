@@ -650,11 +650,20 @@ def main():
     # 必须在幂等性 short-circuit 之前跑,否则"配置完整就跳过"会掩盖截断事故。
     _check_team_json_consistency(existing)
 
-    required_keys = ["bitable_app_token", "msg_table_id", "sta_table_id", "chat_id"]
+    required_keys = ["lark_profile", "bitable_app_token", "msg_table_id", "sta_table_id", "chat_id"]
     if all(existing.get(k) for k in required_keys):
+        # lark_profile 环境漂移检测：LARK_CLI_PROFILE 若已设且与存储值不同则告警退出
+        env_profile = os.environ.get("LARK_CLI_PROFILE", "").strip()
+        stored_profile = existing["lark_profile"]
+        if env_profile and env_profile != stored_profile:
+            print("❌ lark_profile 环境漂移:")
+            print(f"   runtime_config.json 记录: {stored_profile}")
+            print(f"   LARK_CLI_PROFILE 环境变量: {env_profile}")
+            print("   两者不一致，可能导致事件流串台。")
+            print(f"   如确认切换 profile，请先删除 {CONFIG_FILE} 重新 setup。")
+            sys.exit(1)
         print("✅ runtime_config.json 已存在且配置完整,跳过初始化。")
         print(f"   如需重新初始化,请先删除 {CONFIG_FILE}")
-        # 跳过场景下也刷新一次 team.json 备份(当前 team.json 就是权威版本)
         _backup_team_json()
         return
 
