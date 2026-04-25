@@ -664,6 +664,7 @@ def main():
             sys.exit(1)
         print("✅ runtime_config.json 已存在且配置完整,跳过初始化。")
         print(f"   如需重新初始化,请先删除 {CONFIG_FILE}")
+        # 跳过场景下也刷新一次 team.json 备份(当前 team.json 就是权威版本)
         _backup_team_json()
         return
 
@@ -681,6 +682,26 @@ def main():
         print("     npx @larksuite/cli config init --new")
         sys.exit(1)
     print(f"🔑 lark-cli profile: {lark_profile}")
+
+    # profile 名 ≠ session 名警告：用户可能用了隐式继承的默认 profile，
+    # 未来多团队部署时会串台。显式确认后可跳过。
+    if not env_profile and lark_profile != TMUX_SESSION:
+        accept_default = os.environ.get("CLAUDE_TEAM_ACCEPT_DEFAULT_PROFILE", "").lower() in ("1", "yes", "true")
+        print("=" * 70)
+        print(f"⚠️  lark-cli profile 名 ({lark_profile}) 与 team.json session 名 ({TMUX_SESSION}) 不一致")
+        print("   当前 profile 是从 lark-cli 默认继承的，不是显式指定的。")
+        print("   如果将来在同一台机器部署第二个团队，共享 profile 会导致事件流串台。")
+        print()
+        print("   推荐做法 (为本团队创建独立 App):")
+        print(f"     1) npx @larksuite/cli config init --new --name {TMUX_SESSION}")
+        print(f"     2) LARK_CLI_PROFILE={TMUX_SESSION} python3 scripts/setup.py")
+        print()
+        print("   继续使用当前默认 profile:")
+        print("     CLAUDE_TEAM_ACCEPT_DEFAULT_PROFILE=1 python3 scripts/setup.py")
+        print("=" * 70)
+        if not accept_default:
+            sys.exit(1)
+        print("✅ CLAUDE_TEAM_ACCEPT_DEFAULT_PROFILE=1 已设置,继续。")
 
     # 同机多团队部署时,若多个部署共用同一个 profile (= 同一个 Feishu App),
     # 它们会在 WebSocket 层共享事件流,router 必须按 chat_id 过滤才不会串台。
