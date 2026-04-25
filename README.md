@@ -141,9 +141,17 @@ If you want a fully containerized deploy with no shared state on the host, use t
 git clone https://github.com/zylMozart/ClaudeTeam.git
 cd ClaudeTeam
 
+# 0. (Recommended) Pre-stage CLI credential directories as your host user, so
+#    Docker doesn't auto-create them as root and force you to `sudo cp` later.
+#    Skip this if you don't mind sudo or are happy to re-do device-flow login.
+bash scripts/host_prep.sh
+
 # 1. Credentials live in project-local .env (gitignored).
 cp .env.example .env
 $EDITOR .env                        # fill FEISHU_APP_ID / FEISHU_APP_SECRET
+                                    # (optional) HOST_UID=$(id -u) HOST_GID=$(id -g)
+                                    # so files written by the container land
+                                    # back on the host as your admin user.
 
 # 2. Define the team you want.
 $EDITOR team.json                   # session name + agents (see templates/)
@@ -335,6 +343,13 @@ The manager (or team lead) controls model and thinking assignments at runtime.
 
 ### Kimi CLI credential setup (Docker)
 
+**Skip device-flow if you already have host credentials.** If your host machine already has `~/.kimi/credentials` from a previous `kimi` CLI login, copy it into the bind-mount before first up — kimi-code agents will load it directly and skip device-flow:
+
+```bash
+bash scripts/host_prep.sh                      # ensure dir exists, owned by you
+cp ~/.kimi/credentials .kimi-credentials/credentials
+```
+
 After `docker compose up`, kimi-code agents will prompt for login via a **device code flow**. You'll see a message like:
 
 ```
@@ -355,6 +370,13 @@ docker compose restart
 
 ### Codex CLI credential setup (Docker)
 
+**Skip device-flow if you already have host credentials.** If your host has `~/.codex/` from a previous `codex` CLI login, copy it into the bind-mount before first up:
+
+```bash
+bash scripts/host_prep.sh                      # ensure dir exists, owned by you
+cp -r ~/.codex/. .codex-credentials/
+```
+
 Codex agents prompt for login via **device code flow** on first run:
 
 ```
@@ -365,6 +387,13 @@ Enter this one-time code: XXXX-XXXXX
 Open the URL, sign in with your ChatGPT account, and enter the code. Credentials are saved to `.codex-credentials/` (bind-mounted) and persist across container recreations.
 
 ### Gemini CLI credential setup (Docker)
+
+**Skip device-flow if you already have host credentials.** If your host has `~/.gemini/` from a previous `gemini` CLI login, copy it into the bind-mount before first up:
+
+```bash
+bash scripts/host_prep.sh                      # ensure dir exists, owned by you
+cp -r ~/.gemini/. .gemini-credentials/
+```
 
 Gemini agents prompt for **Google OAuth** on first run. You'll see a long Google OAuth URL — open it in your browser, authorize, and paste the authorization code back into the terminal. Credentials are saved to `.gemini-credentials/` (bind-mounted) and persist across container recreations.
 

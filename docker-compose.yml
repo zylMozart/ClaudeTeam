@@ -64,6 +64,14 @@ services:
       # claude / lark-cli 等工具仍然通过 $HOME 读取 ~/.claude、~/.lark-cli,
       # 这样它们会看到我们挂载的配置,而不是 root 的 /root/.*(空的)。
       - HOME=/home/claudeteam
+      # F-CRED-3: bind-mount 凭证目录 owner 桥接。
+      # 容器内 root 写入的文件 host 端 owner 也是 root,admin 后续 cp/编辑要 sudo。
+      # .env 里设 HOST_UID=$(id -u) HOST_GID=$(id -g) 后,entrypoint 会把
+      # /home/claudeteam/.{kimi,codex,gemini} chown 回 host admin。
+      # 缺省值 1000:1000 兼容老部署 (大多数 Linux admin 用户就是 1000)。
+      # 不设 HOST_UID 时 entrypoint 会跳过 chown — 行为完全不变。
+      - HOST_UID=${HOST_UID:-1000}
+      - HOST_GID=${HOST_GID:-1000}
 
     # ── 数据持久化 ────────────────────────────────────────────
     volumes:

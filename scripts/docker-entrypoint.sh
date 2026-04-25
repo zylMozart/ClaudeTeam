@@ -56,6 +56,32 @@ echo ""
 mkdir -p "$CLAUDETEAM_STATE_DIR"
 chmod 700 "$CLAUDETEAM_STATE_DIR" 2>/dev/null || true
 
+# ── 凭证目录 ownership 桥接 (F-CRED-3) ──────────────────────
+# 容器内进程是 root,写到 bind-mount 的文件 host 端 owner 也是 root,
+# admin 后续编辑要 sudo。如果 .env 设了 HOST_UID/HOST_GID,启动时把
+# 三个 CLI 凭证目录 chown 到 host admin uid; 不设就跳过 (老部署兼容)。
+# 只动 ./.{kimi,codex,gemini}-credentials 这种 repo-local mount,
+# 绝不动 ~/. 路径。
+if [ -n "${HOST_UID:-}" ] && [ -n "${HOST_GID:-}" ]; then
+  for cred_dir in /home/claudeteam/.kimi /home/claudeteam/.codex /home/claudeteam/.gemini; do
+    if [ -d "$cred_dir" ]; then
+      chown -R "$HOST_UID:$HOST_GID" "$cred_dir" 2>/dev/null || \
+        echo "⚠️  chown $cred_dir → $HOST_UID:$HOST_GID 失败 (非阻塞)"
+    fi
+  done
+fi
+
+# 提示性检查: bind-mount 目录非空但容器进程不可写,大概率是 host_prep.sh
+# 没跑过,目录被 docker 自动创建为 root-owned。日志提醒,不报错。
+for cred_dir in /home/claudeteam/.kimi /home/claudeteam/.codex /home/claudeteam/.gemini; do
+  if [ -d "$cred_dir" ] && [ -z "$(ls -A "$cred_dir" 2>/dev/null)" ]; then
+    echo "ℹ️  $cred_dir 为空 — 该 CLI 首次启动会走 device-flow login。"
+    echo "    若想跳过 device-flow,可在 host 端: bash scripts/host_prep.sh"
+    echo "    然后 cp ~/.\${cli_name}/credentials .\${cli_name}-credentials/"
+    break
+  fi
+done
+
 # ── 前置检查 ──────────────────────────────────────────────────
 
 # 常见坑: docker-compose.yml 里的 bind mount 目标文件如果宿主机上不存在,
