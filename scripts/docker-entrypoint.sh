@@ -488,6 +488,11 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "⚠️  清理旧 session: $SESSION"
   tmux kill-session -t "$SESSION"
 fi
+# 清理 stale session IDs — 容器重建后旧 resume ID 无效，--resume 会失败退到 bash
+if [ -f "$ROOT/scripts/.agent_sessions.json" ]; then
+  rm -f "$ROOT/scripts/.agent_sessions.json"
+  echo "🧹 清理 stale agent session IDs"
+fi
 
 # 清理上一个容器残留的 PID 锁文件。bind-mount 的 scripts/ 跨 compose down/up
 # 持久化,旧容器的 PID 可能被新容器内不相关进程复用,导致 _acquire_pid_lock
