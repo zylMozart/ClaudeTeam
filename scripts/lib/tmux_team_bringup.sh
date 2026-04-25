@@ -179,3 +179,36 @@ diagnose_failed_agents() {
     echo "   ↳ 未识别的启动失败。attach tmux 手动查看窗口内容。"
   fi
 }
+
+# ── AGENT_TEAMS 冲突检测 ─────────────────────────────────────────
+# check_session_conflict <project_root> <session_name>
+#   扫描同机其他 ClaudeTeam 部署是否声明了相同的 tmux session 名。
+#   冲突且对方 session 存活 → 返回 1 + 打印诊断；否则返回 0。
+#   库不调 exit,决策权留给调用方。
+check_session_conflict() {
+  local self_root="$1" self_session="$2"
+  local conflict_found=0
+
+  # 扫描已知部署目录 (与 setup.py _scan_other_deployments 同逻辑)
+  local search_roots="/home /opt /app /root"
+  local tj other_session other_root
+  for tj in $(find $search_roots -maxdepth 5 -name team.json -path '*/ClaudeTeam/team.json' 2>/dev/null); do
+    other_root="$(cd "$(dirname "$tj")" && pwd)"
+    [ "$other_root" = "$self_root" ] && continue
+    other_session="$(python3 -c "import json; print(json.load(open('$tj')).get('session',''))" 2>/dev/null)" || continue
+    [ -z "$other_session" ] && continue
+    if [ "$other_session" = "$self_session" ]; then
+      echo "⚠️  AGENT_TEAMS 冲突检测:"
+      echo "   本部署: $self_root (session=$self_session)"
+      echo "   冲突方: $other_root (session=$other_session)"
+      if tmux has-session -t "$other_session" 2>/dev/null; then
+        echo "   ⛔ 对方 tmux session 当前存活 — 两个团队将争抢同一个 session。"
+        echo "   修复: 修改其中一方 team.json 的 session 字段为不同名称。"
+        conflict_found=1
+      else
+        echo "   ℹ️  对方 session 未运行,不阻塞启动,但建议修改避免未来冲突。"
+      fi
+    fi
+  done
+  return "$conflict_found"
+}

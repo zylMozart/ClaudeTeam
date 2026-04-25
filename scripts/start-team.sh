@@ -78,6 +78,11 @@ fi
 SESSION=$(python3 -c "import json; print(json.load(open('team.json'))['session'])")
 AGENTS=($(python3 -c "import json; print(' '.join(json.load(open('team.json'))['agents'].keys()))"))
 
+# AGENT_TEAMS 冲突检测: 同机其他部署是否声明了同名 session
+if ! check_session_conflict "$ROOT" "$SESSION"; then
+  exit 1
+fi
+
 # 检查 session 是否已存在
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "⚠️  Session '$SESSION' 已存在"

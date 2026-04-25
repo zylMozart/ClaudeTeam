@@ -504,6 +504,10 @@ case "$LAZY_MODE" in
 esac
 source "$ROOT/scripts/lib/tmux_team_bringup.sh"
 
+# AGENT_TEAMS 冲突检测 — 容器场景只告警不 exit (restart 循环救不了配置错)
+check_session_conflict "$ROOT" "$SESSION" || \
+  echo "   ⚠️  存在 session 冲突,但容器继续启动。请尽快修正 team.json session 名。"
+
 # ── per-role 模型预解析 (lazy_wake_v2 §B) ────────────────────
 # 走和 start-team.sh 完全同一份 helper。非法 model / 解析失败时 loud-fail:
 # 容器入口这里直接 exit 1 —— init 消息阶段的 HALT_INIT 不适用于模型解析,
