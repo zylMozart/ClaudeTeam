@@ -612,6 +612,16 @@ def cmd_workspace(agent_name):
 
 # ── main ──────────────────────────────────────────────────────
 
+def _assert_no_unknown_flags(rest, sub_cmd):
+    bad = [t for t in rest if isinstance(t, str) and t.startswith("--")]
+    if bad:
+        print(
+            f"❌ {sub_cmd}: 不识别的 flag {bad}（防呆：拒绝 silent drop）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def main():
     args = sys.argv[1:]
     if not args: print(__doc__); sys.exit(0)
@@ -623,35 +633,39 @@ def main():
             idx = say_args.index("--image")
             image_path = say_args[idx + 1] if idx + 1 < len(say_args) else ""
             say_args = [a for i, a in enumerate(say_args) if i != idx and i != idx + 1]
+        _assert_no_unknown_flags(say_args, "say")
         if len(say_args) < 1:
             print("用法: say <发件人> [\"<消息>\"] [--image <路径>]"); sys.exit(1)
         from_agent = say_args[0]
         message    = say_args[1] if len(say_args) > 1 else ""
         cmd_say(from_agent, message, image_path)
     elif cmd == "send":
-        if len(args) < 4: print("用法: send <收件人> <发件人> \"<消息>\" [优先级] [--task <task_id>] [--file <路径>]"); sys.exit(1)
+        if len(args) < 4: print("用法: send <收件人> <发件人> \"<消息>\" [优先级] [--task <task_id>] [--file <路径>] [--priority <值>] [--content <消息>]"); sys.exit(1)
         rest = list(args[1:])
-        task_id = ""
-        file_path = ""
-        for flag in ("--task", "--file"):
+        flag_vals = {"--task": "", "--file": "", "--priority": "", "--content": ""}
+        for flag in list(flag_vals):
             if flag in rest:
                 idx = rest.index(flag)
                 if idx + 1 < len(rest):
-                    val = rest[idx + 1]
+                    flag_vals[flag] = rest[idx + 1]
                     rest.pop(idx + 1)
                     rest.pop(idx)
-                    if flag == "--task": task_id = val
-                    else: file_path = val
+        _assert_no_unknown_flags(rest, "send")
+        if len(rest) < 2:
+            print("用法: send <收件人> <发件人> \"<消息>\" [优先级]"); sys.exit(1)
         to_agent, from_agent = rest[0], rest[1]
-        if file_path:
-            with open(file_path, encoding="utf-8") as _f:
+        if flag_vals["--file"]:
+            with open(flag_vals["--file"], encoding="utf-8") as _f:
                 message = _f.read().strip()
+        elif flag_vals["--content"]:
+            message = flag_vals["--content"]
         else:
             message = rest[2] if len(rest) > 2 else ""
-        priority = rest[3] if len(rest) > 3 else "中"
-        cmd_send(to_agent, from_agent, message, priority, task_id)
+        priority = flag_vals["--priority"] or (rest[3] if len(rest) > 3 else "中")
+        cmd_send(to_agent, from_agent, message, priority, flag_vals["--task"])
     elif cmd == "direct":
         if len(args) < 4: print("用法: direct <收件人> <发件人> '<消息>'"); sys.exit(1)
+        _assert_no_unknown_flags(list(args[1:4]), "direct")
         cmd_direct(args[1], args[2], args[3])
     elif cmd == "inbox":
         if len(args) < 2: print("用法: inbox <agent>"); sys.exit(1)

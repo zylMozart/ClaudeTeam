@@ -207,10 +207,67 @@ def check_history_replay_route():
     assert "replay任务" in prompt
 
 
+def check_send_flag_aware_argparse():
+    """send 子命令必须识别 --priority/--content；未识别 -- flag 必须 fail loud。"""
+    import sys as _sys
+    captured = []
+    old_argv = _sys.argv
+    old_send = feishu_msg.cmd_send
+    feishu_msg.cmd_send = (
+        lambda to, frm, msg, prio, task: captured.append(
+            {"to": to, "from": frm, "msg": msg, "prio": prio, "task": task}
+        )
+    )
+    try:
+        # 1) --priority + --content 不再被当 message body
+        _sys.argv = [
+            "feishu_msg.py", "send",
+            "qa_smoke", "manager",
+            "--priority", "中",
+            "--content", "正文测试",
+        ]
+        feishu_msg.main()
+        assert captured, "send 未触达 cmd_send"
+        rec = captured[-1]
+        assert_eq(rec["msg"], "正文测试", "send --content 优先")
+        assert_eq(rec["prio"], "中", "send --priority 识别")
+        assert "--priority" not in rec["msg"], rec
+        assert "--content" not in rec["msg"], rec
+
+        # 2) --content 优先级 > 位置参 message
+        captured.clear()
+        _sys.argv = [
+            "feishu_msg.py", "send",
+            "qa_smoke", "manager", "位置参 body",
+            "--content", "覆盖正文",
+        ]
+        feishu_msg.main()
+        assert_eq(captured[-1]["msg"], "覆盖正文", "send --content 覆盖位置参")
+
+        # 3) 未识别的 -- flag 立即 fail（防呆，禁止 silent drop）
+        captured.clear()
+        _sys.argv = [
+            "feishu_msg.py", "send",
+            "qa_smoke", "manager", "正文",
+            "--unknown-flag", "x",
+        ]
+        try:
+            feishu_msg.main()
+        except SystemExit as exc:
+            assert exc.code == 1, f"unknown flag exit code {exc.code}"
+        else:
+            raise AssertionError("send 未识别 flag 应 SystemExit")
+        assert not captured, "send 不应在未知 flag 时调用 cmd_send"
+    finally:
+        _sys.argv = old_argv
+        feishu_msg.cmd_send = old_send
+
+
 def main():
     check_sanitizer()
     check_send_direct()
     check_queue()
+    check_send_flag_aware_argparse()
     check_router_default_route()
     check_history_replay_route()
     print("✅ message sanitizer regression passed")
