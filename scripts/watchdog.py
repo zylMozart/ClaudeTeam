@@ -63,11 +63,17 @@ STARTUP_GRACE_SECS = int(os.environ.get("WATCHDOG_STARTUP_GRACE_SECS", "60"))
 # WATCHDOG_TESTING=0 / WATCHDOG_TESTING=false 都当成真值,是经典坑。
 TESTING = os.environ.get("WATCHDOG_TESTING") == "1"
 
+# tmux_target 让 restart_process 走 send-keys 复活到 pane (F-ROUTER-1)。
+# entrypoint 启动时 export CLAUDETEAM_TMUX_SESSION; 不设则 fallback 到旧 Popen。
+_TMUX_SESSION_ENV = os.environ.get("CLAUDETEAM_TMUX_SESSION", "").strip()
+_ROUTER_TMUX_TARGET = f"{_TMUX_SESSION_ENV}:router" if _TMUX_SESSION_ENV else ""
+
 _PROC_SPECS = _watchdog_specs.build_process_specs(
     lark_cli=LARK_CLI,
     router_pid_file=ROUTER_PID_FILE,
     router_cursor_file=ROUTER_CURSOR_FILE,
     kanban_pid_file=KANBAN_PID_FILE,
+    router_tmux_target=_ROUTER_TMUX_TARGET,
 )
 
 def _env_enabled(name):
@@ -252,6 +258,28 @@ def restart_process(proc):
     # 循环都 restart 却永远拉不起新的。
     _kill_by_pid_file(proc.get("pid_file"), proc["name"])
     _kill_orphan_lark_subscribers()
+
+    target = (proc.get("tmux_target") or "").strip()
+    if target:
+        # F-ROUTER-1: 在 tmux pane 内复活,蒙眼 capture-pane 看得到新 banner;
+        # send-keys 失败 (pane 锁/session 没了/tmux 不在 PATH) 立刻 fallback
+        # 到旧 Popen,保证老部署行为不变。
+        cmd_list = proc.get("cmd") or []
+        if isinstance(cmd_list, list) and cmd_list[:2] == ["bash", "-c"] and len(cmd_list) >= 3:
+            launch_str = cmd_list[2]
+        else:
+            launch_str = " ".join(cmd_list) if isinstance(cmd_list, list) else str(cmd_list)
+        try:
+            subprocess.run(["tmux", "send-keys", "-t", target, "C-c"],
+                           check=False, timeout=5)
+            time.sleep(0.3)
+            subprocess.run(["tmux", "send-keys", "-t", target, launch_str, "Enter"],
+                           check=True, timeout=5)
+            proc["last_restart_ts"] = time.time()
+            log(f"🔄 已重启: {proc['name']} (via tmux {target})")
+            return
+        except Exception as e:
+            log(f"⚠️ tmux send-keys 重启 {target} 失败 ({e}); fallback 到 Popen")
 
     subprocess.Popen(
         proc["cmd"],

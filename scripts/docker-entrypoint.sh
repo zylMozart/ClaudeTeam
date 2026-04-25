@@ -438,6 +438,10 @@ fi
 SESSION=$(python3 -c "import json; print(json.load(open('team.json'))['session'])")
 AGENTS=($(python3 -c "import json; print(' '.join(json.load(open('team.json'))['agents'].keys()))"))
 
+# F-ROUTER-1: watchdog 通过 CLAUDETEAM_TMUX_SESSION 知道往哪个 pane 复活 router。
+# router_restart.sh 也读这个值。export 后 watchdog python 进程能继承。
+export CLAUDETEAM_TMUX_SESSION="$SESSION"
+
 # 如果 session 已存在（容器重启场景），先清理
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "⚠️  清理旧 session: $SESSION"
@@ -533,16 +537,15 @@ fi
 ROUTER_STARTED=0
 tmux new-window -t "$SESSION" -n "router" -c "$ROOT"
 if env_enabled "${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-0}"; then
-  # 从 runtime_config.json 读 lark_profile，确保多 profile 共存时订阅到正确的 App。
-  # 不带 --profile 会落到 lark-cli 的默认 profile，在共享宿主机 ~/.lark-cli 时
-  # 极易订阅错 App 的事件流。
-  LARK_PROFILE=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json')).get('lark_profile') or '')" 2>/dev/null)
-  PROFILE_FLAG=""
-  if [ -n "$LARK_PROFILE" ]; then
-    PROFILE_FLAG="--profile $LARK_PROFILE"
+  # 启动命令统一从 scripts/lib/router_launch.sh 拼出 (F-ROUTER-1/2 共享给
+  # router_restart.sh、watchdog 复活路径,避免三处重复 lark_profile 解析逻辑)。
+  ROUTER_LAUNCH_CMD="$(bash scripts/lib/router_launch.sh)"
+  if [ -z "$ROUTER_LAUNCH_CMD" ]; then
+    echo "⚠️ scripts/lib/router_launch.sh 输出空命令; router 不会启动"
+  else
+    tmux send-keys -t "$SESSION:router" "$ROUTER_LAUNCH_CMD" Enter
+    ROUTER_STARTED=1
   fi
-  tmux send-keys -t "$SESSION:router" "npx @larksuite/cli $PROFILE_FLAG event +subscribe --event-types im.message.receive_v1 --compact --quiet --force --as bot | python3 scripts/feishu_router.py --stdin" Enter
-  ROUTER_STARTED=1
 else
   tmux send-keys -t "$SESSION:router" \
     "clear && echo 'router disabled: set CLAUDETEAM_ENABLE_FEISHU_REMOTE=1 only for isolated live smoke/profile'" Enter

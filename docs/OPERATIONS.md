@@ -98,3 +98,28 @@ Primary references:
 - Keep runtime behavior changes small and reversible.
 - Record checkpoint evidence for each maintenance wave.
 - Do not couple emergency fixes with broad refactors.
+
+## Router 死了怎么办（手动应急 · F-ROUTER-1/2）
+
+watchdog 默认每 60s 巡检一次,router cursor 超过 180s 没更新自动 SIGKILL +
+在 tmux pane 内复活,正常情况无需人工干预。如果你需要立刻重启
+（例如刚 `pkill` 完正在等):
+
+```bash
+docker compose exec team bash scripts/router_restart.sh
+```
+
+脚本干的事:
+
+1. SIGTERM router pid 文件里的进程 + SIGKILL `lark-cli event +subscribe` /
+   `feishu_router.py` 残留
+2. 清空 router pane (`Ctrl-C` + `clear`)
+3. 走 `scripts/lib/router_launch.sh` 重拼 launch 命令并 `tmux send-keys` 注入
+
+验证 (90s 内 cursor 应当被刷新, 且只有一份订阅进程):
+
+```bash
+docker compose exec team ls -l /app/state/router.cursor
+docker compose exec team pgrep -af 'lark-cli.*event.*subscribe'
+docker compose exec team tmux capture-pane -t "$CLAUDETEAM_TMUX_SESSION:router" -p | tail -10
+```

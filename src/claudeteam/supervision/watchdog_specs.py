@@ -23,6 +23,7 @@ def build_process_specs(
     router_pid_file: str,
     router_cursor_file: str,
     kanban_pid_file: str,
+    router_tmux_target: str = "",
 ) -> list[dict[str, Any]]:
     lark_event_cmd = build_lark_event_subscribe_cmd(lark_cli)
     return [
@@ -32,13 +33,17 @@ def build_process_specs(
             "cmd": ["bash", "-c", f"{lark_event_cmd} | python3 scripts/feishu_router.py --stdin"],
             "pid_file": router_pid_file,
             "health_file": router_cursor_file,
-            "health_stale_secs": 1800,
+            # 180s = 3 min; 配合 restart_grace_secs=120 不会误判冷启动 (F-ROUTER-1)。
+            "health_stale_secs": 180,
             "restart_grace_secs": 120,
             "max_retries": 3,
             "cooldown_secs": 600,
             "retry_count": 0,
             "last_restart_ts": 0,
             "cooldown_start_ts": 0,
+            # tmux_target 设了就让 watchdog 走 tmux send-keys 复活到 pane;
+            # 空串则 fallback 到旧 Popen 行为 (老部署兼容)。
+            "tmux_target": router_tmux_target,
         },
         {
             "name": "kanban_sync.py",
