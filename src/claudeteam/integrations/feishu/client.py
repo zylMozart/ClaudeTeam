@@ -71,10 +71,10 @@ def _check_lark_result(result, action, *, fatal=True):
 def _lark_im_send_with_run(run_fn, chat_id, content=None, markdown=None, image=None, card=None):
     """通过 lark-cli 向群组发送消息。
 
-    默认 --as bot：以机器人身份发言。若部署已完成 user OAuth device-flow,
-    可通过环境变量 CLAUDETEAM_LARK_SEND_AS=user 切换为用户身份（无 bot 标识）。
+    默认 --as user：以老板身份发言（无 bot 标识）。若 user OAuth 未配置,
+    可通过环境变量 CLAUDETEAM_LARK_SEND_AS=bot 降级为机器人身份。
     """
-    send_as = os.environ.get("CLAUDETEAM_LARK_SEND_AS", "bot")
+    send_as = os.environ.get("CLAUDETEAM_LARK_SEND_AS", "user")
     args = ["im", "+messages-send", "--chat-id", chat_id, "--as", send_as]
     if markdown:
         args += ["--markdown", markdown]
