@@ -158,9 +158,9 @@ def _tail_text(text, max_len=240):
     """Normalize a prompt tail for best-effort submission checks."""
     return " ".join((text or "").split())[-max_len:]
 
-def _press_submit(target):
+def _press_submit(target, keys=None):
     """Submit the current input line in a way that works across CLIs."""
-    for key in ("Enter", "C-m"):
+    for key in (keys or ("Enter", "C-m")):
         subprocess.run(
             ["tmux", "send-keys", "-t", target, key],
             capture_output=True
@@ -214,7 +214,7 @@ def check_agent_alive(session, window, stale_minutes=15):
 
 def inject_when_idle(session, window, text,
                      wait_secs=10, poll_interval=0, force_after_wait=True,
-                     verify_submit=True):
+                     verify_submit=True, submit_keys=None):
     """
     等待 Agent 窗口空闲后注入文本（模拟用户输入并按 Enter）。
 
@@ -285,10 +285,10 @@ def inject_when_idle(session, window, text,
     # paste-buffer 和 literal send-keys 的消化时机不同；Enter 后再补 C-m，
     # 并做一次可见区复核，避免消息堆在输入框里没有提交。
     time.sleep(0.5)
-    _press_submit(target)
+    _press_submit(target, keys=submit_keys)
     if verify_submit:
         time.sleep(1.0)
         if _input_still_visible(session, window, text):
-            _press_submit(target)
+            _press_submit(target, keys=submit_keys)
 
     return True
