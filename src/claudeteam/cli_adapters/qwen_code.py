@@ -12,7 +12,7 @@ class QwenCodeAdapter(CliAdapter):
     def spawn_cmd(self, agent, model):
         # Qwen Code 无 --name; 用 env 标注 agent 身份供日志识别
         # --yolo 跳过权限确认 (类似 CC 的 --dangerously-skip-permissions)
-        return f"QWEN_AGENT_NAME={agent} qwen --yolo"
+        return f"DISABLE_UPDATE_CHECK=1 QWEN_AGENT_NAME={agent} qwen --yolo"
 
     def ready_markers(self):
         # TODO: 实测校准 — Qwen Code TUI 的 ready 特征串

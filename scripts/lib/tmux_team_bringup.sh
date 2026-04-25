@@ -27,17 +27,32 @@
 # 不在内 → 即使 LAZY_MODE=on 也强制 eager (boss 频道必须常驻)。
 # 显式空值 (CLAUDETEAM_LAZY_AGENTS="") 视为禁用 lazy → 全员 eager。
 
+# CLAUDETEAM_LAZY_AGENTS 控制哪些 agent 走 lazy (逗号分隔)。
+# 未设置时取默认值; 显式空字符串 = 禁用 lazy → 全员 eager。
+# 默认名单在 docker-compose.yml 环境变量里同步维护。
 CLAUDETEAM_LAZY_AGENTS_DEFAULT="worker_cc,worker_codex,worker_kimi,worker_gemini"
 # `-` (非 `:-`): 仅当变量未设置时取默认;显式空字符串视为"禁用 lazy"。
 LAZY_AGENTS="${CLAUDETEAM_LAZY_AGENTS-$CLAUDETEAM_LAZY_AGENTS_DEFAULT}"
 
 is_lazy_eligible() {
   local agent="$1"
-  [[ -z "$LAZY_AGENTS" ]] && return 1
+  [ -z "$LAZY_AGENTS" ] && return 1
   case ",${LAZY_AGENTS}," in
     *,"${agent}",*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# compute_eager_agents: 从 $AGENTS 数组中挑出 lazy-mode 下仍然 eager 的 agent,
+# 结果写入 EAGER_AGENTS 数组。供 start-team.sh 打印哪些 agent 会真跑 CLI。
+compute_eager_agents() {
+  EAGER_AGENTS=()
+  local agent
+  for agent in "${AGENTS[@]}"; do
+    if ! is_lazy_eligible "$agent"; then
+      EAGER_AGENTS+=("$agent")
+    fi
+  done
 }
 
 # 向后兼容: is_lazy_whitelist 含义是"是否常驻 (即:不被 lazy)"。
@@ -50,7 +65,7 @@ is_lazy_whitelist() {
 #   返回 1 = 应正常 spawn (lazy off 或 agent 是 always-eager)
 should_skip_agent_in_lazy_mode() {
   local agent="$1"
-  [[ "${LAZY_MODE:-off}" = "on" ]] && is_lazy_eligible "$agent"
+  [ "${LAZY_MODE:-off}" = "on" ] && is_lazy_eligible "$agent"
 }
 
 # ── per-role 模型预解析 (lazy_wake_v2 §B) ─────────────────────
@@ -143,7 +158,7 @@ probe_claude_agents() { probe_agents "$@"; }
 diagnose_failed_agents() {
   local diag_agent diag_pane
   echo ""
-  echo "❌ 以下 agent 的 Claude UI 未能启动: ${FAILED_AGENTS[*]}"
+  echo "❌ 以下 agent 的 CLI 未能启动: ${FAILED_AGENTS[*]}"
   diag_agent="${FAILED_AGENTS[0]}"
   diag_pane=$(tmux capture-pane -t "$SESSION:$diag_agent" -p -S -30 2>/dev/null)
   echo "   窗口最后几行内容 ($diag_agent):"
@@ -154,7 +169,11 @@ diagnose_failed_agents() {
     echo "     检查: IS_SANDBOX=1 是否被透传; Claude Code 版本是否识别该变量。"
   elif echo "$diag_pane" | grep -q "command not found\|No such file"; then
     echo ""
-    echo "   ↳ 根因: PATH 里没找到 claude。在当前 shell 跑 'which claude' 确认。"
+    echo "   ↳ 根因: PATH 里没找到 CLI 二进制。在当前 shell 跑 'which claude' 确认。"
+  elif echo "$diag_pane" | grep -qi "update\|upgrade\|new version\|updating"; then
+    echo ""
+    echo "   ↳ 可能根因: CLI 触发了升级/更新检查弹窗,卡住了启动。"
+    echo "     修复: 设置 DISABLE_UPDATE_CHECK 环境变量或写入 autoUpdates=false。"
   else
     echo ""
     echo "   ↳ 未识别的启动失败。attach tmux 手动查看窗口内容。"

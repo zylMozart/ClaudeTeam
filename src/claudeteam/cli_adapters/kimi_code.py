@@ -11,7 +11,7 @@ from .base import CliAdapter
 
 class KimiCodeAdapter(CliAdapter):
     def spawn_cmd(self, agent, model):
-        return f"KIMI_AGENT={agent} kimi --yolo"
+        return f"DISABLE_UPDATE_CHECK=1 KIMI_AGENT={agent} kimi --yolo"
 
     def ready_markers(self):
         return [

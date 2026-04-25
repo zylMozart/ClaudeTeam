@@ -53,8 +53,8 @@ case "$LAZY_MODE" in
     exit 2 ;;
 esac
 
-# 白名单 + lazy 决策从 lib/tmux_team_bringup.sh source 进来 (LAZY_WHITELIST_AGENTS,
-# is_lazy_whitelist, should_skip_agent_in_lazy_mode)。docker-entrypoint.sh 同源,
+# 白名单 + lazy 决策从 lib/tmux_team_bringup.sh source 进来 (is_lazy_eligible,
+# is_lazy_whitelist, should_skip_agent_in_lazy_mode, compute_eager_agents)。docker-entrypoint.sh 同源,
 # 保证宿主/容器一致 (lazy_wake_v2 §A.2)。
 source "$(cd "$(dirname "$0")" && pwd)/lib/tmux_team_bringup.sh"
 
@@ -115,7 +115,8 @@ echo "   tmux session: ${SESSION}"
 echo "   Agents: ${AGENTS[*]}"
 echo "   lazy-mode: ${LAZY_MODE}"
 if [ "$LAZY_MODE" = "on" ]; then
-  echo "     ↳ 会跑 claude 的 agent: ${LAZY_WHITELIST_AGENTS[*]}"
+  compute_eager_agents
+  echo "     ↳ 会跑 claude 的 agent: ${EAGER_AGENTS[*]}"
   echo "     ↳ 其它业务 agent 窗口创建后显示 '💤 待 wake',由 router 唤醒"
 fi
 echo ""
@@ -297,7 +298,7 @@ if [ "$LAZY_MODE" = "on" ]; then
   done
   if [ ${#ACTIVE_AGENTS[@]} -eq 0 ]; then
     echo "❌ lazy-mode 下 team.json 里没有任何白名单 agent"
-    echo "   白名单: ${LAZY_WHITELIST_AGENTS[*]}"
+    echo "   白名单 (eager): ${EAGER_AGENTS[*]}"
     echo "   至少要有 manager 才能组建团队 — 或者加 --no-lazy-mode"
     exit 1
   fi

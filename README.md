@@ -806,3 +806,18 @@ python3 scripts/feishu_msg.py log <your-name> 任务日志 "<what you did>"
 6. **Shared output → `workspace/shared/`**
 7. **Never create files in project root**
 8. **Every Claude instance must use `--name`** — `IS_SANDBOX=1 claude --dangerously-skip-permissions --name <agent名>`. The `IS_SANDBOX=1` prefix is required when running as root (common in VMs / containers); without it, `--dangerously-skip-permissions` refuses to start and the tmux window falls back to a bare bash shell where init messages get typed into the shell instead of Claude.
+
+## Troubleshooting
+
+### Qwen Code: update check blocks startup
+
+Qwen Code may display an update prompt on launch that blocks the tmux pane.
+Set the `DISABLE_UPDATE_CHECK=1` environment variable before spawning:
+
+```bash
+DISABLE_UPDATE_CHECK=1 qwen --yolo
+```
+
+The CLI adapter already includes this env var in its `spawn_cmd`. If the
+problem persists after a manual `npm update -g qwen-code`, verify the
+adapter is being used (`python3 -m claudeteam.cli_adapters.resolve <agent> spawn_cmd`).
