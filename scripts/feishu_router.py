@@ -26,8 +26,8 @@ from claudeteam.messaging.service import sanitize_agent_message
 from feishu_msg import cmd_say
 from claudeteam.messaging.renderer import render_inbox_text, render_tmux_prompt
 from claudeteam.cli_adapters import adapter_for_agent
-import tmux_command
-import team_command
+from claudeteam.commands import tmux as tmux_command
+from claudeteam.commands import team as team_command
 import slash_commands
 
 _LIFECYCLE_SH = os.path.join(PROJECT_ROOT, "scripts", "lib", "agent_lifecycle.sh")
