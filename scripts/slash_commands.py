@@ -36,7 +36,7 @@ from cli_credentials import (
     status_detail,
     status_label,
 )
-from message_renderer import render_feishu_markdown
+from claudeteam.messaging.renderer import render_feishu_markdown
 
 PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
                     Path(__file__).resolve().parent.parent)

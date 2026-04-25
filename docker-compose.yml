@@ -141,10 +141,3 @@ services:
 
     # ── 网络（仅需出站访问 Anthropic API + 飞书 API）────────
     # 无需暴露端口
-
-# ── 命名卷 ────────────────────────────────────────────────────
-volumes:
-  claudeteam-agents:
-    driver: local
-  claudeteam-workspace:
-    driver: local

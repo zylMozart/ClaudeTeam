@@ -2,11 +2,11 @@
 """Shell bridge — 供 bash 脚本消费 adapter 属性。
 
 用法:
-  python3 scripts/cli_adapters/resolve.py <agent> spawn_cmd <model>
-  python3 scripts/cli_adapters/resolve.py <agent> resume_cmd <model> <sid>
-  python3 scripts/cli_adapters/resolve.py <agent> ready_markers
-  python3 scripts/cli_adapters/resolve.py <agent> busy_markers
-  python3 scripts/cli_adapters/resolve.py <agent> process_name
+  python3 -m claudeteam.cli_adapters.resolve <agent> spawn_cmd <model>
+  python3 -m claudeteam.cli_adapters.resolve <agent> resume_cmd <model> <sid>
+  python3 -m claudeteam.cli_adapters.resolve <agent> ready_markers
+  python3 -m claudeteam.cli_adapters.resolve <agent> busy_markers
+  python3 -m claudeteam.cli_adapters.resolve <agent> process_name
 """
 import sys
 import os
