@@ -111,7 +111,9 @@ LARK_CLI = get_lark_cli()
 
 ALLOWED_MODELS = frozenset({
     "opus", "sonnet", "haiku",
-    "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
+    "opus-4-7", "sonnet-4-6", "haiku-4-5",
+    "claude-opus-4-7", "claude-opus-4-6",
+    "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
     "gpt-5.4",
 })
 

@@ -10,7 +10,7 @@ import json
 import os
 import re
 from collections import OrderedDict
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 SEEN_IDS_MAX = 10_000
@@ -28,6 +28,12 @@ class RouterState:
         self.seen_ids: OrderedDict = OrderedDict()
         self._team_mtime: float = 0.0
         self._agent_names: List[str] = []
+        # BOSS_MOCK (smoke only): treat bot self-send as a boss message.
+        # Double-guard: BOTH env vars must be set so prod can never accidentally enable.
+        self._boss_mock = (
+            os.environ.get("CLAUDETEAM_BOSS_MOCK") == "1"
+            and os.environ.get("CLAUDETEAM_RUNTIME_PROFILE") == "smoke"
+        )
 
     # ── seen_ids helpers ──────────────────────────────────────────
 
@@ -58,6 +64,9 @@ class RouterState:
     # ── pure per-message helpers ──────────────────────────────────
 
     def is_bot_message(self, sender_id: str) -> bool:
+        # mock-boss profile: bot self-send is treated as boss message, not bot self
+        if self._boss_mock:
+            return False
         return bool(self.bot_open_id and sender_id == self.bot_open_id)
 
     def parse_targets(self, text: str, agents: List[str]) -> List[str]:
@@ -72,3 +81,35 @@ class RouterState:
             if name in agents:
                 return name
         return None
+
+    def parse_prefix_target(
+        self, text: str, agents: List[str]
+    ) -> Tuple[Optional[str], str]:
+        """Detect per-agent prefix routing in a user message.
+
+        Recognized forms (case-insensitive):
+          @worker_cc <body>
+          worker_cc:<body>   /   worker_cc：<body>
+          worker_cc <body>
+
+        Returns (canonical_agent_name, stripped_body) when a known agent
+        prefix is found and a non-empty body follows; otherwise (None, text).
+        """
+        if not text or not agents:
+            return None, text
+        # Sort longest first so 'worker_codex' wins over a hypothetical 'worker'.
+        agent_alt = "|".join(re.escape(a) for a in sorted(agents, key=len, reverse=True))
+        pat = re.compile(
+            rf"^\s*@?({agent_alt})(?:\s*[:：]\s*|\s+)(.+)$",
+            re.IGNORECASE | re.DOTALL,
+        )
+        m = pat.match(text)
+        if not m:
+            return None, text
+        canon = next((a for a in agents if a.lower() == m.group(1).lower()), None)
+        if not canon:
+            return None, text
+        body = m.group(2).strip()
+        if not body:
+            return None, text
+        return canon, body

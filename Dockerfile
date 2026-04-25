@@ -28,7 +28,7 @@ FROM base AS deps
 
 # Claude Code CLI is opt-in for legacy/dev images. The default smoke/hardened
 # image keeps the runtime CLI surface to codex/kimi/gemini plus lark-cli.
-ARG CLAUDETEAM_INSTALL_CLAUDE_CODE=0
+ARG CLAUDETEAM_INSTALL_CLAUDE_CODE=1
 RUN if [ "$CLAUDETEAM_INSTALL_CLAUDE_CODE" = "1" ]; then \
       npm install -g @anthropic-ai/claude-code ; \
     else \
@@ -87,7 +87,7 @@ RUN echo 'set -g history-limit 50000' > /home/claudeteam/.tmux.conf \
 # Legacy/dev only: preseed Claude Code settings when the image explicitly opts
 # into installing that CLI. Default smoke/hardened images do not create these
 # home config directories.
-ARG CLAUDETEAM_INSTALL_CLAUDE_CODE=0
+ARG CLAUDETEAM_INSTALL_CLAUDE_CODE=1
 RUN if [ "$CLAUDETEAM_INSTALL_CLAUDE_CODE" = "1" ]; then \
       for H in /home/claudeteam /root; do \
         mkdir -p "$H/.claude" && \
@@ -101,6 +101,11 @@ RUN if [ "$CLAUDETEAM_INSTALL_CLAUDE_CODE" = "1" ]; then \
 # Optional lark skill installation is intentionally not part of the default
 # production build. If an operator needs it for a dev image, run the install as
 # an explicit, audited step outside the hardened build path.
+
+# PYTHONPATH 内置: 让容器内任何 shell / cron / supervisor 入口都能直接 import
+# claudeteam.* 包,无需调用方手动 export。docker-compose.yml 与 docker-entrypoint.sh
+# 各自再兜底一道,是 §F-PYTHON-1 的三道注入之一 (build-arg / compose env / entrypoint)。
+ENV PYTHONPATH=/app/src
 
 # 切换到非 root 用户
 USER claudeteam

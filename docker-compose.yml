@@ -52,8 +52,13 @@ services:
       - FEISHU_APP_ID=${FEISHU_APP_ID:-}
       - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
       - FEISHU_BRAND=${FEISHU_BRAND:-feishu}
-      - CLAUDETEAM_ENABLE_FEISHU_REMOTE=${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-0}
+      - CLAUDETEAM_ENABLE_FEISHU_REMOTE=${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-1}
       - CLAUDETEAM_ENABLE_BITABLE_LEGACY=${CLAUDETEAM_ENABLE_BITABLE_LEGACY:-0}
+      # lazy-eligible agent 名单 (逗号分隔)。manager 不在内 → 强制 eager,
+      # boss 频道常驻。显式空字符串视为禁用 lazy。
+      - CLAUDETEAM_LAZY_AGENTS=${CLAUDETEAM_LAZY_AGENTS-worker_cc,worker_codex,worker_kimi,worker_gemini}
+      # /app/src 内置到 image,这里再保险一次,即使外部覆盖也不丢。
+      - PYTHONPATH=${PYTHONPATH:-/app/src}
       - TERM=xterm-256color
       # 强制 HOME 指向 /home/claudeteam — 即使以 root 运行容器(user: "0:0"),
       # claude / lark-cli 等工具仍然通过 $HOME 读取 ~/.claude、~/.lark-cli,

@@ -21,11 +21,11 @@ from claudeteam.messaging.router.dispatch import classify_event, EventAction
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _classify(event, *, chat_id="chat-1", agents=("manager", "devops"),
-               bot_id="", sanitize=None, slash_cmds=("/help", "/team")):
+               bot_id="", sanitize=None, slash_cmds=("/help", "/team"),
+               prefix_target=None):
     """Thin wrapper with sensible defaults."""
     sanitize = sanitize or (lambda t: t)
-    return classify_event(
-        event,
+    kwargs = dict(
         is_seen=lambda _: False,
         is_bot_message=lambda sid: bool(bot_id and sid == bot_id),
         chat_id=chat_id,
@@ -35,6 +35,9 @@ def _classify(event, *, chat_id="chat-1", agents=("manager", "devops"),
             (a for a in agents if f"【{a}" in t), None),
         is_slash=lambda t: any(t.strip().startswith(c) for c in slash_cmds),
     )
+    if prefix_target is not None:
+        kwargs["parse_prefix_target"] = prefix_target
+    return classify_event(event, **kwargs)
 
 
 # ── DROP cases ────────────────────────────────────────────────────────────────
@@ -164,6 +167,74 @@ def test_chat_id_empty_means_no_filter():
     assert r.action == EventAction.ROUTE
 
 
+# ── prefix-route cases (per-agent prefix routing) ─────────────────────────────
+
+def _agents_prefix(text):
+    """Stand-in for RouterState.parse_prefix_target with worker_cc/codex agents."""
+    import re
+    agents = ("manager", "worker_cc", "worker_codex")
+    alt = "|".join(re.escape(a) for a in sorted(agents, key=len, reverse=True))
+    pat = re.compile(rf"^\s*@?({alt})(?:\s*[:：]\s*|\s+)(.+)$",
+                     re.IGNORECASE | re.DOTALL)
+    m = pat.match(text)
+    if not m:
+        return None, text
+    canon = next((a for a in agents if a.lower() == m.group(1).lower()), None)
+    body = m.group(2).strip()
+    if not canon or not body:
+        return None, text
+    return canon, body
+
+
+def test_prefix_route_colon_form():
+    r = _classify({"message_id": "m1", "chat_id": "chat-1",
+                   "text": "worker_cc: 帮我看一下日志"},
+                  agents=("manager", "worker_cc", "worker_codex"),
+                  prefix_target=_agents_prefix)
+    assert r.action == EventAction.ROUTE
+    assert r.targets == ["worker_cc"]
+    assert r.text == "帮我看一下日志"
+
+
+def test_prefix_route_space_form():
+    r = _classify({"message_id": "m1", "chat_id": "chat-1",
+                   "text": "worker_codex 你好"},
+                  agents=("manager", "worker_cc", "worker_codex"),
+                  prefix_target=_agents_prefix)
+    assert r.action == EventAction.ROUTE
+    assert r.targets == ["worker_codex"]
+    assert r.text == "你好"
+
+
+def test_prefix_route_at_form_uses_at_path():
+    """@worker_cc is already a hard @-mention; prefix path is unused."""
+    r = _classify({"message_id": "m1", "chat_id": "chat-1",
+                   "text": "@worker_cc 你好"},
+                  agents=("manager", "worker_cc", "worker_codex"),
+                  prefix_target=_agents_prefix)
+    assert r.action == EventAction.ROUTE
+    assert "worker_cc" in r.targets
+
+
+def test_prefix_route_unknown_falls_through_to_manager():
+    r = _classify({"message_id": "m1", "chat_id": "chat-1",
+                   "text": "worker_xx 你好"},
+                  agents=("manager", "worker_cc", "worker_codex"),
+                  prefix_target=_agents_prefix)
+    assert r.action == EventAction.ROUTE
+    assert r.targets == ["manager"]
+
+
+def test_prefix_route_chinese_colon():
+    r = _classify({"message_id": "m1", "chat_id": "chat-1",
+                   "text": "worker_cc：报到一下"},
+                  agents=("manager", "worker_cc", "worker_codex"),
+                  prefix_target=_agents_prefix)
+    assert r.action == EventAction.ROUTE
+    assert r.targets == ["worker_cc"]
+    assert r.text == "报到一下"
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -183,6 +254,11 @@ def main() -> int:
         test_route_text_is_sanitized,
         test_route_msg_id_is_preserved,
         test_chat_id_empty_means_no_filter,
+        test_prefix_route_colon_form,
+        test_prefix_route_space_form,
+        test_prefix_route_at_form_uses_at_path,
+        test_prefix_route_unknown_falls_through_to_manager,
+        test_prefix_route_chinese_colon,
     ]
     passed = failed = 0
     for fn in cases:

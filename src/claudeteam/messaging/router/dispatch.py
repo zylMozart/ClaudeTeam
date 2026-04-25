@@ -49,6 +49,7 @@ def classify_event(
     parse_targets: callable,
     parse_sender: callable,
     is_slash: callable,
+    parse_prefix_target: Optional[callable] = None,
 ) -> DispatchResult:
     """Classify one incoming Feishu event into DROP / SLASH / ROUTE.
 
@@ -94,6 +95,14 @@ def classify_event(
     if targets:
         routable = [t for t in targets if t != sender]
         return DispatchResult(EventAction.ROUTE, routable, sender, text, msg_id)
+
+    # Per-agent prefix routing for user messages without explicit @-mention.
+    if sender is None and parse_prefix_target is not None:
+        prefix_target, stripped = parse_prefix_target(text)
+        if prefix_target:
+            return DispatchResult(
+                EventAction.ROUTE, [prefix_target], None, stripped, msg_id, "prefix_route"
+            )
 
     if sender is None:
         # Unsolicited user message → default delivery target is manager

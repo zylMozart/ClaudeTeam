@@ -16,29 +16,41 @@
 
 # ── lazy-mode 白名单决策 (lazy_wake_v2 §A.2) ───────────────────
 # 由 start-team.sh / docker-entrypoint.sh 共享,保证宿主与容器对"哪些 agent
-# 真跑 claude / 哪些做 💤 占位"的判断完全一致。新增白名单角色只改这一处。
+# 真跑 claude / 哪些做 💤 占位"的判断完全一致。
 #
 # 调用方约定:
 #   - 在 source 本库之前已设置 LAZY_MODE 变量 (on/off)。未设视为 off。
-#   - 业务策略: lazy-mode = on 且 agent 不在 LAZY_WHITELIST_AGENTS → 应跳过
-#     spawn claude,只建窗口留 💤 banner,等 router::wake_on_deliver 唤醒。
+#   - 业务策略: lazy-mode = on 且 agent 在 LAZY_AGENTS 中 → 应跳过 spawn
+#     claude,只建窗口留 💤 banner,等 router::wake_on_deliver 唤醒。
+#
+# CLAUDETEAM_LAZY_AGENTS (逗号分隔) 控制哪些 agent 可被 lazy。manager 默认
+# 不在内 → 即使 LAZY_MODE=on 也强制 eager (boss 频道必须常驻)。
+# 显式空值 (CLAUDETEAM_LAZY_AGENTS="") 视为禁用 lazy → 全员 eager。
 
-LAZY_WHITELIST_AGENTS=(manager supervisor)
+CLAUDETEAM_LAZY_AGENTS_DEFAULT="worker_cc,worker_codex,worker_kimi,worker_gemini"
+# `-` (非 `:-`): 仅当变量未设置时取默认;显式空字符串视为"禁用 lazy"。
+LAZY_AGENTS="${CLAUDETEAM_LAZY_AGENTS-$CLAUDETEAM_LAZY_AGENTS_DEFAULT}"
 
+is_lazy_eligible() {
+  local agent="$1"
+  [[ -z "$LAZY_AGENTS" ]] && return 1
+  case ",${LAZY_AGENTS}," in
+    *,"${agent}",*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 向后兼容: is_lazy_whitelist 含义是"是否常驻 (即:不被 lazy)"。
 is_lazy_whitelist() {
-  local name="$1" w
-  for w in "${LAZY_WHITELIST_AGENTS[@]}"; do
-    [[ "$name" == "$w" ]] && return 0
-  done
-  return 1
+  ! is_lazy_eligible "$1"
 }
 
 # should_skip_agent_in_lazy_mode <agent>
-#   返回 0 = 应跳过 spawn (lazy-mode on 且非白名单)
-#   返回 1 = 应正常 spawn (lazy off 或在白名单)
+#   返回 0 = 应跳过 spawn (lazy-mode on 且 agent 在 LAZY_AGENTS 名单内)
+#   返回 1 = 应正常 spawn (lazy off 或 agent 是 always-eager)
 should_skip_agent_in_lazy_mode() {
   local agent="$1"
-  [[ "${LAZY_MODE:-off}" = "on" ]] && ! is_lazy_whitelist "$agent"
+  [[ "${LAZY_MODE:-off}" = "on" ]] && is_lazy_eligible "$agent"
 }
 
 # ── per-role 模型预解析 (lazy_wake_v2 §B) ─────────────────────

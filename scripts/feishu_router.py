@@ -142,6 +142,7 @@ def handle_event(event):
         parse_targets=lambda t: _state.parse_targets(t, agents),
         parse_sender=lambda t: _state.parse_sender(t, agents),
         is_slash=lambda t: _slash_dispatch(t)[0],
+        parse_prefix_target=lambda t: _state.parse_prefix_target(t, agents),
     )
     if result.action == EventAction.DROP:
         return

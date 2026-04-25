@@ -18,6 +18,10 @@ fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+# PYTHONPATH 三道注入的最后一道兜底 (Dockerfile ENV / compose env / 这里)。
+# 即使外层全漏配,容器内任何 python3 -m claudeteam.* 都能直接 import。
+export PYTHONPATH="${PYTHONPATH:-/app/src}"
 if [ -z "${CLAUDETEAM_STATE_DIR:-}" ]; then
   if [ "$ROOT" = "/app" ]; then
     export CLAUDETEAM_STATE_DIR="/app/state"
@@ -491,12 +495,37 @@ spawn_one() {
   fi
 }
 
+# 前置 preflight: Claude OAuth 凭证健康 → 才拉 worker;fail 则只拉 manager 窗口 + 红横幅。
+# 理由: OAuth 过期时 worker spawn 会 401 死循环;红横幅 >> 容器反复重启。(方案 §1.3)
+PREFLIGHT_FAILED=0
+PREFLIGHT_MSG=""
+if [ -f "$ROOT/scripts/preflight_claude_auth.sh" ]; then
+  if PREFLIGHT_MSG=$(bash "$ROOT/scripts/preflight_claude_auth.sh" 2>&1); then
+    echo "✅ Claude OAuth preflight: $PREFLIGHT_MSG"
+  else
+    echo "🚨 Claude OAuth preflight FAILED: $PREFLIGHT_MSG"
+    echo "   只拉 manager 窗口 + 挂红横幅 — host 侧 \`claude /login\` 后 docker restart 恢复。"
+    PREFLIGHT_FAILED=1
+  fi
+else
+  echo "ℹ️  preflight_claude_auth.sh 不存在,跳过凭证前置检查"
+fi
+
 spawn_one "${AGENTS[0]}" --first
 sleep 2
-for agent in "${AGENTS[@]:1}"; do
-  spawn_one "$agent"
-  sleep 2
-done
+
+if [ "$PREFLIGHT_FAILED" = "1" ]; then
+  # 在 manager pane 覆盖一个红色横幅 (ANSI 背景红)
+  tmux send-keys -t "$SESSION:${AGENTS[0]}" "clear" Enter
+  tmux send-keys -t "$SESSION:${AGENTS[0]}" \
+    "printf '\\033[1;41;97m 🚨 Claude OAuth preflight FAILED: ${PREFLIGHT_MSG//\'/} — workers not spawned. Host: claude /login → docker restart. \\033[0m\\n'" Enter
+  echo "⏭️  跳过 worker spawn (preflight 失败)"
+else
+  for agent in "${AGENTS[@]:1}"; do
+    spawn_one "$agent"
+    sleep 2
+  done
+fi
 
 # Router（lark-cli WebSocket 事件流）
 # 默认 local-core/no-live 容器不启动 router。live/smoke 必须显式设置
@@ -558,14 +587,31 @@ fi
 tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
 tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
-# supervisor_ticker: 周期性触发 supervisor_tick.sh (lazy_wake_v2 §A.3)
+# Claude OAuth token guard (方案 §1.3 P0): 后台守护,每 30min 扫 TTL + 快过期时发 inbox 告警。
+# nohup + setsid 起,断 tty 且独立进程组,容器主循环退出不拖它;日志落 state 目录,
+# 不占 tmux 窗口(guard 是"健康检测"类守护,attach 起来刷屏没价值)。
+if [ -f "$ROOT/scripts/claude_token_guard.sh" ]; then
+  GUARD_LOG="$CLAUDETEAM_STATE_DIR/claude_token_guard.log"
+  nohup setsid bash "$ROOT/scripts/claude_token_guard.sh" \
+    >>"$GUARD_LOG" 2>&1 &
+  echo "🛡️  claude_token_guard: pid=$! log=$GUARD_LOG"
+fi
+
+# supervisor_ticker: 周期性触发 supervisor_tick.sh (lazy_wake_v2 §A.3 + 方案 §2.2.4)
 # 用独立 tmux 窗口跑 while-sleep 循环: 比 cron 简单, 比 nohup 可见,
 # attach 进来就能看到每次 tick 的输出。间隔由 CLAUDETEAM_SUPERVISOR_INTERVAL 控制
 # (默认 900s = 15 分钟)。lazy-mode=off 时跳过,避免空转调用 Haiku。
+#
+# 方案 §2.2.4: 拉 ticker 窗口之前先同步跑一次 supervisor_tick.sh,
+# 让 supervisor 第一轮就完成冷启动,不依赖 15min 的漫长等待。
+# ticker 循环: 每轮 tick 后追跑 supervisor_apply.sh (决策→执行解耦)。
 if [ "$LAZY_MODE" = "on" ]; then
+  echo "⏰ supervisor_tick: 同步跑首轮 (冷启动 supervisor)..."
+  bash "$ROOT/scripts/supervisor_tick.sh" || echo "⚠️  首轮 tick exit=$?"
+
   tmux new-window -t "$SESSION" -n "supervisor_ticker" -c "$ROOT"
   tmux send-keys -t "$SESSION:supervisor_ticker" \
-    "while sleep \${CLAUDETEAM_SUPERVISOR_INTERVAL:-900}; do echo \"[\$(date '+%F %T')] ⏰ tick start\"; bash scripts/supervisor_tick.sh || echo \"[\$(date '+%F %T')] ⚠️  tick exit=\$?\"; done" \
+    "while sleep \${CLAUDETEAM_SUPERVISOR_INTERVAL:-900}; do echo \"[\$(date '+%F %T')] ⏰ tick start\"; bash scripts/supervisor_tick.sh || echo \"[\$(date '+%F %T')] ⚠️  tick exit=\$?\"; bash scripts/supervisor_apply.sh || echo \"[\$(date '+%F %T')] ⚠️  apply exit=\$?\"; done" \
     Enter
 fi
 
