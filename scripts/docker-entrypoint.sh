@@ -19,12 +19,68 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# PYTHONPATH 三道注入的最后一道兜底 (Dockerfile ENV / compose env / 这里)。
+# 即使外层全漏配,容器内任何 python3 -m claudeteam.* 都能直接 import。
+export PYTHONPATH="${PYTHONPATH:-/app/src}"
+if [ -z "${CLAUDETEAM_STATE_DIR:-}" ]; then
+  if [ "$ROOT" = "/app" ]; then
+    export CLAUDETEAM_STATE_DIR="/app/state"
+  else
+    export CLAUDETEAM_STATE_DIR="$ROOT/workspace/shared/state"
+  fi
+fi
+if [ -z "${CLAUDETEAM_CODEX_REQUIRE_NPM_PACKAGE:-}" ] && [ "$ROOT" = "/app" ]; then
+  export CLAUDETEAM_CODEX_REQUIRE_NPM_PACKAGE=1
+fi
+
+env_enabled() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 echo "🐳 ClaudeTeam Docker 启动 (mode=$MODE)..."
 echo "   Node.js: $(node --version)"
 echo "   Python:  $(python3 --version)"
-echo "   Claude:  $(claude --version 2>/dev/null || echo 'not found')"
-echo "   lark-cli: $(npx @larksuite/cli --version 2>/dev/null || echo 'not found')"
+if command -v claude >/dev/null 2>&1; then
+  echo "   Claude:  $(claude --version 2>/dev/null || echo 'present')"
+else
+  echo "   Claude:  disabled"
+fi
+echo "   Codex:   $(codex --version 2>/dev/null || echo 'not found')"
+echo "   lark-cli package: $(npm list -g @larksuite/cli --depth=0 2>/dev/null | sed -n '2p' || echo 'not found')"
+echo "   State dir: $CLAUDETEAM_STATE_DIR"
 echo ""
+
+mkdir -p "$CLAUDETEAM_STATE_DIR"
+chmod 700 "$CLAUDETEAM_STATE_DIR" 2>/dev/null || true
+
+# ── 凭证目录 ownership 桥接 (F-CRED-3) ──────────────────────
+# 容器内进程是 root,写到 bind-mount 的文件 host 端 owner 也是 root,
+# admin 后续编辑要 sudo。如果 .env 设了 HOST_UID/HOST_GID,启动时把
+# 三个 CLI 凭证目录 chown 到 host admin uid; 不设就跳过 (老部署兼容)。
+# 只动 ./.{kimi,codex,gemini}-credentials 这种 repo-local mount,
+# 绝不动 ~/. 路径。
+if [ -n "${HOST_UID:-}" ] && [ -n "${HOST_GID:-}" ]; then
+  for cred_dir in /home/claudeteam/.kimi /home/claudeteam/.codex /home/claudeteam/.gemini; do
+    if [ -d "$cred_dir" ]; then
+      chown -R "$HOST_UID:$HOST_GID" "$cred_dir" 2>/dev/null || \
+        echo "⚠️  chown $cred_dir → $HOST_UID:$HOST_GID 失败 (非阻塞)"
+    fi
+  done
+fi
+
+# 提示性检查: bind-mount 目录非空但容器进程不可写,大概率是 host_prep.sh
+# 没跑过,目录被 docker 自动创建为 root-owned。日志提醒,不报错。
+for cred_dir in /home/claudeteam/.kimi /home/claudeteam/.codex /home/claudeteam/.gemini; do
+  if [ -d "$cred_dir" ] && [ -z "$(ls -A "$cred_dir" 2>/dev/null)" ]; then
+    echo "ℹ️  $cred_dir 为空 — 该 CLI 首次启动会走 device-flow login。"
+    echo "    若想跳过 device-flow,可在 host 端: bash scripts/host_prep.sh"
+    echo "    然后 cp ~/.\${cli_name}/credentials .\${cli_name}-credentials/"
+    break
+  fi
+done
 
 # ── 前置检查 ──────────────────────────────────────────────────
 
@@ -61,9 +117,16 @@ if [ "$MODE" = "start" ]; then
     "首次部署请跑: docker compose run --rm team init"
 
   if ! python3 -c "
-import json,sys
+import json, os, sys
 cfg=json.load(open('scripts/runtime_config.json'))
-for k in ('bitable_app_token','msg_table_id','sta_table_id','chat_id'):
+required = []
+def enabled(name):
+    return os.environ.get(name, '').strip().lower() in ('1','true','yes','on')
+if enabled('CLAUDETEAM_ENABLE_FEISHU_REMOTE'):
+    required.append('chat_id')
+if enabled('CLAUDETEAM_ENABLE_BITABLE_LEGACY'):
+    required += ['bitable_app_token','msg_table_id','sta_table_id']
+for k in required:
     if not cfg.get(k): sys.exit('missing '+k)
 " 2>/tmp/rtcfg.err; then
     echo "❌ scripts/runtime_config.json 缺少关键字段: $(cat /tmp/rtcfg.err)"
@@ -73,6 +136,14 @@ for k in ('bitable_app_token','msg_table_id','sta_table_id','chat_id'):
 fi
 
 # ── 飞书 App 凭证 ──────────────────────────────────────────
+NEEDS_FEISHU=0
+if [ "$MODE" = "init" ] || \
+   env_enabled "${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-0}" || \
+   env_enabled "${CLAUDETEAM_ENABLE_BITABLE_LEGACY:-0}"; then
+  NEEDS_FEISHU=1
+fi
+
+if [ "$NEEDS_FEISHU" = "1" ]; then
 # 两条路径:
 #   (a) .env 里填了 FEISHU_APP_ID + FEISHU_APP_SECRET → 生成 inline 格式的
 #       容器本地 config.json,不依赖宿主机。这是推荐方式。
@@ -102,8 +173,8 @@ except Exception:
   fi
   if [ -n "$EXISTING_APP_ID" ] && [ "$EXISTING_APP_ID" != "$FEISHU_APP_ID" ]; then
     echo "❌ 检测到 /home/claudeteam/.lark-cli/config.json 已指向另一个 App:"
-    echo "     现有 appId: $EXISTING_APP_ID"
-    echo "     .env 里的:  $FEISHU_APP_ID"
+    echo "     现有 appId: <redacted>"
+    echo "     .env 里的:  <redacted>"
     echo ""
     echo "   可能的原因:"
     echo "     1) docker-compose.yml 里的 ~/.lark-cli bind mount 被取消注释,"
@@ -119,7 +190,24 @@ except Exception:
   fi
 
   mkdir -p /home/claudeteam/.lark-cli
-  PROFILE_NAME=$(python3 -c "import json; print(json.load(open('team.json')).get('session','default'))" 2>/dev/null)
+  PROFILE_NAME=$(python3 - <<'PY'
+import json
+
+profile = ""
+try:
+    with open("scripts/runtime_config.json") as f:
+        profile = (json.load(f).get("lark_profile") or "").strip()
+except Exception:
+    pass
+if not profile:
+    try:
+        with open("team.json") as f:
+            profile = (json.load(f).get("session") or "").strip()
+    except Exception:
+        pass
+print(profile or "default")
+PY
+)
   python3 - <<PY
 import json, os
 cfg = {"apps": [{
@@ -134,7 +222,7 @@ with open("/home/claudeteam/.lark-cli/config.json", "w") as f:
     json.dump(cfg, f, indent=2)
 os.chmod("/home/claudeteam/.lark-cli/config.json", 0o600)
 PY
-  echo "✅ 已从 .env 生成容器内 lark-cli config (profile=$PROFILE_NAME, appId=$FEISHU_APP_ID)"
+  echo "✅ 已从 .env 生成容器内 lark-cli config (profile=$PROFILE_NAME, appId=<redacted>)"
 fi
 
 if [ ! -f /home/claudeteam/.lark-cli/config.json ]; then
@@ -160,34 +248,43 @@ print('keychain' if isinstance(sec, dict) else 'inline')
 if [ "$SECRET_MODE" = "keychain" ] && [ ! -f /home/claudeteam/.local/share/lark-cli/master.key ]; then
   echo "❌ lark-cli config.json 使用 keychain 引用模式但加密存储未挂载"
   echo "   (~/.local/share/lark-cli/master.key 缺失)"
-  echo "   修复: 在 docker-compose.yml 里加一行"
-  echo "         - ~/.local/share/lark-cli:/home/claudeteam/.local/share/lark-cli"
+  echo "   修复: 将项目本地 .lark-cli-credentials/local-share 只读挂载到"
+  echo "         /home/claudeteam/.local/share/lark-cli"
   echo "   或者改用 .env 里的 FEISHU_APP_ID/FEISHU_APP_SECRET,切到 inline 模式。"
   exit 1
 fi
-
-# Claude Code 认证 — 两选一
-if [ -z "$ANTHROPIC_API_KEY" ] && [ ! -f /home/claudeteam/.claude/.credentials.json ]; then
-  echo "❌ Claude Code 没有可用凭证: 既没有 ANTHROPIC_API_KEY 环境变量,"
-  echo "   也没有 /home/claudeteam/.claude/.credentials.json OAuth 凭证。"
-  echo "   二选一:"
-  echo "     (a) export ANTHROPIC_API_KEY=sk-... 再 docker compose up"
-  echo "     (b) 宿主机先 \`claude login\` 生成 ~/.claude/.credentials.json"
-  exit 1
-fi
-# OAuth 模式下还需要 ~/.claude.json(账户元数据,和 .credentials.json 分开存)
-if [ -z "$ANTHROPIC_API_KEY" ] && [ ! -f /home/claudeteam/.claude.json ]; then
-  echo "❌ OAuth 模式缺少 /home/claudeteam/.claude.json(账户元数据文件)。"
-  echo "   Claude Code 会弹出 'Select login method' 菜单阻塞启动。"
-  echo "   修复: docker-compose.yml 增加一行"
-  echo "         - ~/.claude.json:/home/claudeteam/.claude.json"
-  exit 1
+else
+  echo "ℹ️  Feishu live/legacy disabled; skipping lark-cli credential check."
 fi
 
-# 确保 /app 在 projects 里且 hasTrustDialogAccepted=true,否则 Claude Code
-# 首次进入 /app 会弹出 "Is this a project you trust?" 交互菜单,和主题菜单一样
-# 会吃掉 tmux send-keys 的初始化消息。这里做一次幂等写入。
-python3 - <<'PY'
+NEEDS_CLAUDE_CODE=$(python3 - <<'PY'
+import json
+team = json.load(open("team.json"))
+agents = team.get("agents", {})
+print("1" if any(v.get("cli") == "claude-code"
+                 for v in agents.values()) else "0")
+PY
+)
+
+if [ "$NEEDS_CLAUDE_CODE" = "1" ]; then
+  # Claude Code 认证 — 仅当 team.json 显式使用 claude-code agent 时才需要。
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "❌ team.json 显式使用 claude-code,但当前镜像未安装该 CLI。"
+    echo "   修复: 构建 legacy/dev 镜像时设置 CLAUDETEAM_INSTALL_CLAUDE_CODE=1。"
+    exit 1
+  fi
+  if [ -z "$ANTHROPIC_API_KEY" ] && [ ! -f /home/claudeteam/.claude/.credentials.json ]; then
+    echo "❌ Claude Code 没有可用凭证: 既没有 ANTHROPIC_API_KEY 环境变量,"
+    echo "   也没有 /home/claudeteam/.claude/.credentials.json OAuth 凭证。"
+    exit 1
+  fi
+  if [ -z "$ANTHROPIC_API_KEY" ] && [ ! -f /home/claudeteam/.claude.json ]; then
+    echo "❌ OAuth 模式缺少 /home/claudeteam/.claude.json(账户元数据文件)。"
+    exit 1
+  fi
+
+  # 确保 /app 在 projects 里且 hasTrustDialogAccepted=true。
+  python3 - <<'PY'
 import json, os
 p = "/home/claudeteam/.claude.json"
 if not os.path.exists(p):
@@ -202,25 +299,27 @@ if not app.get("hasTrustDialogAccepted"):
     app.setdefault("projectOnboardingSeenCount", 1)
     with open(p, "w") as f:
         json.dump(d, f, indent=2)
-    print("✅ 已为 /app 写入信任标记")
+    print("✅ 已为 /app 写入 Claude Code 信任标记")
 PY
 
-# 预置 settings.local.json —— 绕过 "sensitive file" 权限弹窗。
-# 背景 (Bug 12): 即使启动参数带了 --dangerously-skip-permissions,Claude Code
-# 仍会对自己状态目录下的路径(~/.claude/projects/<escaped>/** 等) 执行硬编码的
-# "敏感文件" 检查。agent 只要跑 `mkdir -p ~/.claude/projects/-app/memory` 这种
-# auto-memory 初始化命令,就会被拦下弹确认框,tmux 窗口直接卡死 ——
-# 没人按方向键+Enter,manager 就永远派不下去任务,群里消息表现为"无人响应"。
-#
-# 修法是给容器写一份 settings.local.json,permissions.allow 里加一条
-# 全量 Bash 白名单 (`Bash(*)`) + 所有 Edit/Write/Read 白名单,这样 Claude
-# 在检查阶段就认定"用户已经永久允许",直接跳过弹窗。
-#
-# 文件不入镜像、仅容器运行时生成 —— 宿主机 ~/.claude/settings.local.json
-# 不受影响(我们只 bind mount 了 .credentials.json 和 .claude.json 两个顶层
-# 文件,settings.local.json 落在容器自己的 rootfs 层)。
-mkdir -p /home/claudeteam/.claude
-python3 - <<'PY'
+  # B3: 升级弹窗抑制
+  python3 - <<'PY'
+import json, os
+p = "/home/claudeteam/.claude.json"
+if not os.path.exists(p):
+    raise SystemExit(0)
+with open(p) as f:
+    d = json.load(f)
+if d.get("autoUpdates") is not False:
+    d["autoUpdates"] = False
+    with open(p, "w") as f:
+        json.dump(d, f, indent=2)
+    print("✅ Claude Code autoUpdates=false 已写入")
+PY
+
+  # 预置 Claude Code settings.local.json。
+  mkdir -p /home/claudeteam/.claude
+  python3 - <<'PY'
 import json, os
 p = "/home/claudeteam/.claude/settings.local.json"
 existing = {}
@@ -232,7 +331,6 @@ if os.path.exists(p):
         existing = {}
 perms = existing.setdefault("permissions", {})
 allow = perms.setdefault("allow", [])
-# 幂等: 已有就不重复加
 wanted = [
     "Bash(*)",
     "Write(/home/claudeteam/.claude/**)",
@@ -249,6 +347,9 @@ with open(p, "w") as f:
     json.dump(existing, f, indent=2)
 print(f"✅ 已写入 {p} (permissions.allow={len(allow)} 条)")
 PY
+else
+  echo "ℹ️  team.json 未使用 legacy CLI agent; skipping legacy credential/config setup."
+fi
 
 # ── CLI auto-approve 预配 ───────────��─────────────────────────
 # 容器启动时预写各 CLI 的 auto-approve 配置,避免运行时弹审批对话框卡死 tmux。
@@ -287,6 +388,27 @@ with open(p, 'w') as f:
     json.dump(d, f, indent=2)
 "
 fi
+
+# Codex: trust the container project path up front. Without this, the first
+# prod-hardened launch prompts "Do you trust /app?" and exits back to shell,
+# leaving manager with no live Codex process.
+CODEX_TOML="/home/claudeteam/.codex/config.toml"
+mkdir -p "$(dirname "$CODEX_TOML")"
+touch "$CODEX_TOML"
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("/home/claudeteam/.codex/config.toml")
+text = p.read_text(errors="ignore")
+block = '[projects."/app"]\ntrust_level = "trusted"\n'
+if '[projects."/app"]' not in text:
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text:
+        text += "\n"
+    text += block
+    p.write_text(text)
+PY
 
 # Gemini: settings.json → sandbox_mode = "yolo" (if supported)
 # adapter spawn_cmd 已带 --approval-mode=yolo;持久化配置作为兜底。
@@ -361,16 +483,26 @@ fi
 SESSION=$(python3 -c "import json; print(json.load(open('team.json'))['session'])")
 AGENTS=($(python3 -c "import json; print(' '.join(json.load(open('team.json'))['agents'].keys()))"))
 
+# F-ROUTER-1: watchdog 通过 CLAUDETEAM_TMUX_SESSION 知道往哪个 pane 复活 router。
+# router_restart.sh 也读这个值。export 后 watchdog python 进程能继承。
+export CLAUDETEAM_TMUX_SESSION="$SESSION"
+
 # 如果 session 已存在（容器重启场景），先清理
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "⚠️  清理旧 session: $SESSION"
   tmux kill-session -t "$SESSION"
 fi
+# 清理 stale session IDs — 容器重建后旧 resume ID 无效，--resume 会失败退到 bash
+if [ -f "$ROOT/scripts/.agent_sessions.json" ]; then
+  rm -f "$ROOT/scripts/.agent_sessions.json"
+  echo "🧹 清理 stale agent session IDs"
+fi
 
 # 清理上一个容器残留的 PID 锁文件。bind-mount 的 scripts/ 跨 compose down/up
 # 持久化,旧容器的 PID 可能被新容器内不相关进程复用,导致 _acquire_pid_lock
 # 误判"已在运行"而 sys.exit(1)。
-rm -f scripts/.*.pid
+rm -f "$CLAUDETEAM_STATE_DIR"/*.pid 2>/dev/null || true
+rm -f scripts/.*.pid 2>/dev/null || true
 
 # lazy-mode 与白名单决策共享 lib (lazy_wake_v2 §A.2)。宿主 start-team.sh 走同一份。
 # 容器场景默认 on,与宿主默认对齐;可被 docker run -e CLAUDETEAM_LAZY_MODE=off 覆盖。
@@ -380,6 +512,15 @@ case "$LAZY_MODE" in
   *) echo "❌ CLAUDETEAM_LAZY_MODE 取值非法: '$LAZY_MODE' (期望 on 或 off)"; exit 2 ;;
 esac
 source "$ROOT/scripts/lib/tmux_team_bringup.sh"
+
+# CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS 环境变量冲突检测
+if ! check_agent_teams_env; then
+  echo "   ⚠️  容器继续启动,但 tmux 注入可能被 Claude Code 内置团队功能干扰。"
+fi
+
+# session 名冲突检测 — 容器场景只告警不 exit (restart 循环救不了配置错)
+check_session_conflict "$ROOT" "$SESSION" || \
+  echo "   ⚠️  存在 session 冲突,但容器继续启动。请尽快修正 team.json session 名。"
 
 # ── per-role 模型预解析 (lazy_wake_v2 §B) ────────────────────
 # 走和 start-team.sh 完全同一份 helper。非法 model / 解析失败时 loud-fail:
@@ -404,70 +545,144 @@ spawn_one() {
   local agent="$1" first="${2:-}"
   if [ "$first" = "--first" ]; then
     tmux new-session -d -s "$SESSION" -n "$agent" -c "$ROOT"
+    # B4: 注入环境变量白名单到 tmux session (bash 3.2 兼容)
+    for _var in ANTHROPIC_API_KEY CLAUDETEAM_LAZY_MODE CLAUDETEAM_LAZY_AGENTS \
+                CLAUDETEAM_DEFAULT_MODEL CLAUDETEAM_ENABLE_FEISHU_REMOTE \
+                CLAUDETEAM_PROBE_TIMEOUT PYTHONPATH PATH; do
+      eval "_val=\${$_var+SET}"
+      if [ "$_val" = "SET" ]; then
+        eval "tmux set-environment -t \"\$SESSION\" \"\$_var\" \"\${$_var}\""
+      fi
+    done
   else
     tmux new-window -t "$SESSION" -n "$agent" -c "$ROOT"
   fi
   if should_skip_agent_in_lazy_mode "$agent"; then
     tmux send-keys -t "$SESSION:$agent" \
-      "clear && echo '💤 待 wake  (agent=$agent, model=${AGENT_MODELS[$agent]}, lazy-mode)' && echo '   router 收到业务消息后会唤醒本窗口'" Enter
+      "clear && echo '💤 待 wake  (agent=$agent, model=$(get_agent_model "$agent"), lazy-mode)' && echo '   router 收到业务消息后会唤醒本窗口'" Enter
   else
     local spawn_cmd
-    spawn_cmd=$(python3 scripts/cli_adapters/resolve.py "$agent" spawn_cmd "${AGENT_MODELS[$agent]}")
+    spawn_cmd=$(python3 -m claudeteam.cli_adapters.resolve "$agent" spawn_cmd "$(get_agent_model "$agent")")
     tmux send-keys -t "$SESSION:$agent" "$spawn_cmd" Enter
   fi
 }
 
+# 前置 preflight: Claude OAuth 凭证健康 → 才拉 worker;fail 则只拉 manager 窗口 + 红横幅。
+# 理由: OAuth 过期时 worker spawn 会 401 死循环;红横幅 >> 容器反复重启。(方案 §1.3)
+PREFLIGHT_FAILED=0
+PREFLIGHT_MSG=""
+if [ -f "$ROOT/scripts/preflight_claude_auth.sh" ]; then
+  if PREFLIGHT_MSG=$(bash "$ROOT/scripts/preflight_claude_auth.sh" 2>&1); then
+    echo "✅ Claude OAuth preflight: $PREFLIGHT_MSG"
+  else
+    echo "🚨 Claude OAuth preflight FAILED: $PREFLIGHT_MSG"
+    echo "   只拉 manager 窗口 + 挂红横幅 — host 侧 \`claude /login\` 后 docker restart 恢复。"
+    PREFLIGHT_FAILED=1
+  fi
+else
+  echo "ℹ️  preflight_claude_auth.sh 不存在,跳过凭证前置检查"
+fi
+
 spawn_one "${AGENTS[0]}" --first
 sleep 2
-for agent in "${AGENTS[@]:1}"; do
-  spawn_one "$agent"
-  sleep 2
-done
+
+if [ "$PREFLIGHT_FAILED" = "1" ]; then
+  # 在 manager pane 覆盖一个红色横幅 (ANSI 背景红)
+  tmux send-keys -t "$SESSION:${AGENTS[0]}" "clear" Enter
+  tmux send-keys -t "$SESSION:${AGENTS[0]}" \
+    "printf '\\033[1;41;97m 🚨 Claude OAuth preflight FAILED: ${PREFLIGHT_MSG//\'/} — workers not spawned. Host: claude /login → docker restart. \\033[0m\\n'" Enter
+  echo "⏭️  跳过 worker spawn (preflight 失败)"
+else
+  for agent in "${AGENTS[@]:1}"; do
+    spawn_one "$agent"
+    sleep 2
+  done
+fi
 
 # Router（lark-cli WebSocket 事件流）
-# 从 runtime_config.json 读 lark_profile，确保多 profile 共存时订阅到正确的 App。
-# 不带 --profile 会落到 lark-cli 的默认 profile，在共享宿主机 ~/.lark-cli 时
-# 极易订阅错 App 的事件流。
-LARK_PROFILE=$(python3 -c "import json; print(json.load(open('scripts/runtime_config.json')).get('lark_profile') or '')" 2>/dev/null)
-PROFILE_FLAG=""
-if [ -n "$LARK_PROFILE" ]; then
-  PROFILE_FLAG="--profile $LARK_PROFILE"
-fi
+# 默认 local-core/no-live 容器不启动 router。live/smoke 必须显式设置
+# CLAUDETEAM_ENABLE_FEISHU_REMOTE=1,并使用隔离测试群和隔离凭证。
+ROUTER_STARTED=0
 tmux new-window -t "$SESSION" -n "router" -c "$ROOT"
-tmux send-keys -t "$SESSION:router" "npx @larksuite/cli $PROFILE_FLAG event +subscribe --event-types im.message.receive_v1 --compact --quiet --force --as bot | python3 scripts/feishu_router.py --stdin" Enter
-
-# 看板同步
-tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"
-tmux send-keys -t "$SESSION:kanban" "python3 scripts/kanban_sync.py daemon" Enter
-
-# 等 router / kanban 真正起来并写出各自的 PID 锁文件后再启动 watchdog。
-# 不等的话 watchdog 的首次检查会在 t=0 即认定目标未启动 → 错误地"重启"它们,
-# 后果是 router 被启动两遍,两个 lark-cli WebSocket 订阅同时跑,事件收两次。
-echo "⏳ 等待 router / kanban 启动..."
-for i in $(seq 1 30); do
-  if [ -f scripts/.router.pid ] && [ -f scripts/.kanban_sync.pid ]; then
-    echo "   ✓ router + kanban PID 就位"
-    break
+if env_enabled "${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-0}"; then
+  # 启动命令统一从 scripts/lib/router_launch.sh 拼出 (F-ROUTER-1/2 共享给
+  # router_restart.sh、watchdog 复活路径,避免三处重复 lark_profile 解析逻辑)。
+  ROUTER_LAUNCH_CMD="$(bash scripts/lib/router_launch.sh)"
+  if [ -z "$ROUTER_LAUNCH_CMD" ]; then
+    echo "⚠️ scripts/lib/router_launch.sh 输出空命令; router 不会启动"
+  else
+    tmux send-keys -t "$SESSION:router" "$ROUTER_LAUNCH_CMD" Enter
+    ROUTER_STARTED=1
   fi
-  sleep 1
-done
-if [ ! -f scripts/.router.pid ] || [ ! -f scripts/.kanban_sync.pid ]; then
-  echo "⚠️  等待 30s 后 router 或 kanban 仍未写出 PID 文件,继续启动 watchdog。"
-  echo "   这可能意味着 router/kanban 启动失败,请 docker exec 进入 tmux 查看。"
+else
+  tmux send-keys -t "$SESSION:router" \
+    "clear && echo 'router disabled: set CLAUDETEAM_ENABLE_FEISHU_REMOTE=1 only for isolated live smoke/profile'" Enter
+fi
+
+# 看板同步是 legacy Bitable adapter,默认关闭。
+KANBAN_STARTED=0
+tmux new-window -t "$SESSION" -n "kanban" -c "$ROOT"
+if env_enabled "${CLAUDETEAM_ENABLE_BITABLE_LEGACY:-0}"; then
+  tmux send-keys -t "$SESSION:kanban" "python3 scripts/kanban_sync.py daemon" Enter
+  KANBAN_STARTED=1
+else
+  tmux send-keys -t "$SESSION:kanban" \
+    "clear && echo 'kanban disabled: set CLAUDETEAM_ENABLE_BITABLE_LEGACY=1 only for explicit legacy export'" Enter
+fi
+
+# 等已启用的守护进程写出 PID 锁文件后再启动 watchdog。
+if [ "$ROUTER_STARTED" = "1" ] || [ "$KANBAN_STARTED" = "1" ]; then
+  echo "⏳ 等待已启用的 router / kanban 启动..."
+  for i in $(seq 1 30); do
+    router_ok=1
+    kanban_ok=1
+    [ "$ROUTER_STARTED" = "1" ] && [ ! -f "$CLAUDETEAM_STATE_DIR/router.pid" ] && router_ok=0
+    [ "$KANBAN_STARTED" = "1" ] && [ ! -f "$CLAUDETEAM_STATE_DIR/kanban_sync.pid" ] && kanban_ok=0
+    if [ "$router_ok" = "1" ] && [ "$kanban_ok" = "1" ]; then
+      echo "   ✓ 已启用守护进程 PID 就位"
+      break
+    fi
+    sleep 1
+  done
+  if [ "$ROUTER_STARTED" = "1" ] && [ ! -f "$CLAUDETEAM_STATE_DIR/router.pid" ]; then
+    echo "⚠️  router 已启用但未写出 PID 文件: $CLAUDETEAM_STATE_DIR/router.pid"
+  fi
+  if [ "$KANBAN_STARTED" = "1" ] && [ ! -f "$CLAUDETEAM_STATE_DIR/kanban_sync.pid" ]; then
+    echo "⚠️  kanban 已启用但未写出 PID 文件: $CLAUDETEAM_STATE_DIR/kanban_sync.pid"
+  fi
+else
+  echo "ℹ️  router/kanban 默认关闭(local-core/no-live); watchdog 将不监控 live/legacy adapter。"
 fi
 
 # Watchdog
 tmux new-window -t "$SESSION" -n "watchdog" -c "$ROOT"
 tmux send-keys -t "$SESSION:watchdog" "python3 scripts/watchdog.py" Enter
 
-# supervisor_ticker: 周期性触发 supervisor_tick.sh (lazy_wake_v2 §A.3)
+# Claude OAuth token guard (方案 §1.3 P0): 后台守护,每 30min 扫 TTL + 快过期时发 inbox 告警。
+# nohup + setsid 起,断 tty 且独立进程组,容器主循环退出不拖它;日志落 state 目录,
+# 不占 tmux 窗口(guard 是"健康检测"类守护,attach 起来刷屏没价值)。
+if [ -f "$ROOT/scripts/claude_token_guard.sh" ]; then
+  GUARD_LOG="$CLAUDETEAM_STATE_DIR/claude_token_guard.log"
+  nohup setsid bash "$ROOT/scripts/claude_token_guard.sh" \
+    >>"$GUARD_LOG" 2>&1 &
+  echo "🛡️  claude_token_guard: pid=$! log=$GUARD_LOG"
+fi
+
+# supervisor_ticker: 周期性触发 supervisor_tick.sh (lazy_wake_v2 §A.3 + 方案 §2.2.4)
 # 用独立 tmux 窗口跑 while-sleep 循环: 比 cron 简单, 比 nohup 可见,
 # attach 进来就能看到每次 tick 的输出。间隔由 CLAUDETEAM_SUPERVISOR_INTERVAL 控制
 # (默认 900s = 15 分钟)。lazy-mode=off 时跳过,避免空转调用 Haiku。
+#
+# 方案 §2.2.4: 拉 ticker 窗口之前先同步跑一次 supervisor_tick.sh,
+# 让 supervisor 第一轮就完成冷启动,不依赖 15min 的漫长等待。
+# ticker 循环: 每轮 tick 后追跑 supervisor_apply.sh (决策→执行解耦)。
 if [ "$LAZY_MODE" = "on" ]; then
+  echo "⏰ supervisor_tick: 同步跑首轮 (冷启动 supervisor)..."
+  bash "$ROOT/scripts/supervisor_tick.sh" || echo "⚠️  首轮 tick exit=$?"
+
   tmux new-window -t "$SESSION" -n "supervisor_ticker" -c "$ROOT"
   tmux send-keys -t "$SESSION:supervisor_ticker" \
-    "while sleep \${CLAUDETEAM_SUPERVISOR_INTERVAL:-900}; do echo \"[\$(date '+%F %T')] ⏰ tick start\"; bash scripts/supervisor_tick.sh || echo \"[\$(date '+%F %T')] ⚠️  tick exit=\$?\"; done" \
+    "while sleep \${CLAUDETEAM_SUPERVISOR_INTERVAL:-900}; do echo \"[\$(date '+%F %T')] ⏰ tick start\"; bash scripts/supervisor_tick.sh || echo \"[\$(date '+%F %T')] ⚠️  tick exit=\$?\"; bash scripts/supervisor_apply.sh || echo \"[\$(date '+%F %T')] ⚠️  apply exit=\$?\"; done" \
     Enter
 fi
 
@@ -514,8 +729,8 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 准备好后，简短汇报：你是谁、当前状态、有无未读消息。"
 
     # thinking init hint (F2: per-agent thinking level)
-    THINKING_HINT=$(python3 scripts/cli_adapters/resolve.py "$agent" thinking_init_hint \
-      "$(python3 scripts/config.py resolve-thinking "$agent" 2>/dev/null)" 2>/dev/null) && \
+    THINKING_HINT=$(python3 -m claudeteam.cli_adapters.resolve "$agent" thinking_init_hint \
+      "$(python3 -m claudeteam.runtime.config resolve-thinking "$agent" 2>/dev/null)" 2>/dev/null) && \
       INIT_MSG="${INIT_MSG}
 
 【Thinking 指引】${THINKING_HINT}"
@@ -523,7 +738,8 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
     PYTHONPATH="$ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}" \
     INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
 import os, sys
-from tmux_utils import inject_when_idle
+sys.path.insert(0, os.path.join(os.getcwd(), "src"))
+from claudeteam.runtime.tmux_utils import inject_when_idle
 
 session, agent = sys.argv[1], sys.argv[2]
 ok = inject_when_idle(session, agent, os.environ["INIT_MSG"],

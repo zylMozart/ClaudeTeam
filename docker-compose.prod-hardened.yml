@@ -1,0 +1,91 @@
+###############################################################################
+# ClaudeTeam — isolated full-control profile
+#
+# Runtime boundary for live smoke / production-like validation after the latest
+# owner guidance:
+# - manager has full control inside the isolated container
+# - rootfs, HOME/cache, state, and workspace are writable
+# - source code is the image's isolated copy, not a bind mount to host source
+# - no broad host ~/.claude, ~/.codex, ~/.lark-cli, or host HOME mounts
+# - no Docker socket, privileged mode, or host network
+#
+# Runtime root: CLAUDETEAM_RUNTIME_ROOT (default: /home/admin/runtime/claudeteam/restructure)
+# All bind-mounts reference runtime root, not repo-relative paths.
+#
+# Example:
+#   export CLAUDETEAM_RUNTIME_ROOT=/home/admin/runtime/claudeteam/restructure
+#   COMPOSE_PROJECT_NAME=claudeteam-restructure \
+#     docker compose -f docker-compose.prod-hardened.yml \
+#     --profile prod-hardened up -d --build team-prod-hardened
+###############################################################################
+
+services:
+  team-prod-hardened:
+    profiles:
+      - prod-hardened
+    build: .
+    restart: unless-stopped
+    env_file:
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/env/.env
+    user: "root"
+    read_only: false
+
+    environment:
+      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
+      - FEISHU_BRAND=${FEISHU_BRAND:-feishu}
+      - CLAUDETEAM_ENABLE_FEISHU_REMOTE=${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-0}
+      - CLAUDETEAM_ENABLE_BITABLE_LEGACY=${CLAUDETEAM_ENABLE_BITABLE_LEGACY:-0}
+      - TERM=xterm-256color
+      - HOME=/home/claudeteam
+      - CLAUDETEAM_STATE_DIR=/app/state
+      - CLAUDETEAM_FACTS_DIR=/app/state/facts
+
+    volumes:
+      # Runtime root: all mutable data lives outside the source repo.
+      # Set CLAUDETEAM_RUNTIME_ROOT before running docker compose.
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/team/team.json:/app/team.json:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/agents:/app/agents:rw
+
+      # Writable state/data boundaries.
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/workspace:/app/workspace:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/state:/app/state:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/runtime/runtime_config.json:/app/scripts/runtime_config.json:rw
+
+      # Credential stores from runtime root.
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/lark-cli:/home/claudeteam/.lark-cli:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/lark-cli/local-share:/home/claudeteam/.local/share/lark-cli:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/codex:/home/claudeteam/.codex:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/kimi:/home/claudeteam/.kimi:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/gemini:/home/claudeteam/.gemini:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/qwen:/home/claudeteam/.qwen:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/claude:/home/claudeteam/.claude:rw
+      - ${CLAUDETEAM_RUNTIME_ROOT:-/home/admin/runtime/claudeteam/restructure}/creds/claude/.claude.json:/home/claudeteam/.claude.json:rw
+
+    tmpfs:
+      - /tmp
+      - /run
+      - /home/claudeteam/.cache
+      - /home/claudeteam/.npm
+
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: ${CLAUDETEAM_MEM:-4G}
+          cpus: "${CLAUDETEAM_CPUS:-2.0}"
+        reservations:
+          memory: 1G
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "tmux has-session -t \"$(python3 -c 'import json; print(json.load(open(\"team.json\"))[\"session\"])')\" || exit 1",
+        ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+    entrypoint: ["bash", "scripts/docker-entrypoint.sh"]

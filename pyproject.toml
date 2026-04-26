@@ -1,0 +1,7 @@
+[project]
+name = "claudeteam"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]

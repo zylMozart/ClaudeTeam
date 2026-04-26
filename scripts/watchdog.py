@@ -13,10 +13,32 @@ Watchdog Daemon — 监控并自动重启关键守护进程
 """
 import sys, os, time, glob, subprocess, atexit, signal
 
-sys.path.insert(0, os.path.dirname(__file__))
-from config import PROJECT_ROOT, LARK_CLI
+_SCRIPT_DIR = os.path.dirname(__file__)
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from claudeteam.supervision import watchdog_state as _watchdog_state
+from claudeteam.supervision import watchdog_specs as _watchdog_specs
+from claudeteam.supervision import watchdog_health as _watchdog_health
+from claudeteam.supervision import watchdog_effect_plan as _watchdog_effect_plan
+from claudeteam.supervision import watchdog_alert_delivery as _watchdog_alert_delivery
+from claudeteam.supervision import watchdog_alert_request as _watchdog_alert_request
+from claudeteam.supervision import watchdog_daemon as _watchdog_daemon
+from claudeteam.supervision import watchdog_messages as _watchdog_messages
+from claudeteam.supervision import watchdog_orphans as _watchdog_orphans
+from claudeteam.supervision import watchdog_proc_match as _watchdog_proc_match
+from claudeteam.runtime.config import PROJECT_ROOT, LARK_CLI
+from claudeteam.runtime.paths import legacy_script_state_file, runtime_state_file, runtime_state_dir, ensure_parent
 
 CHECK_INTERVAL = 60  # 秒
+_state_dir = runtime_state_dir()
+ROUTER_PID_FILE = str(_state_dir / "router.pid")
+ROUTER_CURSOR_FILE = str(_state_dir / "router.cursor")
+LEGACY_ROUTER_PID_FILE = legacy_script_state_file(".router.pid")
+KANBAN_PID_FILE = str(_state_dir / "kanban_sync.pid")
+WATCHDOG_PID_FILE = str(_state_dir / "watchdog.pid")
 
 # ADR watchdog_startup_grace: 冷启动时 router pipeline (lark-cli 冷 npm 解
 # 析 + feishu_router.py import) 可能 ≥ 30s 才 touch .router.pid。watchdog 若
@@ -41,54 +63,31 @@ STARTUP_GRACE_SECS = int(os.environ.get("WATCHDOG_STARTUP_GRACE_SECS", "60"))
 # WATCHDOG_TESTING=0 / WATCHDOG_TESTING=false 都当成真值,是经典坑。
 TESTING = os.environ.get("WATCHDOG_TESTING") == "1"
 
-# 构建带 profile 的 lark-cli event 命令
-_lark_event_cmd = " ".join(LARK_CLI) + (
-    " event +subscribe "
-    "--event-types im.message.receive_v1 "
-    "--compact --quiet --force --as bot"
+# tmux_target 让 restart_process 走 send-keys 复活到 pane (F-ROUTER-1)。
+# entrypoint 启动时 export CLAUDETEAM_TMUX_SESSION; 不设则 fallback 到旧 Popen。
+_TMUX_SESSION_ENV = os.environ.get("CLAUDETEAM_TMUX_SESSION", "").strip()
+_ROUTER_TMUX_TARGET = f"{_TMUX_SESSION_ENV}:router" if _TMUX_SESSION_ENV else ""
+
+_PROC_SPECS = _watchdog_specs.build_process_specs(
+    lark_cli=LARK_CLI,
+    router_pid_file=ROUTER_PID_FILE,
+    router_cursor_file=ROUTER_CURSOR_FILE,
+    kanban_pid_file=KANBAN_PID_FILE,
+    router_tmux_target=_ROUTER_TMUX_TARGET,
 )
 
-PROCS = [
-    {
-        "name":  "router (lark-cli event | router)",
-        "match": "feishu_router.py",
-        "cmd":   ["bash", "-c",
-                  f"{_lark_event_cmd} "
-                  "| python3 scripts/feishu_router.py --stdin"],
-        "pid_file": os.path.join(os.path.dirname(__file__), ".router.pid"),
-        # 事件心跳: router 每次从 WebSocket 收到事件(即使被过滤)都会
-        # os.utime 这个文件。1800s 没更新 = WebSocket 静默死亡(Docker+云
-        # NAT conntrack 过期场景),触发重启。router 启动时会从 cursor 文件
-        # 补抓断联期间错过的消息,重启对用户透明不丢消息。
-        # cursor 文件一物两用: content 是"最后成功路由的本团队消息时间",
-        # mtime 是"最后收到任何 WebSocket 事件的时间"。watchdog 只看 mtime。
-        "health_file": os.path.join(os.path.dirname(__file__), ".router.cursor"),
-        "health_stale_secs": 1800,
-        # 刚重启完的 grace period:距离上次重启 < grace_secs 时只查 PID 存活,
-        # 不查 health_file 新鲜度。避免 router 新进程还没来得及 touch cursor
-        # 就被 watchdog 再次误判为"心跳超时"连锁重启。
-        "restart_grace_secs": 120,
-        # ADR watchdog_max_retries_cooldown: burst + cooldown 状态机
-        # max_retries   — 一个 burst 窗口内的重启配额
-        # cooldown_secs — burst 耗尽后的静默冷却时长,结束后自动重新 burst
-        "max_retries":    3,
-        "cooldown_secs":  600,
-        # 运行时状态(watchdog 自己维护,初始 0)
-        "retry_count":         0,
-        "last_restart_ts":     0,
-        "cooldown_start_ts":   0,
-    },
-    {
-        "name":  "kanban_sync.py",
-        "match": "kanban_sync.py daemon",
-        "cmd":   ["python3", "scripts/kanban_sync.py", "daemon"],
-        "pid_file": os.path.join(os.path.dirname(__file__), ".kanban_sync.pid"),
-        "max_retries":    3,
-        "cooldown_secs":  600,
-        "retry_count":         0,
-        "cooldown_start_ts":   0,
-    },
-]
+def _env_enabled(name):
+    return _watchdog_specs.env_enabled(name, env=os.environ)
+
+
+def _enabled_procs(procs=None):
+    return _watchdog_specs.filter_enabled_processes(
+        _PROC_SPECS if procs is None else procs,
+        env=os.environ,
+    )
+
+
+PROCS = _enabled_procs()
 
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -164,7 +163,7 @@ def _is_lark_subscribe(pid):
             c = f.read().decode("utf-8", errors="ignore")
     except OSError:
         return False
-    return "lark-cli" in c and "event" in c and "+subscribe" in c
+    return _watchdog_proc_match.is_lark_subscribe_cmdline(c)
 
 
 def _kill_orphan_lark_subscribers():
@@ -180,12 +179,15 @@ def _kill_orphan_lark_subscribers():
     搭配 main() 的 STARTUP_GRACE_SECS 双层防御.
     """
     my_pid = os.getpid()
-    try:
-        with open(os.path.join(os.path.dirname(__file__), ".router.pid")) as f:
-            router_pid = int(f.read().strip())
-        os.kill(router_pid, 0)
-    except (OSError, ValueError):
-        router_pid = None
+    router_pid = None
+    for path in (ROUTER_PID_FILE, LEGACY_ROUTER_PID_FILE):
+        try:
+            with open(path) as f:
+                router_pid = int(f.read().strip())
+            os.kill(router_pid, 0)
+            break
+        except (OSError, ValueError):
+            router_pid = None
 
     if router_pid:
         tree, frontier = {router_pid}, [router_pid]
@@ -203,25 +205,41 @@ def _kill_orphan_lark_subscribers():
                     if cpid not in tree:
                         tree.add(cpid)
                         frontier.append(cpid)
-        victims = [p for p in tree if p != router_pid and _is_lark_subscribe(p)]
+        is_subscribe = {pid: _is_lark_subscribe(pid) for pid in tree}
+        victims = _watchdog_orphans.select_router_tree_victims(
+            tree_pids=tree,
+            router_pid=router_pid,
+            my_pid=my_pid,
+            is_lark_subscribe=is_subscribe,
+        )
     else:
-        victims = []
+        candidates = []
+        ppid_by_pid = {}
+        is_subscribe = {}
         for proc_dir in glob.glob("/proc/[0-9]*"):
             try:
                 pid = int(os.path.basename(proc_dir))
             except ValueError:
                 continue
-            if pid == my_pid or not _is_lark_subscribe(pid):
+            if pid == my_pid:
                 continue
+            subscribed = _is_lark_subscribe(pid)
+            is_subscribe[pid] = subscribed
+            if not subscribed:
+                continue
+            candidates.append(pid)
             try:
                 with open(f"/proc/{pid}/status") as f:
-                    for line in f:
-                        if line.startswith("PPid:"):
-                            if line.split()[1] == "1":
-                                victims.append(pid)
-                            break
+                    status_text = f.read()
+                ppid_by_pid[pid] = _watchdog_orphans.parse_ppid_from_status_text(status_text)
             except OSError:
                 continue
+        victims = _watchdog_orphans.select_orphan_victims(
+            candidate_pids=candidates,
+            my_pid=my_pid,
+            is_lark_subscribe=is_subscribe,
+            ppid_by_pid=ppid_by_pid,
+        )
 
     for pid in victims:
         if pid == my_pid:
@@ -240,6 +258,49 @@ def restart_process(proc):
     # 循环都 restart 却永远拉不起新的。
     _kill_by_pid_file(proc.get("pid_file"), proc["name"])
     _kill_orphan_lark_subscribers()
+
+    target = (proc.get("tmux_target") or "").strip()
+    if target:
+        # F-ROUTER-1: 在 tmux pane 内复活,蒙眼 capture-pane 看得到新 banner;
+        # send-keys 失败 (pane 锁/session 没了/tmux 不在 PATH) 立刻 fallback
+        # 到旧 Popen,保证老部署行为不变。
+        # F-FIX-2: router 的 launch 命令必须从 scripts/lib/router_launch.sh
+        # 取,因为它读 runtime_config.json 的 lark_profile 注入 --profile;
+        # build_lark_event_subscribe_cmd 不带 profile, 多 profile host
+        # (team01/team02/life-pm/...) watchdog 自愈会订阅错 App。
+        launch_str = ""
+        cmd_list = proc.get("cmd") or []
+        is_router_pipeline = (isinstance(cmd_list, list) and cmd_list[:2] == ["bash", "-c"]
+                              and len(cmd_list) >= 3 and "feishu_router.py" in cmd_list[2])
+        if is_router_pipeline:
+            try:
+                rs = subprocess.run(
+                    ["bash", os.path.join(PROJECT_ROOT, "scripts/lib/router_launch.sh")],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=5,
+                )
+                candidate = (rs.stdout or "").strip()
+                if rs.returncode == 0 and candidate and "feishu_router.py" in candidate:
+                    launch_str = candidate
+                else:
+                    log(f"⚠️ router_launch.sh 输出异常 (rc={rs.returncode}); fallback 到内置 cmd")
+            except Exception as e:
+                log(f"⚠️ router_launch.sh 调用失败 ({e}); fallback 到内置 cmd")
+        if not launch_str:
+            if isinstance(cmd_list, list) and cmd_list[:2] == ["bash", "-c"] and len(cmd_list) >= 3:
+                launch_str = cmd_list[2]
+            else:
+                launch_str = " ".join(cmd_list) if isinstance(cmd_list, list) else str(cmd_list)
+        try:
+            subprocess.run(["tmux", "send-keys", "-t", target, "C-c"],
+                           check=False, timeout=5)
+            time.sleep(0.3)
+            subprocess.run(["tmux", "send-keys", "-t", target, launch_str, "Enter"],
+                           check=True, timeout=5)
+            proc["last_restart_ts"] = time.time()
+            log(f"🔄 已重启: {proc['name']} (via tmux {target})")
+            return
+        except Exception as e:
+            log(f"⚠️ tmux send-keys 重启 {target} 失败 ({e}); fallback 到 Popen")
 
     subprocess.Popen(
         proc["cmd"],
@@ -269,26 +330,35 @@ def _send_manager_alert(msg, log_label):
       2 → 收件箱已写但群通知失败,告警仍在 manager 的 inbox 里等待,日志降级
           成 warning 即可,不要重发(会产生重复 Bitable 记录)
     """
+    normalized_msg = _watchdog_alert_request.normalize_alert_message(msg)
+    normalized_log_label = _watchdog_alert_request.normalize_alert_log_label(log_label)
+
     if TESTING:
         # 打一条显眼的本地日志,让测试作者一眼看到 belt 拦截了。
         # 如果测试里意外命中这条日志,说明测试的 mock 层有漏 —— 应该
         # 把 mock 下沉到 _send_manager_alert 或 subprocess.run。
-        log(f"🧪 [TESTING] 已跳过真实 manager 告警: {log_label} — {msg[:120]}")
+        log(
+            _watchdog_alert_request.build_testing_skip_log_line(
+                normalized_log_label,
+                normalized_msg,
+                preview_limit=120,
+            )
+        )
         return
 
     r = subprocess.run(
-        ["python3", "scripts/feishu_msg.py",
-         "send", "manager", "watchdog", msg, "高"],
+        _watchdog_alert_request.build_manager_alert_send_cmd(normalized_msg),
         cwd=PROJECT_ROOT,
         capture_output=True, text=True,
     )
-    if r.returncode == 0:
-        log(f"📨 已通知 manager: {log_label}")
-    elif r.returncode == 2:
-        log(f"⚠️ 已通知 manager(收件箱OK,群通知失败): {log_label}")
-    else:
-        err = (r.stderr or "").strip()[:300] or (r.stdout or "").strip()[:300] or "(无输出)"
-        log(f"🚨 通知 manager 失败 (exit={r.returncode}): {log_label} — {err}")
+    log(
+        _watchdog_alert_delivery.build_alert_delivery_log_line(
+            r.returncode,
+            normalized_log_label,
+            r.stdout,
+            r.stderr,
+        )
+    )
 
 
 def notify_manager(proc_name):
@@ -298,9 +368,20 @@ def notify_manager(proc_name):
     传入自定义文案,避免告警文案互相污染(reviewer CR#1)。
     """
     _send_manager_alert(
-        f"[watchdog] {proc_name} 已崩溃并自动重启，请确认运行状态。",
+        _watchdog_messages.build_burst_alert(proc_name),
         log_label=f"{proc_name} 重启",
     )
+
+def _pgrep_alive(match_str):
+    """pgrep 兜底判活: PID 文件缺失/损坏/PID 复用时, 用 pgrep -f 确认进程是否仍在。"""
+    if not match_str:
+        return False
+    try:
+        r = subprocess.run(["pgrep", "-f", match_str], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
 
 def is_healthy(proc):
     """进程存在 + 健康检查通过"""
@@ -308,22 +389,66 @@ def is_healthy(proc):
     if pid_file:
         # 传 match 防 PID 复用误判 (Bug 14)
         if not is_running_by_pid_file(pid_file, proc.get("match")):
-            return False
+            # pgrep 兜底: PID 文件可能落后于实际进程状态
+            if not _pgrep_alive(proc.get("match")):
+                return False
+            log(f"ℹ️ {proc['name']} PID 文件异常但 pgrep 找到进程, 视为存活")
     elif not is_running(proc["match"]):
         return False
-    # 刚重启完的冷却期:只查 PID 存活,跳过 health_file 新鲜度检查。
-    grace_secs = proc.get("restart_grace_secs", 0)
-    if grace_secs > 0:
-        since_restart = time.time() - proc.get("last_restart_ts", 0)
-        if since_restart < grace_secs:
-            return True
+    now = time.time()
+    restart_grace_secs = float(proc.get("restart_grace_secs", 0) or 0)
+    last_restart_ts = float(proc.get("last_restart_ts", 0) or 0)
+    health_stale_secs = float(proc.get("health_stale_secs", 300) or 300)
     health_file = proc.get("health_file")
+    health_file_age_secs = None
     if health_file and os.path.exists(health_file):
-        age = time.time() - os.path.getmtime(health_file)
-        if age > proc.get("health_stale_secs", 300):
-            log(f"⚠️ {proc['name']} 健康检查失败：输出文件 {age:.0f}s 未更新")
-            return False
+        health_file_age_secs = now - os.path.getmtime(health_file)
+    decision = _watchdog_health.decide_health_file_state(
+        now=now,
+        last_restart_ts=last_restart_ts,
+        restart_grace_secs=restart_grace_secs,
+        health_file_age_secs=health_file_age_secs,
+        health_stale_secs=health_stale_secs,
+    )
+    if decision.skip_health_file_check:
+        return True
+    if decision.health_file_stale:
+        log(f"⚠️ {proc['name']} 健康检查失败：输出文件 {health_file_age_secs:.0f}s 未更新")
+        return False
     return True
+
+# ── 告警去重/节流 ────────────────────────────────────────────────
+# 每个进程独立维护: 上次告警时间 + 是否处于 unhealthy 状态。
+# 同一进程 300s 内不重复告警 (burst 期间每分钟检查一次, 5 分钟最多 1 条)。
+# 进程从 unhealthy → healthy 时发一条恢复通知。
+_ALERT_THROTTLE_SECS = 300
+_alert_state: dict = {}  # proc_name -> {"last_alert_ts": float, "was_unhealthy": bool}
+
+
+def _throttled_alert(proc_name, msg, log_label):
+    """发告警, 但同一进程 _ALERT_THROTTLE_SECS 内最多发一次。"""
+    now = time.time()
+    st = _alert_state.setdefault(proc_name, {"last_alert_ts": 0, "was_unhealthy": False})
+    st["was_unhealthy"] = True
+    if now - st["last_alert_ts"] < _ALERT_THROTTLE_SECS:
+        log(f"   ⏳ {proc_name} 告警节流中 (距上次 {now - st['last_alert_ts']:.0f}s)")
+        return
+    st["last_alert_ts"] = now
+    _send_manager_alert(msg, log_label)
+
+
+def _notify_recovered(proc_name):
+    """进程恢复健康时发一条恢复通知 (仅当之前处于 unhealthy 状态时)。"""
+    st = _alert_state.get(proc_name)
+    if not st or not st.get("was_unhealthy"):
+        return
+    st["was_unhealthy"] = False
+    log(f"✅ {proc_name} 已恢复健康")
+    _send_manager_alert(
+        f"[watchdog] ✅ {proc_name} 已恢复健康",
+        log_label=f"{proc_name} 恢复",
+    )
+
 
 def check_once():
     """ADR watchdog_max_retries_cooldown: burst + cooldown 状态机.
@@ -339,81 +464,98 @@ def check_once():
     for proc in PROCS:
         name = proc["name"]
         healthy = is_healthy(proc)
+        decision = _watchdog_state.decide_watchdog_state(
+            proc,
+            healthy=healthy,
+            now=time.time(),
+        )
+        proc["retry_count"] = decision.retry_count
+        proc["cooldown_start_ts"] = decision.cooldown_start_ts
 
-        if healthy:
-            # 健康恢复: 无条件退出 cooldown + 重置 burst 计数
-            if proc.get("retry_count", 0) > 0 or proc.get("cooldown_start_ts", 0) > 0:
-                log(f"✅ {name} 恢复健康，重置重试计数")
-                proc["retry_count"] = 0
-                proc["cooldown_start_ts"] = 0
-            continue  # 这个 proc 没事，看下一个
+        plan = _watchdog_effect_plan.build_effect_plan(
+            proc_name=name,
+            action=decision.action,
+            retry_count=proc["retry_count"],
+            cooldown_remaining_secs=decision.cooldown_remaining_secs,
+            cooldown_ended=decision.cooldown_ended,
+            max_retries=decision.max_retries,
+            cooldown_secs=decision.cooldown_secs,
+            action_healthy=_watchdog_state.ACTION_HEALTHY,
+            action_healthy_reset=_watchdog_state.ACTION_HEALTHY_RESET,
+            action_cooldown_wait=_watchdog_state.ACTION_COOLDOWN_WAIT,
+            action_enter_cooldown=_watchdog_state.ACTION_ENTER_COOLDOWN,
+        )
+        for line in plan.log_lines:
+            log(line)
+
+        if not plan.mark_unhealthy:
+            _notify_recovered(name)
+            continue
 
         # ── 不健康分支 ──
         all_ok = False
-        now = time.time()
-        cooldown_start = proc.get("cooldown_start_ts", 0)
-        cooldown_secs = proc.get("cooldown_secs", 600)
-
-        if cooldown_start > 0:
-            elapsed = now - cooldown_start
-            if elapsed < cooldown_secs:
-                # 静默等待: 不重启不告警,日志一行即可,避免刷屏
-                remaining = int(cooldown_secs - elapsed)
-                log(f"⏸  {name} 仍在 cooldown (剩余 {remaining}s)，跳过本轮")
-                continue
-            # cooldown 结束: 重置状态,当作全新开始 burst
-            log(f"🔁 {name} cooldown 结束 ({cooldown_secs}s)，重新开始重启 burst")
-            proc["retry_count"] = 0
-            proc["cooldown_start_ts"] = 0
-            # 掉落到下面的 burst 逻辑
-
-        # burst 逻辑: max_retries 配额内的快速重启
-        proc["retry_count"] = proc.get("retry_count", 0) + 1
-        max_retries = proc.get("max_retries", 3)
-
-        if proc["retry_count"] > max_retries:
-            # burst 耗尽,进 cooldown,告警发且仅发一次
-            log(f"🚨 {name} 连续 {max_retries} 次重启失败，进入 cooldown ({cooldown_secs}s)")
-            # 直接走自定义文案,不走 notify_manager 的默认 "已崩溃并自动重启" 模板,
-            # 避免两段文案拼在一起自相矛盾(reviewer CR#1)
-            _send_manager_alert(
-                f"[watchdog] {name} 连续 {max_retries} 次重启失败，已进入 "
-                f"{cooldown_secs}s cooldown，期间 watchdog 不会重试。"
-                f"cooldown 结束后自动重新尝试。",
-                log_label=f"{name} 进入 cooldown",
-            )
-            proc["cooldown_start_ts"] = now
+        if plan.effect == _watchdog_effect_plan.EFFECT_CONTINUE:
             continue
 
-        log(f"💀 检测到异常: {name} (第 {proc['retry_count']} 次)")
+        if plan.effect == _watchdog_effect_plan.EFFECT_ALERT_ONLY:
+            _throttled_alert(
+                name,
+                _watchdog_messages.build_cooldown_alert(
+                    name,
+                    decision.max_retries,
+                    decision.cooldown_secs,
+                ),
+                log_label=f"{name} 进入 cooldown",
+            )
+            continue
+
         restart_process(proc)
         time.sleep(2)
-        notify_manager(name)
+        _throttled_alert(
+            name,
+            _watchdog_messages.build_burst_alert(name),
+            log_label=f"{name} 重启",
+        )
 
     if all_ok:
         log("✅ 所有守护进程运行正常")
 
-_PID_FILE = os.path.join(os.path.dirname(__file__), ".watchdog.pid")
+_PID_FILE = WATCHDOG_PID_FILE
+
+
+def _pid_file_is_live_watchdog(path):
+    def _read_text(file_path):
+        with open(file_path) as f:
+            return f.read()
+
+    def _pid_is_alive(pid):
+        os.kill(pid, 0)
+        return True
+
+    def _read_cmdline(pid):
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().decode("utf-8", errors="ignore")
+
+    return _watchdog_daemon.pid_file_is_live(
+        path,
+        path_exists=os.path.exists,
+        read_text=_read_text,
+        pid_is_alive=_pid_is_alive,
+        read_cmdline=_read_cmdline,
+        expected_fragment="watchdog.py",
+    )
+
 
 def _acquire_pid_lock():
-    if os.path.exists(_PID_FILE):
+    if _pid_file_is_live_watchdog(_PID_FILE):
         try:
             with open(_PID_FILE) as f:
                 old_pid = int(f.read().strip())
-            os.kill(old_pid, 0)
-            # PID 复用校验 (同 074a7dc 给 router 加的 match_str):
-            # compose down/up 后旧 PID 可能被不相关进程复用,kill -0 仍返回存活。
-            try:
-                with open(f"/proc/{old_pid}/cmdline", "rb") as f:
-                    cmdline = f.read().decode("utf-8", errors="ignore")
-                if "watchdog.py" not in cmdline:
-                    raise OSError("PID reuse: not watchdog")
-            except (FileNotFoundError, PermissionError):
-                raise OSError("proc gone")
             log(f"❌ Watchdog 已在运行 (PID {old_pid})")
             sys.exit(1)
         except (ValueError, OSError):
             pass
+    ensure_parent(_PID_FILE)
     with open(_PID_FILE, "w") as f:
         f.write(str(os.getpid()))
     atexit.register(_cleanup_pid)

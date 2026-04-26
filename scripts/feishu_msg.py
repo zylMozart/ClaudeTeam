@@ -20,30 +20,226 @@
 状态:   进行中 | 已完成 | 阻塞 | 待命
 类型:   状态更新 | 任务日志 | 消息发出 | 消息收到 | 产出记录 | 阻塞上报
 """
-import sys, os, json, time, subprocess
+import sys, os, json, time, subprocess, fcntl, uuid, hashlib
+from contextlib import contextmanager
 
-sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
-from message_renderer import (
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from claudeteam.runtime.config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
+from claudeteam.messaging.renderer import (
     render_inbox_text,
     render_log_text,
     split_feishu_markdown,
 )
-from tmux_utils import inject_when_idle
+from claudeteam.runtime.tmux_utils import inject_when_idle
+from claudeteam.cli_adapters import adapter_for_agent
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
 
 def cfg():
     return load_runtime_config()
 
-def BT():  return cfg()["bitable_app_token"]
-def MT():  return cfg()["msg_table_id"]
-def ST():  return cfg()["sta_table_id"]
-def WS(a): return cfg()["workspace_tables"].get(a, "")
+def BT():  return cfg().get("bitable_app_token", "")
+def MT():  return cfg().get("msg_table_id", "")
+def ST():  return cfg().get("sta_table_id", "")
+def WS(a): return (cfg().get("workspace_tables") or {}).get(a, "")
 def CHAT(): return cfg().get("chat_id", "")
 
 def now_ms():
     return int(time.time() * 1000)
+
+
+LOCAL_FACTS_DIR = os.environ.get("CLAUDETEAM_LOCAL_FACTS_DIR") or os.path.join(
+    PROJECT_ROOT, "workspace", "shared", "local_facts"
+)
+LOCAL_MESSAGES_FILE = os.path.join(LOCAL_FACTS_DIR, "messages.jsonl")
+LOCAL_STATUS_FILE = os.path.join(LOCAL_FACTS_DIR, "status.json")
+LOCAL_AUTO_DEDUPE_WINDOW_MS = 5 * 60 * 1000
+
+
+def _bitable_projection_enabled() -> bool:
+    return os.environ.get("CLAUDETEAM_BITABLE_PROJECTION") == "1"
+
+
+@contextmanager
+def _local_file_lock(path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lock_path = f"{path}.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _local_load_messages_unlocked():
+    if not os.path.exists(LOCAL_MESSAGES_FILE):
+        return []
+    records = []
+    with open(LOCAL_MESSAGES_FILE, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict):
+                records.append(rec)
+    return records
+
+
+def _local_write_messages_unlocked(records):
+    tmp = f"{LOCAL_MESSAGES_FILE}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for rec in records:
+            f.write(json.dumps(rec, ensure_ascii=False))
+            f.write("\n")
+    os.replace(tmp, LOCAL_MESSAGES_FILE)
+
+
+def _local_insert_message(
+    to,
+    frm,
+    content,
+    priority,
+    *,
+    task_id="",
+    source="send",
+    record_id=None,
+    time_ms=None,
+    read=False,
+    dedupe_key="",
+):
+    content = render_inbox_text(content)
+    ts = int(time_ms if time_ms is not None else now_ms())
+    auto_dedupe = hashlib.sha1(
+        f"{to}\n{frm}\n{priority}\n{task_id}\n{content}".encode("utf-8", errors="ignore")
+    ).hexdigest()
+    final_dedupe_key = str(dedupe_key or f"auto:{auto_dedupe}")
+    explicit_dedupe = bool(dedupe_key)
+    rid = record_id or f"local_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+    rec = {
+        "record_id": rid,
+        "to": str(to),
+        "from": str(frm),
+        "content": content,
+        "priority": str(priority or "中"),
+        "time_ms": ts,
+        "read": bool(read),
+        "task_id": str(task_id or ""),
+        "source": str(source or "send"),
+        "dedupe_key": final_dedupe_key,
+    }
+    try:
+        with _local_file_lock(LOCAL_MESSAGES_FILE):
+            records = _local_load_messages_unlocked()
+            for old in reversed(records):
+                if old.get("to") != str(to):
+                    continue
+                if old.get("dedupe_key") != final_dedupe_key:
+                    continue
+                if old.get("read"):
+                    continue
+                old_ts = int(old.get("time_ms") or 0)
+                if explicit_dedupe or abs(ts - old_ts) <= LOCAL_AUTO_DEDUPE_WINDOW_MS:
+                    return old.get("record_id")
+            records.append(rec)
+            _local_write_messages_unlocked(records)
+        return rid
+    except Exception as e:
+        print(f"  ⚠️ 本地消息写入失败: {e}", file=sys.stderr)
+        return None
+
+
+def _local_list_messages(agent_name, unread_only=False):
+    try:
+        with _local_file_lock(LOCAL_MESSAGES_FILE):
+            records = _local_load_messages_unlocked()
+    except Exception as e:
+        print(f"  ⚠️ 本地消息读取失败: {e}", file=sys.stderr)
+        return None
+    out = []
+    for rec in records:
+        if rec.get("to") != agent_name:
+            continue
+        if unread_only and rec.get("read"):
+            continue
+        out.append(rec)
+    out.sort(key=lambda r: r.get("time_ms", 0))
+    return out
+
+
+def _local_mark_read(record_id):
+    try:
+        with _local_file_lock(LOCAL_MESSAGES_FILE):
+            records = _local_load_messages_unlocked()
+            touched = False
+            target_key = ""
+            target_to = ""
+            for rec in records:
+                if rec.get("record_id") == record_id:
+                    if not rec.get("read"):
+                        rec["read"] = True
+                    touched = True
+                    target_key = str(rec.get("dedupe_key") or "")
+                    target_to = str(rec.get("to") or "")
+            if touched and target_key:
+                # 去重键相同的镜像消息一起标已读，避免 manager 收件箱重复累积。
+                for rec in records:
+                    if rec.get("to") == target_to and rec.get("dedupe_key") == target_key:
+                        rec["read"] = True
+            if touched:
+                _local_write_messages_unlocked(records)
+        return touched
+    except Exception as e:
+        print(f"  ⚠️ 本地已读写入失败: {e}", file=sys.stderr)
+        return None
+
+
+def _local_upsert_status(agent_name, status, task, blocker=""):
+    now = now_ms()
+    rec = {
+        "agent": str(agent_name),
+        "status": str(status),
+        "task": str(task),
+        "blocker": str(blocker or ""),
+        "updated_at": now,
+    }
+    try:
+        with _local_file_lock(LOCAL_STATUS_FILE):
+            data = {}
+            if os.path.exists(LOCAL_STATUS_FILE):
+                try:
+                    with open(LOCAL_STATUS_FILE, encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    data = {}
+            if not isinstance(data, dict):
+                data = {}
+            agents = data.setdefault("agents", {})
+            if not isinstance(agents, dict):
+                agents = {}
+                data["agents"] = agents
+            agents[str(agent_name)] = rec
+            tmp = f"{LOCAL_STATUS_FILE}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, LOCAL_STATUS_FILE)
+        return True
+    except Exception as e:
+        print(f"  ⚠️ 本地状态写入失败: {e}", file=sys.stderr)
+        return False
+
 
 def extract_text(v):
     """从 Bitable 字段值中提取文本。"""
@@ -58,9 +254,57 @@ def sanitize_agent_message(text: str) -> str:
 
 # ── lark-cli 封装 ────────────────────────────────────────────
 
+_LARK_TRACE_PATH = os.environ.get("CLAUDETEAM_LARK_TRACE") or os.path.join(
+    PROJECT_ROOT, "workspace", "shared", "lark_trace.jsonl"
+)
+
+
+def _lark_trace_record(args, returncode, stdout, stderr, elapsed_ms, exc=""):
+    try:
+        os.makedirs(os.path.dirname(_LARK_TRACE_PATH), exist_ok=True)
+        # Pull the --content / --markdown / --text payload length so we can
+        # correlate "what we sent" vs "what Feishu rendered" without storing
+        # the (potentially huge) body in the trace.
+        payload_kind, payload_len = "", 0
+        for kind in ("--content", "--markdown", "--text", "--json"):
+            if kind in args:
+                idx = args.index(kind)
+                if idx + 1 < len(args):
+                    payload_kind = kind
+                    payload_len = len(args[idx + 1])
+                break
+        rec = {
+            "ts_ms": int(time.time() * 1000),
+            "subcommand": " ".join(a for a in args[:3] if not a.startswith("--")),
+            "returncode": returncode,
+            "stdout_len": len(stdout or ""),
+            "stderr_tail": (stderr or "")[-400:],
+            "elapsed_ms": int(elapsed_ms),
+            "payload_kind": payload_kind,
+            "payload_len": payload_len,
+            "exc": exc[:200] if exc else "",
+        }
+        with open(_LARK_TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # tracing must never break the main path
+
+
 def _lark_run(args, timeout=30):
     """执行 lark-cli 命令，返回 data 层 JSON（失败返回 None）。"""
-    r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
+    t0 = time.monotonic()
+    r = None
+    exc = ""
+    try:
+        r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as te:
+        exc = f"TimeoutExpired after {timeout}s"
+        elapsed = (time.monotonic() - t0) * 1000
+        _lark_trace_record(args, -1, "", str(te)[:400], elapsed, exc=exc)
+        print(f"  ⚠️ lark-cli timeout ({timeout}s): {' '.join(args[:3])}")
+        return None
+    elapsed = (time.monotonic() - t0) * 1000
+    _lark_trace_record(args, r.returncode, r.stdout, r.stderr, elapsed)
     if r.returncode != 0:
         print(f"  ⚠️ lark-cli 失败: {r.stderr.strip()[:200]}")
         return None
@@ -103,7 +347,12 @@ def _check_lark_result(result, action, *, fatal=True):
 
 
 def _lark_im_send(chat_id, content=None, markdown=None, image=None, card=None):
-    """通过 lark-cli 向群组发送消息。"""
+    """通过 lark-cli 向群组发送消息。
+
+    默认 --as bot：以机器人身份发言，老板能收到通知。
+    要求 lark-cli 已经 device-flow 拿到 user_access_token；没拿到的部署
+    需要先跑 `lark-cli auth login --scope ...`。
+    """
     args = ["im", "+messages-send", "--chat-id", chat_id, "--as", "bot"]
     if markdown:
         args += ["--markdown", markdown]
@@ -356,10 +605,10 @@ def cmd_say(from_agent, message="", image_path=""):
                f"→ 群聊图片：{os.path.basename(image_path)}")
         print(f"✅ 图片已发送到群聊: {os.path.basename(image_path)}")
 
-# ── 辅助：Bitable 写入单条消息 ────────────────────────────────
+# ── 辅助：消息写入（本地主链 + Bitable 可选投影）────────────────
 
-def bitable_insert_message(to, frm, content, priority):
-    """向消息表写入一条记录，返回 record_id 或 None。"""
+def _bitable_insert_projection(to, frm, content, priority):
+    """向 Bitable 消息表写投影（可选，不影响主链路）。"""
     content = render_inbox_text(content)
     d = _lark_base_create(BT(), MT(),
                           {"收件人": to, "发件人": frm,
@@ -367,7 +616,6 @@ def bitable_insert_message(to, frm, content, priority):
                            "时间": now_ms(), "已读": False})
     if d is None:
         return None
-    # +record-batch-create 返回 record_id_list 或 records
     rid_list = d.get("record_id_list", [])
     if rid_list:
         return rid_list[0]
@@ -375,6 +623,23 @@ def bitable_insert_message(to, frm, content, priority):
     if records:
         return records[0].get("record_id", "")
     return d.get("record_id", "")
+
+
+def bitable_insert_message(
+    to, frm, content, priority, *, task_id="", source="send", dedupe_key=""
+):
+    """写入消息主链路（本地 JSONL）；可选投影到 Bitable。"""
+    rid = _local_insert_message(
+        to, frm, content, priority, task_id=task_id, source=source,
+        dedupe_key=dedupe_key,
+    )
+    if not rid:
+        return None
+    if _bitable_projection_enabled():
+        proj_rid = _bitable_insert_projection(to, frm, content, priority)
+        if not proj_rid:
+            print("  ⚠️ Bitable 投影失败（主链路已本地写入）", file=sys.stderr)
+    return rid
 
 # ── 命令：send ────────────────────────────────────────────────
 
@@ -403,7 +668,8 @@ def _notify_agent_tmux(to_agent, from_agent, message):
             f"请执行: python3 scripts/feishu_msg.py inbox {to_agent}"
         )
         inject_when_idle(TMUX_SESSION, to_agent, notify_text,
-                         wait_secs=5, force_after_wait=False)
+                         wait_secs=5, force_after_wait=False,
+                         submit_keys=adapter_for_agent(to_agent).submit_keys())
     except Exception:
         pass  # best-effort，不影响消息发送本身
 
@@ -411,7 +677,10 @@ def _notify_agent_tmux(to_agent, from_agent, message):
 def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
     message = sanitize_agent_message(message)
     actual_message = f"[{task_id}] {message}" if task_id else message
-    rid = bitable_insert_message(to_agent, from_agent, actual_message, priority)
+    rid = bitable_insert_message(
+        to_agent, from_agent, actual_message, priority,
+        task_id=task_id, source="send",
+    )
     # 主写入失败 → fatal exit 1。`rid or None` 把空串也归一到 None。
     _check_lark_result(rid or None, f"收件箱写入 {from_agent}→{to_agent}")
     ref_str = f"{rid} | task:{task_id}" if task_id else rid
@@ -437,13 +706,15 @@ def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
 def cmd_direct(to_agent, from_agent, message):
     """直连发消息：写入收件箱，自动抄送 manager。"""
     message = sanitize_agent_message(message)
-    rid = bitable_insert_message(to_agent, from_agent, message, "中")
+    rid = bitable_insert_message(to_agent, from_agent, message, "中",
+                                 source="direct")
     _check_lark_result(rid or None, f"直连写入 {from_agent}→{to_agent}")
 
     cc_rid = None
     if to_agent != "manager" and from_agent != "manager":
         cc_content = f"[抄送] {from_agent}→{to_agent}: {message}"
-        cc_rid = bitable_insert_message("manager", from_agent, cc_content, "低")
+        cc_rid = bitable_insert_message("manager", from_agent, cc_content, "低",
+                                        source="direct_cc")
         # 抄送失败不致命：主消息已写入，manager 仍可从 to_agent inbox 追查
         if not cc_rid:
             print(f"⚠️ lark-cli 调用失败: 抄送 {from_agent}→manager", file=sys.stderr)
@@ -595,23 +866,21 @@ def _search_records(base_token, table_id, keyword, search_fields):
 
 
 def cmd_inbox(agent_name):
-    records = _search_records(BT(), MT(), agent_name, ["收件人"])
-    # ADR lark_read_error_propagation: records 可能为 None(失败) 或 list(成功)
-    _check_lark_result(records, f"inbox 查询 {agent_name}")
-    # 到这里 records 一定是 list（可能空），可以安全迭代
-    unread = [r for r in records if not r["fields"].get("已读")]
+    unread = _local_list_messages(agent_name, unread_only=True)
+    if unread is None:
+        print(f"❌ inbox 查询失败: {agent_name}", file=sys.stderr)
+        sys.exit(1)
     if not unread:
         print(f"📭 {agent_name} 暂无未读消息")
         return
     print(f"📬 {agent_name} 有 {len(unread)} 条未读消息:\n")
     for rec in unread:
-        f = rec["fields"]
-        rid = rec["record_id"]
-        t = f.get("时间", 0)
+        rid = rec.get("record_id", "")
+        t = rec.get("time_ms", 0)
         ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
-        frm = extract_text(f.get("发件人", "?"))
-        pri = extract_text(f.get("优先级", "?"))
-        content = sanitize_agent_message(extract_text(f.get("消息内容", "")))
+        frm = rec.get("from", "?")
+        pri = rec.get("priority", "?")
+        content = sanitize_agent_message(rec.get("content", ""))
         print(f"── [{ts}] 来自 {frm} [优先级:{pri}]")
         print(f"   {content}")
         print(f"   标记已读: python3 scripts/feishu_msg.py read {rid}")
@@ -620,27 +889,42 @@ def cmd_inbox(agent_name):
 # ── 命令：read ────────────────────────────────────────────────
 
 def cmd_read(record_id):
-    d = _lark_base_update(BT(), MT(), [record_id], {"已读": True})
-    _check_lark_result(d, f"已读标记 {record_id}")
+    marked = _local_mark_read(record_id)
+    if marked is None:
+        print(f"❌ 已读标记失败: {record_id}", file=sys.stderr)
+        sys.exit(1)
+    if not marked:
+        print(f"❌ 未找到消息: {record_id}", file=sys.stderr)
+        sys.exit(1)
+
+    # legacy 可选投影：仅在显式开启时回写 Bitable；失败不影响主链路。
+    if _bitable_projection_enabled() and not record_id.startswith("local_"):
+        d = _lark_base_update(BT(), MT(), [record_id], {"已读": True})
+        _check_lark_result(d, f"已读投影 {record_id}", fatal=False)
+
     print(f"✅ 已标记已读: {record_id}")
 
 # ── 命令：status ──────────────────────────────────────────────
 
 def cmd_status(agent_name, status, task, blocker=""):
-    # 先搜索是否已有记录
-    records = _search_records(BT(), ST(), agent_name, ["Agent名称"])
-    # ADR lark_read_error_propagation: 失败时 fatal exit，避免误走 create 分支
-    # 创建重复记录（原 bug：查询失败 → records=[] → 重复 create）。
-    _check_lark_result(records, f"状态查询 {agent_name}")
+    _check_lark_result(
+        _local_upsert_status(agent_name, status, task, blocker),
+        f"本地状态写入 {agent_name}→{status}",
+    )
     fields = {"Agent名称": agent_name, "状态": status, "当前任务": task,
               "阻塞原因": blocker, "更新时间": now_ms()}
-    if records:
-        d = _lark_base_update(BT(), ST(), [records[0]["record_id"]], fields)
-        _check_lark_result(d, f"状态写入 {agent_name}→{status}")
-    else:
-        d = _lark_base_create(BT(), ST(), fields)
-        _check_lark_result(d, f"状态新建 {agent_name}→{status}")
-    # 到这里要么主写入成功，要么已 sys.exit(1)
+    if _bitable_projection_enabled():
+        records = _search_records(BT(), ST(), agent_name, ["Agent名称"])
+        if records is None:
+            print(f"  ⚠️ 状态投影查询失败（主链路已本地写入）: {agent_name}",
+                  file=sys.stderr)
+        else:
+            if records:
+                d = _lark_base_update(BT(), ST(), [records[0]["record_id"]], fields)
+                _check_lark_result(d, f"状态投影写入 {agent_name}→{status}", fatal=False)
+            else:
+                d = _lark_base_create(BT(), ST(), fields)
+                _check_lark_result(d, f"状态投影新建 {agent_name}→{status}", fatal=False)
     content = f"状态：{status} | {task}"
     if blocker: content += f" | ⛔ {blocker}"
     ws_log(agent_name, "阻塞上报" if status == "阻塞" else "状态更新", content)
@@ -684,6 +968,16 @@ def cmd_workspace(agent_name):
 
 # ── main ──────────────────────────────────────────────────────
 
+def _assert_no_unknown_flags(rest, sub_cmd):
+    bad = [t for t in rest if isinstance(t, str) and t.startswith("--")]
+    if bad:
+        print(
+            f"❌ {sub_cmd}: 不识别的 flag {bad}（防呆：拒绝 silent drop）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def main():
     args = sys.argv[1:]
     if not args: print(__doc__); sys.exit(0)
@@ -704,6 +998,7 @@ def main():
                     image_path = val
                 else:
                     file_path = val
+        _assert_no_unknown_flags(say_args, "say")
         if len(say_args) < 1:
             print("用法: say <发件人> [\"<消息>\"] [--image <路径>] [--file <路径>]"); sys.exit(1)
         from_agent = say_args[0]
@@ -714,29 +1009,32 @@ def main():
             message = say_args[1] if len(say_args) > 1 else ""
         cmd_say(from_agent, message, image_path)
     elif cmd == "send":
-        if len(args) < 4: print("用法: send <收件人> <发件人> \"<消息>\" [优先级] [--task <task_id>] [--file <路径>]"); sys.exit(1)
+        if len(args) < 4: print("用法: send <收件人> <发件人> \"<消息>\" [优先级] [--task <task_id>] [--file <路径>] [--priority <值>] [--content <消息>]"); sys.exit(1)
         rest = list(args[1:])
-        task_id = ""
-        file_path = ""
-        for flag in ("--task", "--file"):
+        flag_vals = {"--task": "", "--file": "", "--priority": "", "--content": ""}
+        for flag in list(flag_vals):
             if flag in rest:
                 idx = rest.index(flag)
                 if idx + 1 < len(rest):
-                    val = rest[idx + 1]
+                    flag_vals[flag] = rest[idx + 1]
                     rest.pop(idx + 1)
                     rest.pop(idx)
-                    if flag == "--task": task_id = val
-                    else: file_path = val
+        _assert_no_unknown_flags(rest, "send")
+        if len(rest) < 2:
+            print("用法: send <收件人> <发件人> \"<消息>\" [优先级]"); sys.exit(1)
         to_agent, from_agent = rest[0], rest[1]
-        if file_path:
-            with open(file_path, encoding="utf-8") as _f:
+        if flag_vals["--file"]:
+            with open(flag_vals["--file"], encoding="utf-8") as _f:
                 message = _f.read().strip()
+        elif flag_vals["--content"]:
+            message = flag_vals["--content"]
         else:
             message = rest[2] if len(rest) > 2 else ""
-        priority = rest[3] if len(rest) > 3 else "中"
-        cmd_send(to_agent, from_agent, message, priority, task_id)
+        priority = flag_vals["--priority"] or (rest[3] if len(rest) > 3 else "中")
+        cmd_send(to_agent, from_agent, message, priority, flag_vals["--task"])
     elif cmd == "direct":
         if len(args) < 4: print("用法: direct <收件人> <发件人> '<消息>'"); sys.exit(1)
+        _assert_no_unknown_flags(list(args[1:4]), "direct")
         cmd_direct(args[1], args[2], args[3])
     elif cmd == "inbox":
         if len(args) < 2: print("用法: inbox <agent>"); sys.exit(1)

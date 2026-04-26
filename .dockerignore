@@ -10,6 +10,8 @@ scripts/sync_manifest.json
 scripts/.router_seen_ids.json
 scripts/.token_cache.json
 scripts/.router.pid
+scripts/.*.pid
+scripts/.router.cursor
 
 # Credentials (injected via env or volume)
 .env
@@ -17,6 +19,11 @@ scripts/.router.pid
 .kimi-credentials/
 .codex-credentials/
 .gemini-credentials/
+.qwen-credentials/
+.lark-cli-credentials/
+.claude-credentials/
+.live-smoke-credentials/
+state/
 
 # Git
 .git/

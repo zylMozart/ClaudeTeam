@@ -157,9 +157,9 @@
 | 176–185 | `build_system_card(content, template="grey")` ← slash 纯文本回显用 |
 | 188– | `build_card(from_agent, to_agent, content, priority)` ← 员工间通讯用（不在本系统范畴） |
 
-### 4.6 `scripts/slash_smoke_test.py`
+### 4.6 Slash 冒烟
 
-冒烟测试入口，通过 `feishu_router.handle_event(fake_event(...))` 走整条链路。每 2 秒注入一条 fake `/xxx`。**⚠️ 不要在 CASES 里放会真发 tmux key 的命令**（/send <agent> <msg> / /stop <agent> / /clear <agent>），员工窗口真的会收到。
+> `scripts/slash_smoke_test.py` 已在 Phase 2 删除。冒烟测试通过 `tests/run_no_live.py` 运行，或用 `python3 -c "from slash_commands import dispatch; matched, r = dispatch('/help'); print(matched, r)"` 快速验证单条命令。
 
 ---
 
@@ -181,7 +181,7 @@
 **新增员工的应对步骤**：
 1. 改 `team.json` 加一条 agent 元数据（emoji/color/role）
 2. 按上表同步改 4 处白名单（追加员工名字符串）
-3. 跑 `scripts/slash_smoke_test.py` 验一把群聊入口
+3. 用 `python3 -c "from slash_commands import dispatch; print(dispatch('/team'))"` 验一把 dispatch 路径
 4. 手工 `/send <新员工> hi`（本机或容器）验 hook 入口
 
 ---
@@ -254,15 +254,12 @@
 
 4. **更新 `.claude/hooks/help_intercept.py` 的 `HELP_TEXT`**：静态字符串，加一行 `/foo` 说明。
 
-5. **`scripts/slash_smoke_test.py` 加用例**：
-   - `CASES` 数组加 `"/foo"`（和 `/foo <参数>`）
-   - **禁止**放有真副作用（真 tmux send、真 clear）的变体
+5. **dispatch 验收**：在步骤 6 的冒烟命令里加 `"/foo"` 到用例列表
 
 6. **验收**：
    ```bash
-   # 冒烟（走 router 假事件）
-   python3 scripts/slash_commands.py  # 无 main，但可 python3 -c 测
-   python3 scripts/slash_smoke_test.py
+   # dispatch 验证（无 main，用 python3 -c 测）
+   python3 -c "from slash_commands import dispatch; print(dispatch('/foo'))"
 
    # hook 冒烟
    echo '{"prompt":"/foo"}' | python3 .claude/hooks/foo_intercept.py
@@ -337,8 +334,14 @@ python3 -c "import sys; sys.path.insert(0,'scripts'); \
 # hook 单点
 echo '{"prompt":"/tmux devops 5"}' | python3 .claude/hooks/tmux_intercept.py
 
-# 冒烟全链（注意会真发 feishu 群消息）
-python3 scripts/slash_smoke_test.py
+# dispatch 全链验证（不发 feishu）
+python3 -c "
+import sys; sys.path.insert(0,'scripts'); sys.path.insert(0,'src')
+from slash_commands import dispatch
+for cmd in ['/help','/team','/usage']:
+    matched, r = dispatch(cmd)
+    print(f'{cmd}: matched={matched}')
+"
 
 # 看 router 最近回显
 tail -30 scripts/.tmux_intercept.log

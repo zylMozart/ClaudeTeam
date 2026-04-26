@@ -1,0 +1,15 @@
+# live-smoke override · 2026-04-25 v2
+#
+# 历史：曾把 user 改 999:999 + 用 ./.claude-credentials/.claude.json 替换 host
+# 直挂，导致 live-smoke 凭证脱钩 host /login。详见
+# docs/architect_creds_persistence_v2_2026-04-25.md §2。
+#
+# 现状：让 live-smoke 完全继承 dev compose 的凭证挂载（user: 0:0 +
+# ~/.claude/.credentials.json + ~/.claude.json 直挂），host /login 后秒级同步。
+#
+# 文件保留为空 services 占位，是因为
+# docs/live_container_smoke.md:59 等文档仍以
+# `-f docker-compose.yml -f docker-compose.live-smoke.override.yml` 的方式调用。
+# 如果未来 live-smoke 真有差异化 env 需求，再在 services.team: 下补 environment
+# 即可。
+services: {}

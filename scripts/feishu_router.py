@@ -12,15 +12,23 @@ Router Daemon — 从 lark-cli event 事件流读取消息，路由到 tmux 窗�
 import sys, os, json, time, re, subprocess, atexit, signal, threading, glob
 from collections import OrderedDict
 
-sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
-from tmux_utils import inject_when_idle, is_agent_idle, capture_pane
-from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
-from feishu_msg import _lark_run, cmd_say, sanitize_agent_message
-from message_renderer import render_inbox_text, render_tmux_prompt
-from cli_adapters import adapter_for_agent
-import tmux_command
-import team_command
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from claudeteam.runtime.config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
+from claudeteam.runtime.paths import runtime_state_file
+from claudeteam.runtime.tmux_utils import inject_when_idle, is_agent_idle, capture_pane
+from claudeteam.runtime.queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
+from claudeteam.integrations.feishu.client import _lark_run
+from claudeteam.messaging.service import sanitize_agent_message
+from feishu_msg import cmd_say
+from claudeteam.messaging.renderer import render_inbox_text, render_tmux_prompt
+from claudeteam.cli_adapters import adapter_for_agent
+from claudeteam.commands import tmux as tmux_command
+from claudeteam.commands import team as team_command
 import slash_commands
 
 _LIFECYCLE_SH = os.path.join(PROJECT_ROOT, "scripts", "lib", "agent_lifecycle.sh")
@@ -378,7 +386,9 @@ def wake_on_deliver(agent_name):
 
 def wake_agent(agent_name, message_preview, sender_agent=None,
                full_text=None, msg_id=""):
-    """向 agent 投递消息：先尝试直接投递，忙碌则入队"""
+    """向 agent 投递消息：先尝试直接投递，忙碌则入队。
+
+    manager 的用户消息使用 force_after_wait=True 实时注入，失败才入队。"""
     message_preview = sanitize_agent_message(message_preview)
     full_text = sanitize_agent_message(full_text) if full_text else full_text
     # lazy-wake: 若 agent 休眠,先 wake 起来再投递。已活则秒回。
@@ -406,9 +416,19 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
     is_user_msg = (sender_agent is None)
     has_pending = has_pending_messages(agent_name)
 
-    if not has_pending:
+    if agent_name == "manager" and is_user_msg:
         ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
-                              wait_secs=15, force_after_wait=False)
+                              wait_secs=3, force_after_wait=True,
+                              submit_keys=adapter_for_agent(agent_name).submit_keys())
+        if ok:
+            print(f"  → 已触发 {agent_name} 窗口（老板消息实时投递）")
+            return
+        detail = getattr(ok, "error", "") or "not submitted"
+        print(f"  📥 实时投递失败 {agent_name}: {detail}，转入队列")
+    elif not has_pending:
+        ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
+                              wait_secs=30, force_after_wait=False,
+                              submit_keys=adapter_for_agent(agent_name).submit_keys())
         if ok:
             print(f"  → 已触发 {agent_name} 窗口（直接投递）")
             return
@@ -562,6 +582,7 @@ def handle_event(event):
 
     sender_agent = _state.parse_sender(text)
     targets = _state.parse_targets(text)
+    is_user_event = event.get("sender_type", "user") == "user"
 
     if targets:
         for target in targets:
@@ -570,8 +591,9 @@ def handle_event(event):
             print(f"  路由: @{target} ← {sender_agent or '用户'}")
             wake_agent(target, text, sender_agent=sender_agent,
                        full_text=text, msg_id=msg_id)
-    elif not sender_agent:
-        # 用户消息默认路由到 manager
+    elif is_user_event:
+        # 真实用户消息即使正文包含 "【manager " / "【toolsmith ·" 这类
+        # 业务文本,也必须默认路由 manager,不能被 parse_sender() 误判吞掉。
         wake_agent("manager", text, msg_id=msg_id, full_text=text)
 
     # 推进 cursor — 必须放在成功路由之后,否则半路异常会让 cursor 跳过
@@ -759,29 +781,42 @@ def _catchup_from_history(chat_id):
 
 # ── PID 锁 ──────────────────────────────────────────────────
 
-PID_FILE = os.path.join(os.path.dirname(__file__), ".router.pid")
+PID_FILE = runtime_state_file("router.pid")
+_LEGACY_PID_FILE = os.path.join(os.path.dirname(__file__), ".router.pid")
 
 def acquire_pid_lock():
-    if os.path.exists(PID_FILE):
-        try:
-            with open(PID_FILE) as f:
-                old_pid = int(f.read().strip())
-            os.kill(old_pid, 0)
-            print(f"❌ Router 已在运行 (PID {old_pid})，请勿重复启动")
-            sys.exit(1)
-        except (ValueError, OSError):
-            pass
-    with open(PID_FILE, "w") as f:
-        f.write(str(os.getpid()))
+    for pf in (PID_FILE, _LEGACY_PID_FILE):
+        if os.path.exists(pf):
+            try:
+                with open(pf) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, 0)
+                try:
+                    with open(f"/proc/{old_pid}/cmdline", "rb") as f:
+                        cmdline = f.read().decode("utf-8", errors="ignore")
+                    if "feishu_router" not in cmdline:
+                        raise OSError("PID reuse: not router")
+                except (FileNotFoundError, PermissionError):
+                    raise OSError("proc gone or no /proc")
+                print(f"❌ Router 已在运行 (PID {old_pid})，请勿重复启动")
+                sys.exit(1)
+            except (ValueError, OSError):
+                pass
+    pid_str = str(os.getpid())
+    for pf in (PID_FILE, _LEGACY_PID_FILE):
+        with open(pf, "w") as f:
+            f.write(pid_str)
     atexit.register(_cleanup_pid)
 
 def _cleanup_pid():
     try:
-        if os.path.exists(PID_FILE):
-            with open(PID_FILE) as f:
-                pid = int(f.read().strip())
-            if pid == os.getpid():
-                os.remove(PID_FILE)
+        my_pid = os.getpid()
+        for pf in (PID_FILE, _LEGACY_PID_FILE):
+            if os.path.exists(pf):
+                with open(pf) as f:
+                    pid = int(f.read().strip())
+                if pid == my_pid:
+                    os.remove(pf)
     except Exception:
         pass
 
@@ -838,10 +873,10 @@ def main():
     # 额外的轮询模式(ClaudeTeam shared-profile 容器部署专用):
     # 如果 App 服务端没订阅 im.message.receive_v1 事件(这是共享宿主机
     # profile 最常见的症状), WebSocket 永远收不到事件。这里开一个后台线程
-    # 每 5 秒再跑一次 catchup,相当于把 WebSocket 退化成 HTTP 轮询。
+    # 定期跑 catchup,相当于把 WebSocket 退化成 HTTP 轮询。间隔由
+    # CATCHUP_POLL_INTERVAL 环境变量控制,默认 30 秒。
     # seen_ids 保证重复消息不会被路由两次, cursor 保证只拉新消息,所以
-    # 即使 WebSocket 后来恢复也不会冲突。代价是延迟 ≤ 5s、chat-messages-list
-    # 调用频率上升。
+    # 即使 WebSocket 后来恢复也不会冲突。
     def _poll_catchup_loop():
         cumulative_replayed = 0
         last_replay_time = time.time()
@@ -867,7 +902,7 @@ def main():
                     warned = True
             except Exception as e:
                 print(f"  ⚠️ 轮询 catchup 异常: {e}")
-            time.sleep(5)
+            time.sleep(int(os.environ.get("CATCHUP_POLL_INTERVAL", 30)))
     threading.Thread(target=_poll_catchup_loop, daemon=True).start()
 
     # Bug 16 防御:启动后 45 秒内如果一条事件都没到,打印醒目警告。

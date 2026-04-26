@@ -157,6 +157,15 @@ docker compose exec team tmux attach -t <session>       # attach to tmux
 docker compose down                                     # stop
 ```
 
+**Post-startup health check (important!):** After `docker compose up -d`, attach to the tmux session and **check every agent window** (Ctrl-b + n to cycle). Third-party CLIs (Kimi, Codex, Gemini) often show interactive prompts on first launch that block the agent:
+
+- **"Do you trust this folder?"** — type `y` + Enter to proceed
+- **"A new version is available, update?"** — type `n` + Enter or Ctrl-C to skip
+- **Device-code login** — follow the URL + code shown on screen to authorize
+- **Permission prompts** — Claude Code may ask "Allow access?" — approve as needed
+
+If any agent window is stuck on a prompt, the agent can't start working. Clear all prompts, then verify each agent shows an active CLI cursor (`>` or `$`). Once all windows are clean, your team is fully operational.
+
 The Feishu group chat invite link is printed at the end of `docker compose run --rm team init` — open it on your phone, join the group, and chat with the manager.
 
 ---
@@ -613,7 +622,7 @@ Tell the user:
 cat config/feishu_scopes.json
 ```
 
-The shipped file is intentionally minimal: 4 umbrella scopes (`bitable:app`, `im:chat`, `im:message`, `im:resource`) plus three explicit record-level scopes (`base:record:read/create/update`). Why mix umbrellas and fine-grained? Because Feishu's umbrellas are inconsistent: `im:message` does cover its sub-permissions like `im:message:send_as_bot`, but `bitable:app` does **NOT** cover `base:record:*` operations — record CRUD has to be granted explicitly. If you ever see `99991672 Access denied. One of the following scopes is required: [some:scope]` at runtime, add `some:scope` to `feishu_scopes.json`, re-import, and re-publish.
+The shipped file includes both tenant and user scopes for the full ClaudeTeam feature set: IM, Bitable/Base, Docs/Docx, Drive, Wiki, Sheets, Tasks, contacts, search, and long-lived user authorization via `offline_access`. Feishu's umbrella scopes are inconsistent, so the file intentionally keeps both broad scopes such as `im:message` / `bitable:app` and fine-grained scopes such as `base:record:*`. If you ever see `99991672 Access denied. One of the following scopes is required: [some:scope]` at runtime, add `some:scope` to `feishu_scopes.json`, re-import, and re-publish.
 
 **⚠️ Don't forget to publish.** After adding the scopes, click **"Create version & Publish"** in the top-right corner of the developer console. Without publishing, every API call will keep failing with `99991672`.
 
@@ -797,3 +806,18 @@ python3 scripts/feishu_msg.py log <your-name> 任务日志 "<what you did>"
 6. **Shared output → `workspace/shared/`**
 7. **Never create files in project root**
 8. **Every Claude instance must use `--name`** — `IS_SANDBOX=1 claude --dangerously-skip-permissions --name <agent名>`. The `IS_SANDBOX=1` prefix is required when running as root (common in VMs / containers); without it, `--dangerously-skip-permissions` refuses to start and the tmux window falls back to a bare bash shell where init messages get typed into the shell instead of Claude.
+
+## Troubleshooting
+
+### Qwen Code: update check blocks startup
+
+Qwen Code may display an update prompt on launch that blocks the tmux pane.
+Set the `DISABLE_UPDATE_CHECK=1` environment variable before spawning:
+
+```bash
+DISABLE_UPDATE_CHECK=1 qwen --yolo
+```
+
+The CLI adapter already includes this env var in its `spawn_cmd`. If the
+problem persists after a manual `npm update -g qwen-code`, verify the
+adapter is being used (`python3 -m claudeteam.cli_adapters.resolve <agent> spawn_cmd`).

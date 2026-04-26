@@ -52,11 +52,27 @@ services:
       - FEISHU_APP_ID=${FEISHU_APP_ID:-}
       - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
       - FEISHU_BRAND=${FEISHU_BRAND:-feishu}
+      - CLAUDETEAM_ENABLE_FEISHU_REMOTE=${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-1}
+      - CLAUDETEAM_ENABLE_BITABLE_LEGACY=${CLAUDETEAM_ENABLE_BITABLE_LEGACY:-0}
+      # lazy-eligible agent 名单 (逗号分隔)。manager 不在内 → 强制 eager,
+      # boss 频道常驻。显式空字符串视为禁用 lazy。
+      - CLAUDETEAM_LAZY_AGENTS=${CLAUDETEAM_LAZY_AGENTS-worker_cc,worker_codex,worker_kimi,worker_gemini}
+      # /app/src 内置到 image,这里再保险一次,即使外部覆盖也不丢。
+      - PYTHONPATH=${PYTHONPATH:-/app/src}
       - TERM=xterm-256color
       # 强制 HOME 指向 /home/claudeteam — 即使以 root 运行容器(user: "0:0"),
       # claude / lark-cli 等工具仍然通过 $HOME 读取 ~/.claude、~/.lark-cli,
       # 这样它们会看到我们挂载的配置,而不是 root 的 /root/.*(空的)。
       - HOME=/home/claudeteam
+      # F-CRED-3: bind-mount 凭证目录 owner 桥接。
+      # 容器内 root 写入的文件 host 端 owner 也是 root,admin 后续 cp/编辑要 sudo。
+      # .env 里设 HOST_UID=$(id -u) HOST_GID=$(id -g) 后,entrypoint 会把
+      # /home/claudeteam/.{kimi,codex,gemini} chown 回 host admin。
+      # 缺省空串 → entrypoint 见空就跳过 chown,行为完全不变 (老部署兼容)。
+      # 这是 spec §12 "HOST_UID 缺省即跳过" 的边界,不能给 1000 兜底
+      # (那样容器永远看到 HOST_UID=1000,chown 就总跑了)。
+      - HOST_UID=${HOST_UID:-}
+      - HOST_GID=${HOST_GID:-}
 
     # ── 数据持久化 ────────────────────────────────────────────
     volumes:
@@ -125,10 +141,3 @@ services:
 
     # ── 网络（仅需出站访问 Anthropic API + 飞书 API）────────
     # 无需暴露端口
-
-# ── 命名卷 ────────────────────────────────────────────────────
-volumes:
-  claudeteam-agents:
-    driver: local
-  claudeteam-workspace:
-    driver: local

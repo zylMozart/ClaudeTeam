@@ -9,15 +9,22 @@
   matched=True 时 reply 是要回显给用户的文本；matched=False 时交给正常路径。
   任何 side effect（tmux send-keys / subprocess）都在这里执行。
 """
+from __future__ import annotations
+
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+_SRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 from cli_credentials import (
     STATUS_API_FAILED,
@@ -29,7 +36,7 @@ from cli_credentials import (
     status_detail,
     status_label,
 )
-from message_renderer import render_feishu_markdown
+from claudeteam.messaging.renderer import render_feishu_markdown
 
 PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
                     Path(__file__).resolve().parent.parent)
@@ -1517,7 +1524,7 @@ def _clear_local(session: str, agent: str) -> bool:
         scripts_dir = str(Path(__file__).resolve().parent)
         if scripts_dir not in _sys.path:
             _sys.path.insert(0, scripts_dir)
-        from tmux_utils import inject_when_idle
+        from claudeteam.runtime.tmux_utils import inject_when_idle
         return inject_when_idle(session, agent, _init_msg(agent), wait_secs=15)
     except Exception:
         # 降级：直接 send-keys -l 字面模式 + Enter
