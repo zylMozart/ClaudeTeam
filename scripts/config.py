@@ -92,6 +92,11 @@ def get_lark_cli(profile=None):
 # 全局常量：其他脚本 from config import LARK_CLI 即可使用
 LARK_CLI = get_lark_cli()
 
+# ── PID 文件目录 ──────────────────────────────────────────────
+# 容器 bind-mount scripts/ 到宿主机，导致容器和宿主机的 PID 文件互相覆盖。
+# CLAUDETEAM_PID_DIR 让容器把 PID 文件写到非 bind-mount 路径（如 /run）。
+PID_DIR = _os.environ.get("CLAUDETEAM_PID_DIR", _os.path.join(PROJECT_ROOT, "scripts"))
+
 
 # ── per-role 模型解析 ──────────────────────────────────────────
 # 每个 agent 可以在 team.json agents.<name>.model 单独声明想用的模型;
@@ -112,6 +117,7 @@ ALLOWED_MODELS = frozenset({
     "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
     # OpenAI / Codex CLI 模型
     "gpt-5.4",
+    "gpt-5.3-codex",
 })
 
 # 兜底默认。用短别名 'opus' 是刻意的:Opus 4.6 1M-context 模式的完整 ID
@@ -195,7 +201,7 @@ def resolve_model_for_agent(agent_name):
 
 # ── Thinking level 解析 ────────────────────────────────────────────
 
-ALLOWED_THINKING = frozenset({"high", "default", "low", "off"})
+ALLOWED_THINKING = frozenset({"xhigh", "high", "default", "low", "off"})
 DEFAULT_THINKING = "default"
 
 

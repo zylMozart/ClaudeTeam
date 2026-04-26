@@ -14,7 +14,7 @@ Watchdog Daemon — 监控并自动重启关键守护进程
 import sys, os, time, glob, subprocess, atexit, signal
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import PROJECT_ROOT, LARK_CLI
+from config import PROJECT_ROOT, LARK_CLI, PID_DIR
 
 CHECK_INTERVAL = 60  # 秒
 
@@ -55,14 +55,14 @@ PROCS = [
         "cmd":   ["bash", "-c",
                   f"{_lark_event_cmd} "
                   "| python3 scripts/feishu_router.py --stdin"],
-        "pid_file": os.path.join(os.path.dirname(__file__), ".router.pid"),
+        "pid_file": os.path.join(PID_DIR, ".router.pid"),
         # 事件心跳: router 每次从 WebSocket 收到事件(即使被过滤)都会
         # os.utime 这个文件。1800s 没更新 = WebSocket 静默死亡(Docker+云
         # NAT conntrack 过期场景),触发重启。router 启动时会从 cursor 文件
         # 补抓断联期间错过的消息,重启对用户透明不丢消息。
         # cursor 文件一物两用: content 是"最后成功路由的本团队消息时间",
         # mtime 是"最后收到任何 WebSocket 事件的时间"。watchdog 只看 mtime。
-        "health_file": os.path.join(os.path.dirname(__file__), ".router.cursor"),
+        "health_file": os.path.join(PID_DIR, ".router.cursor"),
         "health_stale_secs": 1800,
         # 刚重启完的 grace period:距离上次重启 < grace_secs 时只查 PID 存活,
         # 不查 health_file 新鲜度。避免 router 新进程还没来得及 touch cursor
@@ -82,7 +82,7 @@ PROCS = [
         "name":  "kanban_sync.py",
         "match": "kanban_sync.py daemon",
         "cmd":   ["python3", "scripts/kanban_sync.py", "daemon"],
-        "pid_file": os.path.join(os.path.dirname(__file__), ".kanban_sync.pid"),
+        "pid_file": os.path.join(PID_DIR, ".kanban_sync.pid"),
         "max_retries":    3,
         "cooldown_secs":  600,
         "retry_count":         0,
@@ -181,7 +181,7 @@ def _kill_orphan_lark_subscribers():
     """
     my_pid = os.getpid()
     try:
-        with open(os.path.join(os.path.dirname(__file__), ".router.pid")) as f:
+        with open(os.path.join(PID_DIR, ".router.pid")) as f:
             router_pid = int(f.read().strip())
         os.kill(router_pid, 0)
     except (OSError, ValueError):
@@ -393,7 +393,7 @@ def check_once():
     if all_ok:
         log("✅ 所有守护进程运行正常")
 
-_PID_FILE = os.path.join(os.path.dirname(__file__), ".watchdog.pid")
+_PID_FILE = os.path.join(PID_DIR, ".watchdog.pid")
 
 def _acquire_pid_lock():
     if os.path.exists(_PID_FILE):

@@ -19,6 +19,10 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# PID 文件写到非 bind-mount 目录，避免覆盖宿主机的 PID 文件
+export CLAUDETEAM_PID_DIR="/run/claudeteam"
+mkdir -p "$CLAUDETEAM_PID_DIR"
+
 echo "🐳 ClaudeTeam Docker 启动 (mode=$MODE)..."
 echo "   Node.js: $(node --version)"
 echo "   Python:  $(python3 --version)"
@@ -324,6 +328,10 @@ PY
 
 echo "✅ CLI auto-approve 配置已预写 (kimi/codex/gemini)"
 
+echo ""
+echo "🔎 CLI usage 凭证检查 (提示模式，不阻断启动)..."
+python3 scripts/cli_credentials.py doctor --no-fail || true
+
 # ── init 模式：跑 setup.py 创建飞书资源,然后退出 ────────────
 if [ "$MODE" = "init" ]; then
   echo ""
@@ -518,6 +526,7 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 
     INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
 import os, sys
+sys.path.insert(0, '/app/scripts')
 from tmux_utils import inject_when_idle
 
 session, agent = sys.argv[1], sys.argv[2]

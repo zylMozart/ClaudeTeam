@@ -18,7 +18,7 @@ import sys, os, json, time, subprocess, atexit, signal
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import load_runtime_config, save_runtime_config, LARK_CLI
+from config import load_runtime_config, save_runtime_config, LARK_CLI, PID_DIR
 
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "..", "workspace", "shared", "tasks", "tasks.json")
 
@@ -271,7 +271,7 @@ def cmd_sync():
 
 # ── 命令：daemon ──────────────────────────────────────────────
 
-_PID_FILE = os.path.join(os.path.dirname(__file__), ".kanban_sync.pid")
+_PID_FILE = os.path.join(PID_DIR, ".kanban_sync.pid")
 
 def _acquire_pid_lock():
     if os.path.exists(_PID_FILE):

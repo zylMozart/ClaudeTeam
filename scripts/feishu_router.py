@@ -13,7 +13,7 @@ import sys, os, json, time, re, subprocess, atexit, signal, threading, glob
 from collections import OrderedDict
 
 sys.path.insert(0, os.path.dirname(__file__))
-from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
+from config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI, PID_DIR
 from tmux_utils import inject_when_idle, is_agent_idle, capture_pane
 from msg_queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
 from feishu_msg import _lark_run, cmd_say, sanitize_agent_message
@@ -253,25 +253,44 @@ def _cli_pids_in_pane(agent_name):
     if bash_pid is None:
         return []
     proc_name = adapter_for_agent(agent_name).process_name()
-    result = []
+    children = {}
+    comm_by_pid = {}
     for proc_dir in glob.glob("/proc/[0-9]*"):
+        try:
+            pid = int(os.path.basename(proc_dir))
+        except ValueError:
+            continue
         try:
             with open(f"{proc_dir}/status") as f:
                 status = f.read()
         except OSError:
             continue
-        if f"\nPPid:\t{bash_pid}\n" not in status:
-            continue
+        ppid = None
+        for line in status.splitlines():
+            if line.startswith("PPid:"):
+                try:
+                    ppid = int(line.split()[1])
+                except (IndexError, ValueError):
+                    ppid = None
+                break
+        if ppid is not None:
+            children.setdefault(ppid, []).append(pid)
         try:
             with open(f"{proc_dir}/comm") as f:
-                comm = f.read().strip()
+                comm_by_pid[pid] = f.read().strip()
         except OSError:
+            pass
+    result = []
+    stack = list(children.get(bash_pid, []))
+    seen = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
             continue
-        if comm == proc_name:
-            try:
-                result.append(int(os.path.basename(proc_dir)))
-            except ValueError:
-                pass
+        seen.add(pid)
+        if comm_by_pid.get(pid) == proc_name:
+            result.append(pid)
+        stack.extend(children.get(pid, []))
     return result
 
 
@@ -389,10 +408,13 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
 
     if not has_pending:
         ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
-                              wait_secs=15, force_after_wait=True)
+                              wait_secs=15, force_after_wait=False,
+                              submit_keys=adapter_for_agent(agent_name).submit_keys())
         if ok:
             print(f"  → 已触发 {agent_name} 窗口（直接投递）")
             return
+        detail = getattr(ok, "error", "") or "not submitted"
+        print(f"  📥 直接投递未提交 {agent_name}: {detail}，转入队列")
 
     enqueue_message(agent_name, prompt, msg_id, is_user_msg=is_user_msg)
     if has_pending:
@@ -470,7 +492,7 @@ def handle_event(event):
         except Exception:
             pass
         try:
-            from feishu_msg import _lark_im_send, CHAT, build_system_card
+            from feishu_msg import _lark_im_send, CHAT, post_system_to_group
             chat_id = CHAT()
             if not chat_id:
                 print(f"  ⚠️ chat_id 未配置,无法回显")
@@ -483,7 +505,7 @@ def handle_event(event):
                     reply.get("text", "(空)") if isinstance(reply, dict) else "(空)")
                 if first == "/tmux":
                     body = f"```\n{body}\n```"
-                _lark_im_send(chat_id, card=build_system_card(body))
+                post_system_to_group(body)
         except Exception as e:
             print(f"  ⚠️ slash 回显失败: {e}")
         _advance_cursor()
@@ -541,6 +563,7 @@ def handle_event(event):
 
     sender_agent = _state.parse_sender(text)
     targets = _state.parse_targets(text)
+    is_user_event = event.get("sender_type", "user") == "user"
 
     if targets:
         for target in targets:
@@ -549,8 +572,9 @@ def handle_event(event):
             print(f"  路由: @{target} ← {sender_agent or '用户'}")
             wake_agent(target, text, sender_agent=sender_agent,
                        full_text=text, msg_id=msg_id)
-    elif not sender_agent:
-        # 用户消息默认路由到 manager
+    elif is_user_event:
+        # 真实用户消息即使正文包含 "【manager " / "【toolsmith ·" 这类
+        # 业务文本,也必须默认路由 manager,不能被 parse_sender() 误判吞掉。
         wake_agent("manager", text, msg_id=msg_id, full_text=text)
 
     # 推进 cursor — 必须放在成功路由之后,否则半路异常会让 cursor 跳过
@@ -580,7 +604,7 @@ def handle_event(event):
 #   cursor 写操作天然会更新 mtime(心跳也顺带刷新),cross-team 事件只需要
 #   os.utime 就够了(不能动 cursor content,否则会漏补抓本团队的消息)。
 
-CURSOR_FILE = os.path.join(os.path.dirname(__file__), ".router.cursor")
+CURSOR_FILE = os.path.join(PID_DIR, ".router.cursor")
 
 
 def _refresh_heartbeat():
@@ -738,7 +762,7 @@ def _catchup_from_history(chat_id):
 
 # ── PID 锁 ──────────────────────────────────────────────────
 
-PID_FILE = os.path.join(os.path.dirname(__file__), ".router.pid")
+PID_FILE = os.path.join(PID_DIR, ".router.pid")
 
 def acquire_pid_lock():
     if os.path.exists(PID_FILE):
@@ -746,6 +770,13 @@ def acquire_pid_lock():
             with open(PID_FILE) as f:
                 old_pid = int(f.read().strip())
             os.kill(old_pid, 0)
+            try:
+                with open(f"/proc/{old_pid}/cmdline", "rb") as f:
+                    cmdline = f.read().decode("utf-8", errors="ignore")
+                if "feishu_router" not in cmdline:
+                    raise OSError("PID reuse: not router")
+            except (FileNotFoundError, PermissionError):
+                raise OSError("proc gone or no /proc")
             print(f"❌ Router 已在运行 (PID {old_pid})，请勿重复启动")
             sys.exit(1)
         except (ValueError, OSError):
