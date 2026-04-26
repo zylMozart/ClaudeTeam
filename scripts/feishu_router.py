@@ -19,6 +19,7 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from claudeteam.runtime.config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
+from claudeteam.runtime.paths import runtime_state_file
 from claudeteam.runtime.tmux_utils import inject_when_idle, is_agent_idle, capture_pane
 from claudeteam.runtime.queue import enqueue_message, has_pending_messages, dequeue_pending, check_manager_unread
 from claudeteam.integrations.feishu.client import _lark_run
@@ -780,36 +781,42 @@ def _catchup_from_history(chat_id):
 
 # ── PID 锁 ──────────────────────────────────────────────────
 
-PID_FILE = os.path.join(os.path.dirname(__file__), ".router.pid")
+PID_FILE = runtime_state_file("router.pid")
+_LEGACY_PID_FILE = os.path.join(os.path.dirname(__file__), ".router.pid")
 
 def acquire_pid_lock():
-    if os.path.exists(PID_FILE):
-        try:
-            with open(PID_FILE) as f:
-                old_pid = int(f.read().strip())
-            os.kill(old_pid, 0)
+    for pf in (PID_FILE, _LEGACY_PID_FILE):
+        if os.path.exists(pf):
             try:
-                with open(f"/proc/{old_pid}/cmdline", "rb") as f:
-                    cmdline = f.read().decode("utf-8", errors="ignore")
-                if "feishu_router" not in cmdline:
-                    raise OSError("PID reuse: not router")
-            except (FileNotFoundError, PermissionError):
-                raise OSError("proc gone or no /proc")
-            print(f"❌ Router 已在运行 (PID {old_pid})，请勿重复启动")
-            sys.exit(1)
-        except (ValueError, OSError):
-            pass
-    with open(PID_FILE, "w") as f:
-        f.write(str(os.getpid()))
+                with open(pf) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, 0)
+                try:
+                    with open(f"/proc/{old_pid}/cmdline", "rb") as f:
+                        cmdline = f.read().decode("utf-8", errors="ignore")
+                    if "feishu_router" not in cmdline:
+                        raise OSError("PID reuse: not router")
+                except (FileNotFoundError, PermissionError):
+                    raise OSError("proc gone or no /proc")
+                print(f"❌ Router 已在运行 (PID {old_pid})，请勿重复启动")
+                sys.exit(1)
+            except (ValueError, OSError):
+                pass
+    pid_str = str(os.getpid())
+    for pf in (PID_FILE, _LEGACY_PID_FILE):
+        with open(pf, "w") as f:
+            f.write(pid_str)
     atexit.register(_cleanup_pid)
 
 def _cleanup_pid():
     try:
-        if os.path.exists(PID_FILE):
-            with open(PID_FILE) as f:
-                pid = int(f.read().strip())
-            if pid == os.getpid():
-                os.remove(PID_FILE)
+        my_pid = os.getpid()
+        for pf in (PID_FILE, _LEGACY_PID_FILE):
+            if os.path.exists(pf):
+                with open(pf) as f:
+                    pid = int(f.read().strip())
+                if pid == my_pid:
+                    os.remove(pf)
     except Exception:
         pass
 
