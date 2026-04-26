@@ -268,7 +268,7 @@
 | 改动对象 | 是否需重启 | 生效时机 |
 |---|---|---|
 | `scripts/slash_commands.py` | ❌ 不用 | `feishu_router` 每次调 `dispatch` 都现场 import，下一条 `/xxx` 就吃新代码；hook 同理，下次 UserPromptSubmit 就吃 |
-| `scripts/feishu_router.py` | ✅ 要 | `kill <router python pid>`（`cat scripts/.router.pid`）— watchdog 30–60s 内自拉 |
+| `scripts/feishu_router.py` | ✅ 要 | `kill <router python pid>`（宿主机: `cat scripts/.router.pid`；Docker 容器内: `cat /run/claudeteam/.router.pid`）— watchdog 30–60s 内自拉 |
 | `scripts/watchdog.py` | ✅ 要（且手工） | watchdog 的 `_lark_event_cmd` 是 module-level 常量，改了要 `kill watchdog pid`，再到 `server-manager:watchdog` tmux 窗口启（避免被 shell 结束） |
 | `.claude/hooks/*.py` | ❌ 不用 | hook 每次 UserPromptSubmit 都 fresh `python3` 进程 |
 | `.claude/settings.json` | ❌ 不用 | Claude Code 每次 prompt 都重读 settings |

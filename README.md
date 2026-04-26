@@ -70,6 +70,7 @@ For the **Quick Start** path (host-native, guided by `claude`):
 | Requirement     | Version    | Check                                    |
 | --------------- | ---------- | ---------------------------------------- |
 | macOS or Linux  | —          | —                                        |
+| Bash            | 4+         | `bash --version`                         |
 | Python          | 3.8+       | `python3 --version`                      |
 | Node.js         | 18+        | `node --version`                         |
 | tmux            | any        | `tmux -V`                                |
@@ -292,6 +293,8 @@ docker compose down
 The same `COMPOSE_PROJECT_NAME` must be set for every subsequent `docker compose ...` invocation in that shell — otherwise Compose falls back to the directory basename and can't find your containers/volumes. If you bounce between teams frequently, consider a small shell alias per team or put `export COMPOSE_PROJECT_NAME=claudeteam-<session>` at the bottom of the team's `.env` and source it.
 
 Top-level `volumes:` and `networks:` declared in `docker-compose.yml` are already auto-prefixed by the project name, so this change is the single knob that isolates *everything* at once.
+
+**Process-level isolation (PID files and orphan cleanup):** Inside Docker containers, PID files (`.router.pid`, `.watchdog.pid`, `.kanban_sync.pid`) are written to `/run/claudeteam/` instead of `scripts/`, preventing collisions with host-native PID files via `CLAUDETEAM_PID_DIR`. On the host side, `start-team.sh` cleans up orphan processes by matching PID files and lark-cli profile names — it no longer uses global `pkill`, so one team's restart can't kill another team's router. `watchdog.py` uses cwd-based process detection to distinguish its own processes from other teams'.
 
 ---
 

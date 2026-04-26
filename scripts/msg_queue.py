@@ -4,6 +4,11 @@
 
 管理 agent 消息的待投递队列：入队、出队、过期清理、FIFO 保证。
 队列以 JSON 文件持久化在 PENDING_DIR 下，每个 agent 一个文件。
+
+注入前对消息执行 sanitize_agent_message 清洗（剥离运行时命令等）。
+用户消息（is_user_msg=True）过期后不丢弃，持续保留并定期告警。
+manager 的用户消息在入队时同步镜像到 inbox（Bitable），确保即使
+tmux 忙碌也能通过 `feishu_msg.py inbox manager` 查看。
 """
 import os, json, time, threading
 

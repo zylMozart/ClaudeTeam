@@ -3,15 +3,21 @@
 tmux 工具函数 — 检测 Agent 空闲状态后安全注入文本
 
 主要函数:
-  capture_pane(session, window)          → 获取 pane 当前可见内容
-  is_agent_idle(session, window)         → 判断 Agent 是否处于空闲（可接受输入）
-  send_ctrlc(session, window)            → 发送 Ctrl+C 中断当前进程
-  inject_when_idle(session, window, text) → 等待空闲后安全注入文本
+  capture_pane(session, window)                → 获取 pane 当前可见内容
+  is_agent_idle(session, window)               → 多帧 pane-diff hash 判定空闲（默认 10帧×300ms）
+  quick_idle_hint(session, window)             → 速判 idle（<100ms，用于 /team 状态卡等预筛）
+  inject_when_idle(session, window, text)      → 等待空闲后安全注入文本，返回 InjectionResult
+  detect_unsubmitted_input_text(pane_text)     → 检测输入框残留文本
+  has_unsubmitted_input(session, window)       → 检测 agent 输入框是否有未提交文本
+  check_agent_alive(session, window)           → 检查 agent 存活状态
+  send_ctrlc(session, window)                  → 发送 Ctrl+C 中断当前进程
 
-空闲检测原理:
-  Claude Code 空闲时末尾可见 "> " / "❯ " 等提示符，忙碌时显示旋转符号（⣾⣽…）
-  或"Thinking"等流式输出特征。inject_when_idle 轮询最多 wait_secs 秒，
-  确认空闲后用 send-keys -l（字面模式）注入，避免 # $ 等字符被 tmux/shell 解释。
+空闲检测原理（pane-diff，since 2026-04-25）:
+  连续采样 N 帧 capture-pane 输出，归一化后计算 hash；全部相等 = idle。
+  比旧的 busy_markers 单帧匹配更可靠，不依赖特定 spinner 字符串。
+  旧实现保留为 CLAUDETEAM_IDLE_LEGACY=1 回滚开关。
+  inject_when_idle 会先检查输入框残留、加 file lock 防并发，然后
+  用 send-keys -l（字面模式）注入，避免 # $ 等字符被 tmux/shell 解释。
 """
 import contextlib
 import dataclasses
