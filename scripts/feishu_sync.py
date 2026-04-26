@@ -18,7 +18,7 @@
     sync                         — 全量扫描，同步新增/变化文件
     sync-file <相对路径>          — 同步单个文件
     status                       — 显示各文件同步状态
-    daemon [--interval N]        — 后台守护（默认30秒检查一次）
+    daemon [--interval N]        — 后台守护（默认30秒，需 CLAUDETEAM_FEISHU_SYNC=1 启用）
 
 依赖:
   Python 3.6+, lark-cli (npx @larksuite/cli), runtime_config.json（先运行 setup.py）
@@ -290,6 +290,11 @@ def _cleanup_pid():
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
 def cmd_daemon(interval=30):
+    if os.environ.get("CLAUDETEAM_FEISHU_SYNC", "0") not in ("1", "true", "yes"):
+        _acquire_pid_lock()
+        print("💤 文档同步已禁用（设 CLAUDETEAM_FEISHU_SYNC=1 启用）")
+        signal.pause()
+        return
     _acquire_pid_lock()
     print(f"🔄 文件同步守护进程启动（每 {interval} 秒检查一次）")
     while True:

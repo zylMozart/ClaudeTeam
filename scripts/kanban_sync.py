@@ -9,7 +9,7 @@
   CLI 子命令:
     init                    — 在现有 Bitable 中创建"项目看板"表
     sync                    — 执行一次全量同步
-    daemon [--interval N]   — 后台定时同步（默认60秒一次）
+    daemon [--interval N]   — 后台定时同步（默认60秒一次，需 CLAUDETEAM_KANBAN_SYNC=1 启用）
 
 依赖:
   Python 3.6+, lark-cli, runtime_config.json（先运行 setup.py）
@@ -309,6 +309,11 @@ def _cleanup_pid():
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
 def cmd_daemon(interval=60):
+    if os.environ.get("CLAUDETEAM_KANBAN_SYNC", "0") not in ("1", "true", "yes"):
+        _acquire_pid_lock()
+        print("💤 看板同步已禁用（设 CLAUDETEAM_KANBAN_SYNC=1 启用）")
+        signal.pause()
+        return
     _acquire_pid_lock()
     print(f"🔄 看板同步守护进程启动（每 {interval} 秒同步一次）")
     while True:

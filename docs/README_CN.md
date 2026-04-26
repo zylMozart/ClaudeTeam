@@ -132,6 +132,8 @@ cd ClaudeTeam
 # 1. 凭证存在项目本地 .env（已 gitignore）。
 cp .env.example .env
 $EDITOR .env                        # 填入 FEISHU_APP_ID / FEISHU_APP_SECRET
+                                    # 可选: CLAUDETEAM_KANBAN_SYNC=1, CLAUDETEAM_FEISHU_SYNC=1,
+                                    #       CATCHUP_POLL_INTERVAL=30（详见 .env.example）
 
 # 2. 定义你的团队。
 $EDITOR team.json                   # session 名 + agents（参考 templates/）

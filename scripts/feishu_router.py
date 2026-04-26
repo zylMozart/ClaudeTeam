@@ -378,7 +378,9 @@ def wake_on_deliver(agent_name):
 
 def wake_agent(agent_name, message_preview, sender_agent=None,
                full_text=None, msg_id=""):
-    """向 agent 投递消息：先尝试直接投递，忙碌则入队"""
+    """向 agent 投递消息：先尝试直接投递，忙碌则入队。
+
+    manager 的用户消息使用 force_after_wait=True 实时注入，失败才入队。"""
     message_preview = sanitize_agent_message(message_preview)
     full_text = sanitize_agent_message(full_text) if full_text else full_text
     # lazy-wake: 若 agent 休眠,先 wake 起来再投递。已活则秒回。
@@ -406,7 +408,16 @@ def wake_agent(agent_name, message_preview, sender_agent=None,
     is_user_msg = (sender_agent is None)
     has_pending = has_pending_messages(agent_name)
 
-    if not has_pending:
+    if agent_name == "manager" and is_user_msg:
+        ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
+                              wait_secs=3, force_after_wait=True,
+                              submit_keys=adapter_for_agent(agent_name).submit_keys())
+        if ok:
+            print(f"  → 已触发 {agent_name} 窗口（老板消息���时投递）")
+            return
+        detail = getattr(ok, "error", "") or "not submitted"
+        print(f"  📥 实时投递失败 {agent_name}: {detail}，转入队列")
+    elif not has_pending:
         ok = inject_when_idle(TMUX_SESSION, agent_name, prompt,
                               wait_secs=15, force_after_wait=False,
                               submit_keys=adapter_for_agent(agent_name).submit_keys())
@@ -848,10 +859,10 @@ def main():
     # 额外的轮询模式(ClaudeTeam shared-profile 容器部署专用):
     # 如果 App 服务端没订阅 im.message.receive_v1 事件(这是共享宿主机
     # profile 最常见的症状), WebSocket 永远收不到事件。这里开一个后台线程
-    # 每 5 秒再跑一次 catchup,相当于把 WebSocket 退化成 HTTP 轮询。
+    # 定期跑 catchup,相当于把 WebSocket 退化成 HTTP 轮询。间隔由
+    # CATCHUP_POLL_INTERVAL 环境变量控制,默认 30 秒。
     # seen_ids 保证重复消息不会被路由两次, cursor 保证只拉新消息,所以
-    # 即使 WebSocket 后来恢复也不会冲突。代价是延迟 ≤ 5s、chat-messages-list
-    # 调用频率上升。
+    # 即使 WebSocket 后来恢复也不会冲突。
     def _poll_catchup_loop():
         cumulative_replayed = 0
         last_replay_time = time.time()
@@ -877,7 +888,7 @@ def main():
                     warned = True
             except Exception as e:
                 print(f"  ⚠️ 轮询 catchup 异常: {e}")
-            time.sleep(5)
+            time.sleep(int(os.environ.get("CATCHUP_POLL_INTERVAL", 30)))
     threading.Thread(target=_poll_catchup_loop, daemon=True).start()
 
     # Bug 16 防御:启动后 45 秒内如果一条事件都没到,打印醒目警告。

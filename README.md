@@ -121,6 +121,8 @@ cd ClaudeTeam
 # 1. Credentials live in project-local .env (gitignored).
 cp .env.example .env
 $EDITOR .env                        # fill FEISHU_APP_ID / FEISHU_APP_SECRET
+                                    # optional: CLAUDETEAM_KANBAN_SYNC=1, CLAUDETEAM_FEISHU_SYNC=1,
+                                    #           CATCHUP_POLL_INTERVAL=30 (see .env.example)
 
 # 2. Define the team you want.
 $EDITOR team.json                   # session name + agents (see templates/)
