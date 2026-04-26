@@ -329,6 +329,24 @@ WORKSPACE_FIELDS = [
     {"name": "关联对象", "type": "text"},
 ]
 
+BOSS_TODO_TABLE_NAME = "老板代办"
+BOSS_TODO_DEDUPE_KEYS = ["来源任务", "标题"]
+BOSS_TODO_FIELDS = [
+    {"name": "标题", "type": "text"},
+    {"name": "状态", "type": "text"},
+    {"name": "优先级", "type": "text"},
+    {"name": "来源任务", "type": "text"},
+    {"name": "来源类型", "type": "text"},
+    {"name": "创建人", "type": "text"},
+    {"name": "负责人", "type": "text"},
+    {"name": "截止时间", "type": "text"},
+    {"name": "最新备注", "type": "text"},
+    {"name": "关联消息", "type": "text"},
+    {"name": "创建时间", "type": "date_time"},
+    {"name": "更新时间", "type": "date_time"},
+    {"name": "完成时间", "type": "date_time"},
+]
+
 
 def create_inbox_table(base_token):
     """创建消息收件箱表，返回 table_id。"""
@@ -390,6 +408,67 @@ def create_workspace_tables(base_token):
         print(f"   {agent_name}: {tid} ✅")
     print()
     return ws_tables
+
+
+def _existing_boss_todo_cfg(existing_cfg, base_token):
+    nested = existing_cfg.get("boss_todo") or {}
+    if not isinstance(nested, dict):
+        nested = {}
+    table_id = nested.get("table_id") or existing_cfg.get("boss_todo_table_id") or ""
+    if not table_id:
+        return None
+    return {
+        "base_token": nested.get("base_token") or base_token,
+        "table_id": table_id,
+        "table_name": nested.get("table_name") or BOSS_TODO_TABLE_NAME,
+        "view_link": nested.get("view_link") or existing_cfg.get("boss_todo_link") or "",
+        "dedupe_keys": nested.get("dedupe_keys") or existing_cfg.get("boss_todo_dedupe_keys") or BOSS_TODO_DEDUPE_KEYS,
+    }
+
+
+def create_boss_todo_table(base_token, existing_cfg=None):
+    """创建或复用老板代办表，返回 runtime_config.boss_todo 配置。"""
+    existing_cfg = existing_cfg or {}
+    existing = _existing_boss_todo_cfg(existing_cfg, base_token)
+    if existing:
+        print(f"🧾 老板代办表已配置，复用: {existing['table_id']} ✅\n")
+        return existing
+
+    print("🧾 创建/复用老板代办表...")
+    tid = _find_table_id_by_name(base_token, BOSS_TODO_TABLE_NAME)
+    if tid:
+        print(f"   发现已有表: {tid}")
+    else:
+        tid = _create_table_with_fields(
+            base_token, BOSS_TODO_TABLE_NAME, BOSS_TODO_FIELDS, "创建老板代办表")
+    if not tid:
+        print("❌ 创建老板代办表失败"); sys.exit(1)
+    cfg = {
+        "base_token": base_token,
+        "table_id": tid,
+        "table_name": BOSS_TODO_TABLE_NAME,
+        "view_link": existing_cfg.get("boss_todo_link", ""),
+        "dedupe_keys": existing_cfg.get("boss_todo_dedupe_keys", BOSS_TODO_DEDUPE_KEYS),
+    }
+    print(f"   table_id: {tid} ✅\n")
+    return cfg
+
+
+def ensure_boss_todo_table():
+    """为已有部署补创建/复用老板代办表并写入 runtime_config。"""
+    if not os.path.exists(CONFIG_FILE) or os.path.getsize(CONFIG_FILE) == 0:
+        print(f"❌ 未找到有效 {CONFIG_FILE}，请先运行 python3 scripts/setup.py")
+        sys.exit(1)
+    with open(CONFIG_FILE) as f:
+        cfg = json.load(f)
+    base_token = cfg.get("bitable_app_token")
+    if not base_token:
+        print("❌ runtime_config.json 缺少 bitable_app_token，无法创建老板代办表")
+        sys.exit(1)
+    _warmup_lark_cli()
+    cfg["boss_todo"] = create_boss_todo_table(base_token, cfg)
+    save_runtime_config(cfg)
+    print(f"✅ 老板代办配置已保存到 {CONFIG_FILE}")
 
 
 def create_chat_group():
@@ -629,7 +708,12 @@ def _warmup_lark_cli():
     print()
 
 
-def main():
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "ensure-boss-todo":
+        ensure_boss_todo_table()
+        return
+
     # P1-12 首次使用 lark-cli 时 npx 会下载 ~80MB 且完全静默。先 warm-up 一次,
     # 让用户对"这 1-2 分钟的等待是下载, 不是脚本卡死"有明确预期。
     _warmup_lark_cli()
@@ -713,6 +797,7 @@ def main():
     msg_table = create_inbox_table(base_token)
     sta_table = create_status_table(base_token)
     kanban_table = create_kanban_table(base_token)
+    boss_todo = create_boss_todo_table(base_token, existing)
     ws_tables = create_workspace_tables(base_token)
     chat_id, share_link = create_chat_group()
 
@@ -725,6 +810,7 @@ def main():
         "msg_table_id": msg_table,
         "sta_table_id": sta_table,
         "kanban_table_id": kanban_table,
+        "boss_todo": boss_todo,
         "workspace_tables": ws_tables,
         "chat_id": chat_id,
         "share_link": share_link,

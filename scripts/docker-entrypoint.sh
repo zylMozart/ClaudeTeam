@@ -446,6 +446,10 @@ PY
 
 echo "✅ CLI auto-approve 配置已预写 (kimi/codex/gemini)"
 
+echo ""
+echo "🔎 CLI usage 凭证检查 (提示模式，不阻断启动)..."
+python3 scripts/cli_credentials.py doctor --no-fail || true
+
 # ── init 模式：跑 setup.py 创建飞书资源,然后退出 ────────────
 if [ "$MODE" = "init" ]; then
   echo ""
@@ -731,6 +735,7 @@ if [ "${HALT_INIT:-0}" != "1" ]; then
 
 【Thinking 指引】${THINKING_HINT}"
 
+    PYTHONPATH="$ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}" \
     INIT_MSG="$INIT_MSG" python3 - "$SESSION" "$agent" <<'PY'
 import os, sys
 sys.path.insert(0, os.path.join(os.getcwd(), "src"))

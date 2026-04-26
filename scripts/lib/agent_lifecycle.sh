@@ -111,24 +111,46 @@ _lifecycle_pids_for_agent() {
   [[ -z "$proc_name" ]] && proc_name="claude"
   BASH_PID="$bash_pid" PROC_NAME="$proc_name" python3 - <<'PY' 2>/dev/null
 import os, glob
-ppid = os.environ["BASH_PID"]
+bash_pid = int(os.environ["BASH_PID"])
 proc_name = os.environ["PROC_NAME"]
-needle = f"\nPPid:\t{ppid}\n"
+children = {}
+comm_by_pid = {}
 out = []
 for d in glob.glob("/proc/[0-9]*"):
+    try:
+        pid = int(os.path.basename(d))
+    except ValueError:
+        continue
     try:
         with open(f"{d}/status") as f:
             st = f.read()
     except OSError:
         continue
-    if needle not in st:
-        continue
+    ppid = None
+    for line in st.splitlines():
+        if line.startswith("PPid:"):
+            try:
+                ppid = int(line.split()[1])
+            except (IndexError, ValueError):
+                ppid = None
+            break
+    if ppid is not None:
+        children.setdefault(ppid, []).append(pid)
     try:
         with open(f"{d}/comm") as f:
-            if f.read().strip() == proc_name:
-                out.append(os.path.basename(d))
+            comm_by_pid[pid] = f.read().strip()
     except OSError:
         continue
+stack = list(children.get(bash_pid, []))
+seen = set()
+while stack:
+    pid = stack.pop()
+    if pid in seen:
+        continue
+    seen.add(pid)
+    if comm_by_pid.get(pid) == proc_name:
+        out.append(str(pid))
+    stack.extend(children.get(pid, []))
 print(" ".join(out))
 PY
 }

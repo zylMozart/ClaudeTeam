@@ -86,8 +86,9 @@ Markdown guidance.
   output.
 - Always close fenced blocks.
 - Prefer a language hint for readability when known.
-- Very long code/log content should be stored as a file or summarized with a
-  path reference instead of pasted into a card.
+- Very long code/log content should be split across multiple cards or stored as
+  an explicit file/document link. User-facing cards must not silently truncate
+  business text or show internal preview-truncation notices.
 
 ### Links
 
@@ -180,7 +181,7 @@ The local regression script must cover these cases for every renderer:
 | code blocks | fenced blocks remain balanced |
 | links | Markdown links preserved; suspicious URLs rejected later |
 | table fallback | pipe tables become flat lists |
-| long message | over-limit content summarized/truncated with notice |
+| long message | over-limit content split into multiple cards/blocks without user-visible truncation text |
 | runtime command | `CODEX_AGENT=... codex ...` removed from rendered output |
 | multilingual | Chinese/English text preserved |
 | emoji | emoji preserved with adjacent text |
@@ -193,5 +194,6 @@ The local regression script must cover these cases for every renderer:
 3. Wire `build_card`, `cmd_say`, `send/direct`, router prompts, queue delivery,
    slash card text, and workspace logs to the renderer.
 4. Add safe Feishu card snapshot checks.
-5. Run live safe smoke only after manager approval.
-
+5. Keep truncation out of renderer output; delivery layers must split card
+   markdown before sending.
+6. Run live safe smoke only after manager approval.

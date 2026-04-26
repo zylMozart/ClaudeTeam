@@ -47,6 +47,12 @@ def check_sanitizer():
         "prefix with model": (f"{SPAWN_MODEL} 真实任务", "真实任务"),
         "suffix example preserved": (f"真实任务 {SPAWN}", f"真实任务 {SPAWN}"),
         "middle multiline": (f"第一行\n{SPAWN_MODEL}\n第二行", "第一行\n第二行"),
+        "placeholder example preserved": (
+            "CODEX_AGENT=<agent> codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'",
+            "CODEX_AGENT=&lt;agent&gt; codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'",
+        ),
     }
     for label, (raw, expected) in cases.items():
         assert_eq(feishu_msg.sanitize_agent_message(raw), expected, label)
@@ -99,6 +105,46 @@ def check_send_direct():
     joined = json.dumps(captured, ensure_ascii=False)
     assert_not_contains(joined, "CODEX_AGENT=", "send/direct")
     assert "真实任务" in joined and "直连任务" in joined
+
+
+def check_say_file():
+    captured = []
+    old_argv = sys.argv
+    old = (
+        feishu_msg._lark_im_send,
+        feishu_msg.CHAT,
+        feishu_msg.ws_log,
+    )
+    with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as tmp:
+        tmp.write(
+            "Codex command:\n"
+            "CODEX_AGENT=<agent> codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'\n"
+            "Use <model> safely."
+        )
+        tmp.flush()
+        try:
+            sys.argv = ["feishu_msg.py", "say", "manager", "--file", tmp.name]
+            feishu_msg.CHAT = lambda: "chat-id"
+            feishu_msg._lark_im_send = (
+                lambda chat_id, **kw: captured.append((chat_id, kw)) or {}
+            )
+            feishu_msg.ws_log = lambda *a, **kw: None
+            feishu_msg.main()
+        finally:
+            sys.argv = old_argv
+            (
+                feishu_msg._lark_im_send,
+                feishu_msg.CHAT,
+                feishu_msg.ws_log,
+            ) = old
+
+    assert captured, "say --file did not send"
+    card = captured[0][1]["card"]
+    content = card["elements"][0]["content"]
+    assert "CODEX_AGENT=&lt;agent&gt;" in content, content
+    assert "model_reasoning_effort" in content, content
+    assert "&lt;model&gt;" in content, content
 
 
 def check_queue():
@@ -242,6 +288,7 @@ def main():
         redirect_facts(tmp)
         check_sanitizer()
         check_send_direct()
+        check_say_file()
         check_queue()
         check_router_default_route()
         check_history_replay_route()
