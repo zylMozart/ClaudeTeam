@@ -76,41 +76,43 @@
 
 ## 4. 文件布局（精确到行号）
 
-> 行号基线：commit `28fef3d`。之后如果改动文件，`grep -n` 重对。
+> 原行号基线 commit `28fef3d` 已过时。以下改用函数名引用，用 `grep -n <函数名> scripts/<文件>` 定位。
 
-### 4.1 `scripts/slash_commands.py`（954 行，主 dispatcher + 所有 handler）
+### 4.1 `scripts/slash_commands.py`（~1600 行，主 dispatcher + 所有 handler）
 
-| 行号 | 内容 |
+> ⚠️ 行号基线已过时（原 954 行 → 当前 ~1600 行）。下表改用函数名引用，用 `grep -n` 定位。
+
+| 函数/符号 | 作用 |
 |---|---|
-| 25–30 | `AGENT_WINDOWS` 白名单（15 人） |
-| 33–38 | `_host_session()` 读 team.json 的 session 名 |
-| 41–46 | `_run()` subprocess 包装 |
-| 49–54 | `_containers()` 列 `claudeteam-*` docker ps |
-| 57–61 | `_list_windows_local()` 本机 tmux 窗口名 |
-| 64–74 | `_container_window_map()` 容器内 tmux 窗口 |
-| 77–89 | `_send_local` / `_send_container` tmux send-keys |
-| 92–103 | `_HELP_TEXT` 群聊帮助文本 |
-| 107–108 | `_cmd_help` |
-| 111–116 | `_USAGE_*_RE` 正则（解析 usage_snapshot.py 输出） |
-| 119–124 | `_pct_color()` 色阶阈值（80 红 / 50 橙 / 其他绿） |
-| 127–177 | `_build_usage_card()` |
-| 180–190 | `_cmd_usage` |
-| 193–212 | `_cmd_tmux` |
-| 215–237 | `_cmd_send` |
-| 240–262 | `_cmd_compact`（含 hook/router 无参分歧） |
-| 265–287 | `_parse_state()` tmux 状态→emoji 映射（🔄/💤/⛔/⚠️/🗜️/❔/🛑/❓） |
-| 290–334 | `_build_team_card()` 3 列栅格 |
-| 337–387 | `_cmd_team`（本机 + 所有容器一起扫） |
-| 390–654 | `/health` 整块（`_host_cpu`, `_host_mem`, `_host_disk`, `_docker_stats`, `_collect_agents`, `_collect_alarms`, `_collect_server_load`） |
-| 686–772 | `_build_server_load_card()` |
-| 775–804 | `_build_server_load_text()`（给 hook 用） |
-| 807–813 | `_cmd_health` |
-| 816–848 | `_cmd_stop` |
-| 852–862 | `_init_msg()` hire 模板（对齐 `scripts/hire_agent.py`） |
-| 864–895 | `_clear_local` / `_clear_container`（两步：/clear + send init_msg） |
-| 898–925 | `_cmd_clear` |
-| 929–932 | `_HANDLERS` 列表（handler 注册处，顺序即匹配顺序） |
-| 937–952 | `dispatch(text) -> (matched, reply)` |
+| `_load_agent_windows()` | 从 team.json 动态读取 agent 窗口列表 |
+| `_host_session()` | 读 team.json 的 session 名 |
+| `_run()` | subprocess 包装 |
+| `_containers()` | 列 `claudeteam-*` docker ps |
+| `_list_windows_local()` | 本机 tmux 窗口名 |
+| `_container_window_map()` | 容器内 tmux 窗口 |
+| `_send_local` / `_send_container` | tmux send-keys |
+| `_HELP_TEXT` | 群聊帮助文本 |
+| `_cmd_help` | /help handler |
+| `_USAGE_*_RE` | 正则（解析 usage_snapshot.py 输出） |
+| `_pct_color()` | 色阶阈值（80 红 / 50 橙 / 其他绿） |
+| `_build_usage_card()` | /usage 卡片构造 |
+| `_cmd_usage` | /usage handler（含 kimi/codex/gemini 分支） |
+| `_cmd_tmux` | /tmux handler |
+| `_cmd_send` | /send handler |
+| `_cmd_compact` | /compact handler（含 hook/router 无参分歧） |
+| `_parse_state()` | tmux 状态→emoji 映射（🔄/💤/⛔/⚠️/🗜️/❔/🛑/❓） |
+| `_build_team_card()` | /team 3 列栅格 |
+| `_cmd_team` | /team handler（本机 + 所有容器一起扫） |
+| `_host_cpu` / `_host_mem` / `_host_disk` / `_docker_stats` / `_collect_agents` / `_collect_alarms` / `_collect_server_load` | /health 数据采集 |
+| `_build_server_load_card()` | /health 卡片构造 |
+| `_build_server_load_text()` | /health 纯文本（给 hook 用） |
+| `_cmd_health` | /health handler |
+| `_cmd_stop` | /stop handler |
+| `_init_msg()` | hire 模板（对齐 `scripts/hire_agent.py`） |
+| `_clear_local` / `_clear_container` | 两步：/clear + send init_msg |
+| `_cmd_clear` | /clear handler |
+| `_HANDLERS` | handler 注册列表（顺序即匹配顺序） |
+| `dispatch(text)` | 主入口 → `(matched, reply)` |
 
 ### 4.2 `scripts/feishu_router.py`（group 入口）
 
@@ -149,13 +151,15 @@
 
 `hooks.UserPromptSubmit[0].hooks` 数组按顺序列出 9 个 hook。顺序即执行顺序；一旦某个 hook 输出 `block`，后续 hook 不再跑。
 
-### 4.5 `scripts/feishu_msg.py`（28fef3d 新增）
+### 4.5 `scripts/feishu_msg.py`（~1050 行）
 
-| 行号 | 内容 |
+> ⚠️ 行号基线已过时。下表改用函数名引用，用 `grep -n` 定位。
+
+| 函数 | 作用 |
 |---|---|
-| 94–105 | `_lark_im_send` 发群消息（文本/图片/卡片） |
-| 176–185 | `build_system_card(content, template="grey")` ← slash 纯文本回显用 |
-| 188– | `build_card(from_agent, to_agent, content, priority)` ← 员工间通讯用（不在本系统范畴） |
+| `_lark_im_send` | 发群消息（文本/图片/卡片），默认 `--as bot` |
+| `build_system_card(content, template="grey")` | slash 纯文本回显用 |
+| `build_card(from_agent, to_agent, content, priority)` | 员工间通讯用（不在本系统范畴） |
 
 ### 4.6 `scripts/slash_smoke_test.py`
 
@@ -163,24 +167,13 @@
 
 ---
 
-## 5. `AGENT_WINDOWS` 白名单 — 设计坑必读
+## 5. `AGENT_WINDOWS` 白名单 — 已动态化
 
-**现状**：白名单目前在 4 处各有一份副本：
+**现状（2026-04-25 更新）**：`scripts/slash_commands.py` 已改为 `_load_agent_windows()` 从 `team.json` 动态读取 agent 列表，不再硬编码。hook 文件中的部分白名单仍为静态副本，但群聊入口（主要路径）已完全动态。
 
-| 文件 | 行号 | 数据结构 | 顺序 |
-|---|---|---|---|
-| `scripts/slash_commands.py` | 25 | `list` | 展示顺序（manager/pm/architect/techlead/devops/security/toolsmith/researcher/backend1…） |
-| `.claude/hooks/send_intercept.py` | 24 | `set` | 无序 |
-| `.claude/hooks/compact_intercept.py` | 22 | `set` | 无序 |
-| `.claude/hooks/team_intercept.py` | 15 | `list` | 同 slash_commands |
-
-**痛点**：招新员工（如最近加的 `toolsmith` / `researcher`）要**四个文件一起改**。漏一处的症状是：该入口对新员工报「⚠️ 未知 agent」。
-
-**未来建议**（未做，仅记录）：抽 `scripts/agent_whitelist.py` 统一来源，所有文件 import。优先级不高，但员工列表稳定后值得做。
-
-**新增员工的应对步骤**：
+**新增员工只需**：
 1. 改 `team.json` 加一条 agent 元数据（emoji/color/role）
-2. 按上表同步改 4 处白名单（追加员工名字符串）
+2. 群聊入口自动生效（`_load_agent_windows()` 每次 dispatch 都重读 team.json）
 3. 跑 `scripts/slash_smoke_test.py` 验一把群聊入口
 4. 手工 `/send <新员工> hi`（本机或容器）验 hook 入口
 

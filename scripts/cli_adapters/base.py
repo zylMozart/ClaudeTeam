@@ -13,7 +13,9 @@ class CliAdapter(ABC):
 
     @abstractmethod
     def busy_markers(self) -> list:
-        """pane 末尾出现任一 → agent 正忙。"""
+        """pane 末尾出现任一 → agent 正忙。
+        since 2026-04-25 only used by quick_idle_hint（is_agent_idle 已切到 pane-diff）。
+        """
 
     @abstractmethod
     def process_name(self) -> str:
@@ -30,3 +32,7 @@ class CliAdapter(ABC):
     def thinking_init_hint(self, thinking: str):
         """根据 thinking level 返回 init 消息追加的 hint,或 None。"""
         return None
+
+    def submit_keys(self) -> list:
+        """tmux 提交当前输入时按顺序尝试的按键。"""
+        return ["Enter", "C-m", "C-j"]

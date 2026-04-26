@@ -7,6 +7,13 @@
 # env bash shebang 让同机器的多 bash 版本按 PATH 顺序决定。
 
 set -e
+
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  echo "❌ bash 4+ 必须。当前版本: $BASH_VERSION"
+  echo "   macOS: brew install bash  然后确保 /usr/local/bin/bash 在 PATH 前面"
+  exit 1
+fi
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -81,16 +88,43 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   exit 1
 fi
 
-# 清理上一轮残留的 router 孤儿进程。
-# tmux kill-session 只杀 shell 前台进程,管道里的 npx/node/python 会被 reparent 到 init,
-# 新 session 启动时会和这些老订阅一起抢事件,导致部分消息丢失(Bug 13)。
-ORPHAN_COUNT=$(pgrep -f "event +subscribe --event-types im.message.receive_v1" | wc -l)
-if [ "$ORPHAN_COUNT" -gt 0 ]; then
-  echo "🧹 清理 $ORPHAN_COUNT 个 router 孤儿进程..."
-  pkill -f "event +subscribe --event-types im.message.receive_v1" 2>/dev/null || true
-  pkill -f "feishu_router.py" 2>/dev/null || true
-  sleep 1
+# 清理本项目上一轮残留的 router 孤儿进程 (Bug 13 防御)。
+# 不做全局 pkill —— 同机其他团队的 router 可能在跑，全局杀会误杀对方。
+# 改用 PID 文件 + profile 匹配，只清理本项目的残留。
+_PID_DIR="${CLAUDETEAM_PID_DIR:-$ROOT/scripts}"
+_ROUTER_PID_FILE="$_PID_DIR/.router.pid"
+_CLEANED=0
+
+# 1) 通过 PID 文件杀本项目的 router (feishu_router.py)
+if [ -f "$_ROUTER_PID_FILE" ]; then
+  _OLD_PID=$(cat "$_ROUTER_PID_FILE" 2>/dev/null)
+  if [ -n "$_OLD_PID" ] && kill -0 "$_OLD_PID" 2>/dev/null; then
+    if grep -qaz "feishu_router" "/proc/$_OLD_PID/cmdline" 2>/dev/null; then
+      echo "🧹 清理本项目上一轮 router 残留 (PID=$_OLD_PID)..."
+      kill "$_OLD_PID" 2>/dev/null || true
+      _CLEANED=1
+    fi
+  fi
+  rm -f "$_ROUTER_PID_FILE"
 fi
+
+# 2) 通过 profile 匹配杀本项目的 lark-cli 事件订阅孤儿
+#    杀掉 router 后 pipe 断开，lark-cli 通常会收到 SIGPIPE 自行退出，
+#    但 WebSocket 阻塞读时可能来不及 —— 这里显式清理兜底。
+_LARK_PROFILE=$(python3 -c "
+import json, sys
+try: print(json.load(open('scripts/runtime_config.json')).get('lark_profile') or '')
+except: print('')
+" 2>/dev/null)
+if [ -n "$_LARK_PROFILE" ]; then
+  for _pid in $(pgrep -f "profile.*${_LARK_PROFILE}.*event.*subscribe" 2>/dev/null); do
+    echo "🧹 清理 profile=$_LARK_PROFILE 的 lark-cli 孤儿 (PID=$_pid)..."
+    kill "$_pid" 2>/dev/null || true
+    _CLEANED=1
+  done
+fi
+
+[ "$_CLEANED" -gt 0 ] && sleep 1
 
 # ── npx warm-up (P1-12) ────────────────────────────────────────
 # 首次运行 npx @larksuite/cli 会从 npm registry 拉取 ~80MB 的包, 期间 stdout
@@ -210,7 +244,7 @@ else
 fi
 export PROBE_AGENTS="${ACTIVE_AGENTS[*]}"
 
-if ! probe_agents 15; then
+if ! probe_agents "${CLAUDETEAM_PROBE_TIMEOUT:-30}"; then
   diagnose_failed_agents
   echo ""
   echo "⚠️  中止:不向死掉的 agent 窗口发送 init 消息,以免污染 bash 历史。"

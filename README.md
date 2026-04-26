@@ -131,8 +131,9 @@ touch scripts/runtime_config.json
 # 4. Build the image.
 docker compose build
 
-# 5. One-shot init: container creates the Bitable / group chat / inbox tables
-#    and writes scripts/runtime_config.json. Exits when done.
+# 5. One-shot init: container creates the Bitable / group chat / inbox /
+#    status / kanban / boss todo tables and writes scripts/runtime_config.json.
+#    Exits when done.
 docker compose run --rm team init
 
 # 6. Start the team for real (manager + workers + router + watchdog).
@@ -143,6 +144,7 @@ Why this flow:
 
 - **Feishu credentials never touch the host.** They live in `.env` and only get materialized inside the container's writable layer at startup. Nothing is written to `~/.lark-cli` on the host. Multiple ClaudeTeam deployments on the same host can't see each other's Feishu identities.
 - **Claude Code credentials are shared via bind mount** (`~/.claude/.credentials.json` + `~/.claude.json`). Same Anthropic account in multiple deployments is the normal case, so this is fine. If you'd rather use an API key, set `ANTHROPIC_API_KEY` in `.env` — the bind mounts become optional.
+- **Kimi/Codex/Gemini credentials live in project-local directories** (`.kimi-credentials/`, `.codex-credentials/`, `.gemini-credentials/`). They are bind-mounted into the container and are gitignored. Copy existing host login state into these directories before first `docker compose up`, or complete each CLI login inside the container.
 - **The whole `scripts/` directory is bind-mounted** so you can edit Python scripts on the host and they take effect on container restart, no rebuild needed.
 
 **Before this works** you still have to do the two manual Feishu console steps once (scopes batch-import + event subscription). See [Phase 1](#phase-1-configure-feishu-app) below — those steps apply to both Quick Start and Docker Deployment.
@@ -154,6 +156,15 @@ docker compose logs -f                                  # follow startup logs
 docker compose exec team tmux attach -t <session>       # attach to tmux
 docker compose down                                     # stop
 ```
+
+**Post-startup health check (important!):** After `docker compose up -d`, attach to the tmux session and **check every agent window** (Ctrl-b + n to cycle). Third-party CLIs (Kimi, Codex, Gemini) often show interactive prompts on first launch that block the agent:
+
+- **"Do you trust this folder?"** — type `y` + Enter to proceed
+- **"A new version is available, update?"** — type `n` + Enter or Ctrl-C to skip
+- **Device-code login** — follow the URL + code shown on screen to authorize
+- **Permission prompts** — Claude Code may ask "Allow access?" — approve as needed
+
+If any agent window is stuck on a prompt, the agent can't start working. Clear all prompts, then verify each agent shows an active CLI cursor (`>` or `$`). Once all windows are clean, your team is fully operational.
 
 The Feishu group chat invite link is printed at the end of `docker compose run --rm team init` — open it on your phone, join the group, and chat with the manager.
 
@@ -181,6 +192,24 @@ From within Claude Code (as manager):
 /hire <role-name> "<role-description>"
 /fire <role-name>
 ```
+
+### Slash Commands
+
+The system provides 9 zero-LLM slash commands that bypass the manager entirely for instant, deterministic responses:
+
+| Command | Description |
+|---|---|
+| `/help` | Show available commands |
+| `/team` | Show all agent statuses (tmux state + one-line brief) |
+| `/usage` | Show Claude Max quota + Extra usage percentages |
+| `/health` | Show host CPU/memory/disk + container resources |
+| `/tmux [agent] [lines]` | Capture tail of an agent's tmux pane |
+| `/send <agent> <msg>` | Inject a message into an agent's tmux window |
+| `/compact [agent]` | Trigger context compaction on an agent |
+| `/stop <agent>` | Send Ctrl-C to an agent's tmux window |
+| `/clear <agent>` | Clear and re-initialize an agent (loses session memory) |
+
+Type these in the Feishu group chat or in the manager's Claude Code prompt. See [docs/slash_commands_system.md](docs/slash_commands_system.md) for architecture details.
 
 ---
 
@@ -292,8 +321,8 @@ ClaudeTeam supports **heterogeneous teams** — different agents can run differe
 
 Each agent in `team.json` supports three optional fields:
 - `cli` — which CLI to use (default: `claude-code`)
-- `model` — which model to use (e.g., `opus`, `sonnet`, `haiku`)
-- `thinking` — thinking depth: `high`, `default`, `low`, or `off`
+- `model` — which model to use (e.g., `opus`, `sonnet`, `haiku`, `gpt-5.4`, `gpt-5.3-codex`)
+- `thinking` — thinking depth: `xhigh`, `high`, `default`, `low`, or `off`
 
 The manager (or team lead) controls model and thinking assignments at runtime.
 
@@ -322,6 +351,13 @@ Open the URL in your browser, authorize with your Moonshot account, and the kimi
 
 **Credential persistence:** The `.kimi-credentials/` directory in the project root is bind-mounted into the container (see `docker-compose.yml`). After first login, subsequent container recreations (`docker compose down && up`) reuse the saved tokens automatically — no re-login needed.
 
+If the host already has a known-good Kimi login:
+
+```bash
+mkdir -p .kimi-credentials
+rsync -a ~/.kimi/ .kimi-credentials/
+```
+
 **If kimi login expires:** Remove the `.kimi-credentials/` directory and restart the container. The kimi agents will prompt for login again.
 
 ```bash
@@ -340,9 +376,29 @@ Enter this one-time code: XXXX-XXXXX
 
 Open the URL, sign in with your ChatGPT account, and enter the code. Credentials are saved to `.codex-credentials/` (bind-mounted) and persist across container recreations.
 
+If the host already has a Codex login:
+
+```bash
+mkdir -p .codex-credentials
+rsync -a ~/.codex/ .codex-credentials/
+```
+
+Copying `.codex` is necessary but not always sufficient for Codex usage in a new container. If `/usage codex` or `/usage all` still reports HTTP `403` from the usage API and `401` during refresh, treat it as a container login/permission problem, not as a missing mount. Run `codex` inside the container and complete ChatGPT login there, or use host-side `codex-cli-usage status` until a host-side usage bridge is available.
+
 ### Gemini CLI credential setup (Docker)
 
 Gemini agents prompt for **Google OAuth** on first run. You'll see a long Google OAuth URL — open it in your browser, authorize, and paste the authorization code back into the terminal. Credentials are saved to `.gemini-credentials/` (bind-mounted) and persist across container recreations.
+
+If the host already has a Gemini login:
+
+```bash
+mkdir -p .gemini-credentials
+rsync -a ~/.gemini/ .gemini-credentials/
+```
+
+If copied Gemini credentials are expired, run `gemini` inside the container and complete Google login again.
+
+Do not commit `.kimi-credentials/`, `.codex-credentials/`, or `.gemini-credentials/`; they contain OAuth/token material and are intentionally listed in `.gitignore`.
 
 ### Credential persistence summary
 
@@ -367,6 +423,50 @@ The `/usage` slash command queries real-time quota for each CLI. These tools are
 | Gemini | `gemini-cli-usage` | `uv tool install gemini-cli-usage` | Per-model % + reset time |
 
 Usage: `/usage` (CC default), `/usage kimi`, `/usage codex`, `/usage gemini`, `/usage all`.
+
+`/usage all` also runs a lightweight credential inventory before each provider query. It always attempts all four providers (Claude, Kimi, Codex, Gemini) because its product goal is "all CLI usage", not "only CLIs currently used by team agents". If a CLI has no tools or credentials, the section says so explicitly; if credentials exist but a provider rejects refresh or usage calls, the section reports the actionable status such as permission denied, expired login, or container-local re-login required. `team.json` still controls which agents are launched, but it does not hide an otherwise queryable CLI from `/usage all`.
+
+### Boss todo Bitable
+
+Boss todos are blocking actions that only the user/boss can complete: OAuth login, credential handoff, approval, PR publishing, external billing, or explicit confirmation. They are stored in a dedicated Feishu Bitable table named `老板代办`; they are not written to `task_tracker.py` or employee task files.
+
+New `setup.py` runs create or reuse this table automatically and writes:
+
+```json
+{
+  "boss_todo": {
+    "base_token": "<same as bitable_app_token>",
+    "table_id": "tbl...",
+    "table_name": "老板代办",
+    "view_link": "",
+    "dedupe_keys": ["来源任务", "标题"]
+  }
+}
+```
+
+For an existing deployment whose `runtime_config.json` predates this table, run:
+
+```bash
+python3 scripts/setup.py ensure-boss-todo
+```
+
+The runtime reader also accepts the legacy flat keys `boss_todo_table_id`, `boss_todo_link`, and `boss_todo_dedupe_keys`. If no table ID is configured, `scripts/boss_todo.py` fails loudly and tells you to run `ensure-boss-todo` or ask devops to write the config.
+
+Common commands:
+
+```bash
+python3 scripts/boss_todo.py upsert "Gemini OAuth 重新登录" \
+  --source-task usage-credential-p0 \
+  --source-type login \
+  --priority 高 \
+  --note "token 已过期，需要老板重新登录"
+
+python3 scripts/boss_todo.py list --status 待处理
+
+python3 scripts/boss_todo.py done "Gemini OAuth 重新登录" \
+  --source-task usage-credential-p0 \
+  --note "老板已登录，devops 验证通过"
+```
 
 ### Adding a new adapter
 
@@ -396,7 +496,7 @@ A: Not out of the box. The messaging layer is Feishu-specific.
 A: Tested up to 10. 8GB RAM handles 5 comfortably.
 
 **Q: Is `--dangerously-skip-permissions` safe?**
-A: Required for autonomous operation. Only use in trusted environments.
+A: Required for autonomous operation. Only use in trusted environments. When running as root (common in containers/VMs), prefix with `IS_SANDBOX=1` — without it, Claude Code refuses to start.
 
 **Q: What if an agent crashes?**
 A: The watchdog auto-restarts it and notifies you in Feishu.
@@ -540,7 +640,7 @@ Tell the user:
 cat config/feishu_scopes.json
 ```
 
-The shipped file is intentionally minimal: 4 umbrella scopes (`bitable:app`, `im:chat`, `im:message`, `im:resource`) plus three explicit record-level scopes (`base:record:read/create/update`). Why mix umbrellas and fine-grained? Because Feishu's umbrellas are inconsistent: `im:message` does cover its sub-permissions like `im:message:send_as_bot`, but `bitable:app` does **NOT** cover `base:record:*` operations — record CRUD has to be granted explicitly. If you ever see `99991672 Access denied. One of the following scopes is required: [some:scope]` at runtime, add `some:scope` to `feishu_scopes.json`, re-import, and re-publish.
+The shipped file includes both tenant and user scopes for the full ClaudeTeam feature set: IM, Bitable/Base, Docs/Docx, Drive, Wiki, Sheets, Tasks, contacts, search, and long-lived user authorization via `offline_access`. Feishu's umbrella scopes are inconsistent, so the file intentionally keeps both broad scopes such as `im:message` / `bitable:app` and fine-grained scopes such as `base:record:*`. If you ever see `99991672 Access denied. One of the following scopes is required: [some:scope]` at runtime, add `some:scope` to `feishu_scopes.json`, re-import, and re-publish.
 
 **⚠️ Don't forget to publish.** After adding the scopes, click **"Create version & Publish"** in the top-right corner of the developer console. Without publishing, every API call will keep failing with `99991672`.
 

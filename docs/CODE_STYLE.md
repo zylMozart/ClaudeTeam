@@ -62,7 +62,7 @@ from config import load_runtime_config, save_runtime_config
 
 **禁止：**
 - 在脚本中硬编码飞书凭据（lark-cli 统一管理认证，`lark-cli config init`）
-- 直接读取 `team.json`（用 `config.py` 导出的 `AGENTS`、`TMUX_SESSION`）
+- 新脚本直接读取 `team.json`（优先使用 `config.py` 导出的 `AGENTS`、`TMUX_SESSION`）。需要热加载的守护进程（如 `feishu_router.py`、`slash_commands.py`）可直接读 `team.json`（mtime-based reload），因为 `config.py` 的模块级缓存无法覆盖运行时 team.json 变更
 
 **运行时配置**（`runtime_config.json`）通过 `load_runtime_config()` / `save_runtime_config()` 访问。
 
@@ -75,7 +75,7 @@ from config import load_runtime_config, save_runtime_config
 所有飞书 API 操作通过 `lark-cli` （`@larksuite/cli`）执行，不直接使用 `requests`：
 
 ```python
-LARK_CLI = ["npx", "@larksuite/cli"]
+from config import LARK_CLI  # 自动带 --profile 参数，支持多团队 profile 隔离
 
 def _lark(args, label="", timeout=30):
     r = subprocess.run(LARK_CLI + args, capture_output=True, text=True, timeout=timeout)
@@ -85,7 +85,7 @@ def _lark(args, label="", timeout=30):
     return json.loads(r.stdout) if r.stdout.strip() else {}
 ```
 
-认证由 lark-cli 自动管理（`lark-cli config init` 一次性配置），无需手动获取 token。
+认证由 lark-cli 自动管理（`lark-cli config init` 一次性配置），无需手动获取 token。`config.py` 的 `get_lark_cli()` 会自动检测当前 profile 并拼入 `--profile` 参数。
 
 ### 常用命令
 

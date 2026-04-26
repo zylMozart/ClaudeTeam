@@ -124,9 +124,23 @@ def is_running_by_pid_file(pid_file, match_str=None):
     return True
 
 def is_running(match_str):
-    """降级方案：pgrep 匹配（用于没有 PID 文件的进程）"""
-    r = subprocess.run(["pgrep", "-f", match_str], capture_output=True)
-    return r.returncode == 0
+    """降级方案：pgrep 匹配（用于没有 PID 文件的进程）。
+    只匹配 cwd 指向本项目的进程，避免同机多团队误判。
+    """
+    r = subprocess.run(["pgrep", "-f", match_str], capture_output=True, text=True)
+    if r.returncode != 0:
+        return False
+    for line in r.stdout.strip().split('\n'):
+        pid = line.strip()
+        if not pid:
+            continue
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            continue
+        if cwd == PROJECT_ROOT:
+            return True
+    return False
 
 def _kill_by_pid_file(pid_file, label):
     """SIGTERM → (1s) → SIGKILL the PID in pid_file, then remove the file.
@@ -214,14 +228,12 @@ def _kill_orphan_lark_subscribers():
             if pid == my_pid or not _is_lark_subscribe(pid):
                 continue
             try:
-                with open(f"/proc/{pid}/status") as f:
-                    for line in f:
-                        if line.startswith("PPid:"):
-                            if line.split()[1] == "1":
-                                victims.append(pid)
-                            break
+                cwd = os.readlink(f"/proc/{pid}/cwd")
             except OSError:
                 continue
+            if cwd != PROJECT_ROOT:
+                continue
+            victims.append(pid)
 
     for pid in victims:
         if pid == my_pid:

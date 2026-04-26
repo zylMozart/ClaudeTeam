@@ -16,8 +16,12 @@ business messages for Feishu cards, inbox records, tmux prompts, and logs.
 
 - No live Feishu send, tmux injection, or dangerous slash smoke is required for
   this phase.
-- No replacement of current `build_card`, `cmd_say`, router prompt, or queue
-  entry points until this spec and local tests are accepted.
+- ~~No replacement of current `build_card`, `cmd_say`, router prompt, or queue
+  entry points until this spec and local tests are accepted.~~
+  **Update (2026-04-25):** `build_card`, `cmd_say`, `feishu_router`, and
+  `msg_queue` now import and use renderer functions (`render_inbox_text`,
+  `split_feishu_markdown`, `render_tmux_prompt`). The original non-goal has
+  been partially superseded by actual integration.
 
 ## Message Envelope
 
@@ -30,16 +34,16 @@ All team messages should be represented by a neutral envelope before rendering:
   "priority": "高|中|低",
   "title": "short title",
   "body_plain": "canonical plain text body",
-  "blocks": [],
-  "actions": [],
+  "blocks": [],           // 规划字段，未实现
+  "actions": [],          // 规划字段，未实现
   "source": {
     "from": "manager",
     "to": "toolsmith",
     "channel": "feishu|router|cli|slash"
   },
-  "safety": {
+  "safety": {             // 规划字段，未实现
     "strip_runtime_commands": true,
-    "max_card_chars": 6000,
+    "max_card_chars": 3500,
     "max_prompt_chars": 30000
   }
 }
@@ -86,8 +90,9 @@ Markdown guidance.
   output.
 - Always close fenced blocks.
 - Prefer a language hint for readability when known.
-- Very long code/log content should be stored as a file or summarized with a
-  path reference instead of pasted into a card.
+- Very long code/log content should be split across multiple cards or stored as
+  an explicit file/document link. User-facing cards must not silently truncate
+  business text or show internal preview-truncation notices.
 
 ### Links
 
@@ -180,7 +185,7 @@ The local regression script must cover these cases for every renderer:
 | code blocks | fenced blocks remain balanced |
 | links | Markdown links preserved; suspicious URLs rejected later |
 | table fallback | pipe tables become flat lists |
-| long message | over-limit content summarized/truncated with notice |
+| long message | over-limit content split into multiple cards/blocks without user-visible truncation text |
 | runtime command | `CODEX_AGENT=... codex ...` removed from rendered output |
 | multilingual | Chinese/English text preserved |
 | emoji | emoji preserved with adjacent text |
@@ -188,10 +193,15 @@ The local regression script must cover these cases for every renderer:
 
 ## Proposed Implementation Phases
 
-1. Keep this spec and local regression snapshots under review.
-2. Add a small renderer module with pure functions only.
-3. Wire `build_card`, `cmd_say`, `send/direct`, router prompts, queue delivery,
+1. ✅ Keep this spec and local regression snapshots under review.
+2. ✅ Add a small renderer module with pure functions only.
+   (`scripts/message_renderer.py` — `MessageEnvelope`, `render_inbox_text`,
+   `render_tmux_prompt`, `split_feishu_markdown`, etc.)
+3. 🔶 Wire `build_card`, `cmd_say`, `send/direct`, router prompts, queue delivery,
    slash card text, and workspace logs to the renderer.
+   (Partially done: `build_card`, `cmd_say`, `feishu_router`, `msg_queue` now
+   import renderer functions. `slash card text` and `workspace logs` not yet wired.)
 4. Add safe Feishu card snapshot checks.
-5. Run live safe smoke only after manager approval.
-
+5. Keep truncation out of renderer output; delivery layers must split card
+   markdown before sending.
+6. Run live safe smoke only after manager approval.

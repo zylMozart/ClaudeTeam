@@ -6,7 +6,7 @@
 本脚本作为 agent 的统一 CLI 入口，保持接口稳定。
 
 用法:
-  python3 scripts/feishu_msg.py send <收件人> <发件人> "<消息>" [优先级]
+  python3 scripts/feishu_msg.py send <收件人> <发件人> "<消息>" [优先级] [--task <id>] [--file <路径>] [--priority <值>] [--content <消息>]
   python3 scripts/feishu_msg.py direct <收件人> <发件人> "<消息>"
   python3 scripts/feishu_msg.py say <发件人> ["<消息>"] [--image <路径>] [--file <路径>]
   python3 scripts/feishu_msg.py inbox <agent名称>
@@ -344,9 +344,8 @@ def _check_lark_result(result, action, *, fatal=True):
 def _lark_im_send(chat_id, content=None, markdown=None, image=None, card=None):
     """通过 lark-cli 向群组发送消息。
 
-    默认 --as bot：以机器人身份发言，老板能收到通知。
-    要求 lark-cli 已经 device-flow 拿到 user_access_token；没拿到的部署
-    需要先跑 `lark-cli auth login --scope ...`。
+    默认 --as bot：以机器人身份发言。如需以用户身份发言（--as user），
+    需要先跑 `lark-cli auth login --domain all` 完成 device-flow 授权。
     """
     args = ["im", "+messages-send", "--chat-id", chat_id, "--as", "bot"]
     if markdown:
