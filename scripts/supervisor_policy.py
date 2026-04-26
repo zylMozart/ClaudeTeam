@@ -40,6 +40,8 @@ evidence 字段:
     4. keep_alive 与 force_sleep 同时命中同一 agent → keep_alive 胜,
        warn_manager(msg) 发告警 (msg 必须含 agent 名 + "conflict" 或 "冲突")
 """
+from __future__ import annotations
+
 from datetime import datetime, timezone
 
 

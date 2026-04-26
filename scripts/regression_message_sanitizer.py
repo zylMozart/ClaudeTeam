@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Regression checks for Codex spawn command leakage into business messages."""
+import contextlib
+import io
 import json
+import os
 import tempfile
+import sys
+import time
 
 import feishu_msg
 import feishu_router
@@ -30,8 +35,14 @@ def check_sanitizer():
         "whole line": (f"{SPAWN}\n真实任务", "真实任务"),
         "glued prefix": (f"{SPAWN}真实任务", "真实任务"),
         "prefix with model": (f"{SPAWN_MODEL} 真实任务", "真实任务"),
-        "suffix": (f"真实任务 {SPAWN}", "真实任务"),
+        "suffix example preserved": (f"真实任务 {SPAWN}", f"真实任务 {SPAWN}"),
         "middle multiline": (f"第一行\n{SPAWN_MODEL}\n第二行", "第一行\n第二行"),
+        "placeholder example preserved": (
+            "CODEX_AGENT=<agent> codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'",
+            "CODEX_AGENT=&lt;agent&gt; codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'",
+        ),
     }
     for label, (raw, expected) in cases.items():
         assert_eq(feishu_msg.sanitize_agent_message(raw), expected, label)
@@ -42,17 +53,23 @@ def check_send_direct():
     old = (
         feishu_msg.bitable_insert_message,
         feishu_msg.post_to_group,
+        feishu_msg.CHAT,
+        feishu_msg._lark_im_send,
         feishu_msg.ws_log,
         feishu_msg._notify_agent_tmux,
     )
     try:
         feishu_msg.bitable_insert_message = (
-            lambda to, frm, content, priority:
+            lambda to, frm, content, priority, **kw:
             captured.append(("bitable", to, frm, content, priority)) or "rid"
         )
         feishu_msg.post_to_group = (
             lambda frm, to, content, priority:
             captured.append(("group", to, frm, content, priority)) or True
+        )
+        feishu_msg.CHAT = lambda: "chat-id"
+        feishu_msg._lark_im_send = (
+            lambda chat_id, **kw: captured.append(("direct_group", chat_id, kw)) or {}
         )
         feishu_msg.ws_log = (
             lambda agent, typ, content, ref="":
@@ -63,11 +80,13 @@ def check_send_direct():
             captured.append(("notify", to, frm, content))
         )
         feishu_msg.cmd_send("devops", "manager", f"{SPAWN}真实任务", "高")
-        feishu_msg.cmd_direct("toolsmith", "manager", f"直连任务 {SPAWN_MODEL}")
+        feishu_msg.cmd_direct("toolsmith", "manager", f"直连任务\n{SPAWN_MODEL}")
     finally:
         (
             feishu_msg.bitable_insert_message,
             feishu_msg.post_to_group,
+            feishu_msg.CHAT,
+            feishu_msg._lark_im_send,
             feishu_msg.ws_log,
             feishu_msg._notify_agent_tmux,
         ) = old
@@ -75,6 +94,98 @@ def check_send_direct():
     joined = json.dumps(captured, ensure_ascii=False)
     assert_not_contains(joined, "CODEX_AGENT=", "send/direct")
     assert "真实任务" in joined and "直连任务" in joined
+
+
+def check_completion_report_local_unread_when_projection_fails():
+    old = (
+        feishu_msg.LOCAL_FACTS_DIR,
+        feishu_msg.LOCAL_MESSAGES_FILE,
+        feishu_msg._bitable_insert_projection,
+        feishu_msg.post_to_group,
+        feishu_msg.ws_log,
+        feishu_msg._notify_agent_tmux,
+    )
+    old_flag = os.environ.get("CLAUDETEAM_BITABLE_PROJECTION")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            feishu_msg.LOCAL_FACTS_DIR = tmp
+            feishu_msg.LOCAL_MESSAGES_FILE = f"{tmp}/messages.jsonl"
+            feishu_msg._bitable_insert_projection = (
+                lambda to, frm, content, priority: None
+            )
+            feishu_msg.post_to_group = lambda *a, **kw: True
+            feishu_msg.ws_log = lambda *a, **kw: None
+            feishu_msg._notify_agent_tmux = lambda *a, **kw: None
+            os.environ["CLAUDETEAM_BITABLE_PROJECTION"] = "1"
+
+            feishu_msg.cmd_send(
+                "manager",
+                "toolsmith",
+                "完成回报：已处理 completion report 链路",
+                "高",
+                "task-completion-local",
+            )
+            unread = feishu_msg._local_list_messages("manager", unread_only=True)
+            assert unread is not None, "local unread query failed"
+            assert_eq(len(unread), 1, "completion report unread count")
+            rec = unread[0]
+            assert_eq(rec["from"], "toolsmith", "completion report sender")
+            assert_eq(rec["to"], "manager", "completion report recipient")
+            assert_eq(rec["task_id"], "task-completion-local", "completion report task_id")
+            assert "completion report 链路" in rec["content"], rec
+    finally:
+        (
+            feishu_msg.LOCAL_FACTS_DIR,
+            feishu_msg.LOCAL_MESSAGES_FILE,
+            feishu_msg._bitable_insert_projection,
+            feishu_msg.post_to_group,
+            feishu_msg.ws_log,
+            feishu_msg._notify_agent_tmux,
+        ) = old
+        if old_flag is None:
+            os.environ.pop("CLAUDETEAM_BITABLE_PROJECTION", None)
+        else:
+            os.environ["CLAUDETEAM_BITABLE_PROJECTION"] = old_flag
+
+
+def check_say_file():
+    captured = []
+    old_argv = sys.argv
+    old = (
+        feishu_msg._lark_im_send,
+        feishu_msg.CHAT,
+        feishu_msg.ws_log,
+    )
+    with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as tmp:
+        tmp.write(
+            "Codex command:\n"
+            "CODEX_AGENT=<agent> codex --dangerously-bypass-approvals-and-sandbox "
+            "--model gpt-5.4 -c 'model_reasoning_effort=\"high\"'\n"
+            "Use <model> safely."
+        )
+        tmp.flush()
+        try:
+            sys.argv = ["feishu_msg.py", "say", "manager", "--file", tmp.name]
+            feishu_msg.CHAT = lambda: "chat-id"
+            feishu_msg._lark_im_send = (
+                lambda chat_id, **kw: captured.append((chat_id, kw)) or {}
+            )
+            feishu_msg.ws_log = lambda *a, **kw: None
+            feishu_msg.main()
+        finally:
+            sys.argv = old_argv
+            (
+                feishu_msg._lark_im_send,
+                feishu_msg.CHAT,
+                feishu_msg.ws_log,
+            ) = old
+
+    assert captured, "say --file did not send"
+    card = captured[0][1]["card"]
+    content = card["elements"][0]["content"]
+    assert "CODEX_AGENT=&lt;agent&gt;" in content, content
+    assert "model_reasoning_effort" in content, content
+    assert "&lt;model&gt;" in content, content
 
 
 def check_queue():
@@ -127,7 +238,7 @@ def check_router_default_route():
             "message_id": "regression-msg-1",
             "chat_id": "",
             "sender_id": "user-open-id",
-            "text": f"{SPAWN_MODEL} 默认路由任务 {SPAWN}",
+            "text": f"{SPAWN_MODEL}\n默认路由任务",
             "message_type": "text",
         })
     finally:
@@ -144,6 +255,197 @@ def check_router_default_route():
     assert_eq(agent, "manager", "router default target")
     assert_not_contains(prompt, "CODEX_AGENT=", "router default route")
     assert "默认路由任务" in prompt
+
+
+def check_router_at_manager_route():
+    injected = []
+    old = (
+        feishu_router._state.reload_agents,
+        feishu_router.wake_on_deliver,
+        feishu_router.has_pending_messages,
+        feishu_router.inject_when_idle,
+        feishu_router.enqueue_message,
+        feishu_router._advance_cursor,
+    )
+    try:
+        feishu_router._state.seen_ids.clear()
+        feishu_router._state.chat_id = ""
+        feishu_router._state.reload_agents = lambda: ["manager", "toolsmith"]
+        feishu_router.wake_on_deliver = lambda agent: True
+        feishu_router.has_pending_messages = lambda agent: False
+        feishu_router.inject_when_idle = (
+            lambda session, agent, prompt, **kw:
+            injected.append((agent, prompt, kw)) or True
+        )
+        feishu_router.enqueue_message = (
+            lambda agent, prompt, msg_id, is_user_msg=False:
+            injected.append((agent, prompt, {"queued": True, "is_user_msg": is_user_msg}))
+        )
+        feishu_router._advance_cursor = lambda: None
+        feishu_router.handle_event({
+            "message_id": "regression-at-manager",
+            "chat_id": "",
+            "sender_id": "user-open-id",
+            "sender_type": "user",
+            "text": "@manager 请看这条消息",
+            "message_type": "text",
+        })
+    finally:
+        (
+            feishu_router._state.reload_agents,
+            feishu_router.wake_on_deliver,
+            feishu_router.has_pending_messages,
+            feishu_router.inject_when_idle,
+            feishu_router.enqueue_message,
+            feishu_router._advance_cursor,
+        ) = old
+
+    assert injected, "@manager route did not inject"
+    agent, prompt, meta = injected[0]
+    assert_eq(agent, "manager", "@manager target")
+    assert meta.get("queued") or "群聊消息" in prompt
+
+
+def check_router_bracket_sender_text_not_swallowed():
+    injected = []
+    old = (
+        feishu_router._state.reload_agents,
+        feishu_router.wake_on_deliver,
+        feishu_router.has_pending_messages,
+        feishu_router.inject_when_idle,
+        feishu_router.enqueue_message,
+        feishu_router._advance_cursor,
+    )
+    try:
+        feishu_router._state.seen_ids.clear()
+        feishu_router._state.chat_id = ""
+        feishu_router._state.reload_agents = lambda: ["manager", "toolsmith"]
+        feishu_router.wake_on_deliver = lambda agent: True
+        feishu_router.has_pending_messages = lambda agent: False
+        feishu_router.inject_when_idle = (
+            lambda session, agent, prompt, **kw:
+            injected.append((agent, prompt, kw)) or True
+        )
+        feishu_router.enqueue_message = (
+            lambda agent, prompt, msg_id, is_user_msg=False:
+            injected.append((agent, prompt, {"queued": True, "is_user_msg": is_user_msg}))
+        )
+        feishu_router._advance_cursor = lambda: None
+        feishu_router.handle_event({
+            "message_id": "regression-bracket-manager",
+            "chat_id": "",
+            "sender_id": "user-open-id",
+            "sender_type": "user",
+            "text": "【manager 你好】这是一条普通用户正文，不应被吞",
+            "message_type": "text",
+        })
+    finally:
+        (
+            feishu_router._state.reload_agents,
+            feishu_router.wake_on_deliver,
+            feishu_router.has_pending_messages,
+            feishu_router.inject_when_idle,
+            feishu_router.enqueue_message,
+            feishu_router._advance_cursor,
+        ) = old
+
+    assert injected, "bracket-style user text was swallowed"
+    agent, prompt, meta = injected[0]
+    assert_eq(agent, "manager", "bracket default target")
+    assert meta.get("queued") or "不应被吞" in prompt
+
+
+def check_user_pending_not_expired_on_save():
+    old_dir = msg_queue.PENDING_DIR
+    old_insert = msg_queue.bitable_insert_message
+    alerts = []
+    out = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            msg_queue.PENDING_DIR = tmp
+            msg_queue.bitable_insert_message = (
+                lambda to, frm, content, priority, **kw:
+                alerts.append((to, frm, content, priority)) or f"rid-{to}"
+            )
+            msg_queue.enqueue_message("manager", "用户待处理消息", "user-expired", is_user_msg=True)
+            queue_file = f"{tmp}/manager.json"
+            with open(queue_file) as f:
+                queue = json.load(f)
+            queue[0]["queued_at"] = time.time() - msg_queue.EXPIRE_SECS - 5
+            with contextlib.redirect_stdout(out):
+                msg_queue._save_queue_unlocked("manager", queue)
+                with open(queue_file) as f:
+                    saved_once = json.load(f)
+                msg_queue._save_queue_unlocked("manager", saved_once)
+            with open(queue_file) as f:
+                saved = json.load(f)
+        finally:
+            msg_queue.PENDING_DIR = old_dir
+            msg_queue.bitable_insert_message = old_insert
+
+    assert_eq(len(saved), 1, "expired user pending should be kept")
+    assert saved[0]["is_user_msg"], saved
+    assert saved[0].get("expiry_alerted_at"), saved
+    assert "保留不丢弃" in out.getvalue(), out.getvalue()
+    assert_eq([a[0] for a in alerts], ["manager", "devops"], "expiry alert recipients throttled")
+    joined = json.dumps(alerts, ensure_ascii=False)
+    assert "agent: manager" in joined, joined
+    assert "msg_id: user-exp" in joined, joined
+    assert "等待秒数:" in joined, joined
+    assert f"queue file: {tmp}/manager.json" in joined, joined
+    assert "python3 scripts/feishu_msg.py inbox manager" in joined, joined
+    mirror = [a for a in alerts if "群聊消息待处理" in a[2]]
+    expiry = [a for a in alerts if "Router pending 告警" in a[2]]
+    assert_eq(len(mirror), 1, "manager mirror count")
+    assert_eq(mirror[0][0], "manager", "manager mirror recipient")
+    assert_eq(mirror[0][1], "router", "manager mirror sender")
+    assert_eq(mirror[0][3], "高", "manager mirror priority")
+    assert_eq([a[0] for a in expiry], ["devops"], "expiry alert recipients deduped")
+    assert all(a[1] == "router" and a[3] == "中" for a in expiry), alerts
+
+
+def check_busy_user_pending_not_silent_drop():
+    old_dir = msg_queue.PENDING_DIR
+    old_idle = msg_queue.is_agent_idle
+    old_inject = msg_queue.inject_when_idle
+    old_insert = msg_queue.bitable_insert_message
+    alerts = []
+    out = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            msg_queue.PENDING_DIR = tmp
+            msg_queue.bitable_insert_message = (
+                lambda to, frm, content, priority, **kw:
+                alerts.append((to, frm, content, priority)) or f"rid-{to}"
+            )
+            msg_queue.enqueue_message("manager", "忙碌时的用户消息", "busy-user-expired", is_user_msg=True)
+            queue_file = f"{tmp}/manager.json"
+            with open(queue_file) as f:
+                queue = json.load(f)
+            queue[0]["queued_at"] = time.time() - msg_queue.EXPIRE_SECS - 5
+            with open(queue_file, "w") as f:
+                json.dump(queue, f, ensure_ascii=False)
+
+            msg_queue.is_agent_idle = lambda session, agent: False
+            msg_queue.inject_when_idle = lambda *args, **kwargs: False
+            with contextlib.redirect_stdout(out):
+                msg_queue.dequeue_pending("manager")
+            with open(queue_file) as f:
+                saved = json.load(f)
+        finally:
+            msg_queue.PENDING_DIR = old_dir
+            msg_queue.is_agent_idle = old_idle
+            msg_queue.inject_when_idle = old_inject
+            msg_queue.bitable_insert_message = old_insert
+
+    assert_eq(len(saved), 1, "busy expired user pending should be kept")
+    assert saved[0]["is_user_msg"], saved
+    assert saved[0].get("expiry_alerted_at"), saved
+    assert "保留不丢弃" in out.getvalue(), out.getvalue()
+    assert_eq([a[0] for a in alerts], ["manager", "devops"], "busy expiry alert recipients")
+    joined = json.dumps(alerts, ensure_ascii=False)
+    assert "msg_id: busy-use" in joined, joined
+    assert "queue file:" in joined, joined
 
 
 def check_history_replay_route():
@@ -171,7 +473,7 @@ def check_history_replay_route():
                 "sender": {"sender_type": "user", "id": "user-open-id"},
                 "msg_type": "text",
                 "content": json.dumps({
-                    "text": f"{SPAWN} replay任务 {SPAWN_MODEL}"
+                    "text": f"{SPAWN}\nreplay任务\n{SPAWN_MODEL}"
                 }),
             }],
             "has_more": False,
@@ -209,9 +511,8 @@ def check_history_replay_route():
 
 def check_send_flag_aware_argparse():
     """send 子命令必须识别 --priority/--content；未识别 -- flag 必须 fail loud。"""
-    import sys as _sys
     captured = []
-    old_argv = _sys.argv
+    old_argv = sys.argv
     old_send = feishu_msg.cmd_send
     feishu_msg.cmd_send = (
         lambda to, frm, msg, prio, task: captured.append(
@@ -220,7 +521,7 @@ def check_send_flag_aware_argparse():
     )
     try:
         # 1) --priority + --content 不再被当 message body
-        _sys.argv = [
+        sys.argv = [
             "feishu_msg.py", "send",
             "qa_smoke", "manager",
             "--priority", "中",
@@ -236,7 +537,7 @@ def check_send_flag_aware_argparse():
 
         # 2) --content 优先级 > 位置参 message
         captured.clear()
-        _sys.argv = [
+        sys.argv = [
             "feishu_msg.py", "send",
             "qa_smoke", "manager", "位置参 body",
             "--content", "覆盖正文",
@@ -246,7 +547,7 @@ def check_send_flag_aware_argparse():
 
         # 3) 未识别的 -- flag 立即 fail（防呆，禁止 silent drop）
         captured.clear()
-        _sys.argv = [
+        sys.argv = [
             "feishu_msg.py", "send",
             "qa_smoke", "manager", "正文",
             "--unknown-flag", "x",
@@ -259,16 +560,22 @@ def check_send_flag_aware_argparse():
             raise AssertionError("send 未识别 flag 应 SystemExit")
         assert not captured, "send 不应在未知 flag 时调用 cmd_send"
     finally:
-        _sys.argv = old_argv
+        sys.argv = old_argv
         feishu_msg.cmd_send = old_send
 
 
 def main():
     check_sanitizer()
     check_send_direct()
-    check_queue()
+    check_completion_report_local_unread_when_projection_fails()
+    check_say_file()
     check_send_flag_aware_argparse()
+    check_queue()
     check_router_default_route()
+    check_router_at_manager_route()
+    check_router_bracket_sender_text_not_swallowed()
+    check_user_pending_not_expired_on_save()
+    check_busy_user_pending_not_silent_drop()
     check_history_replay_route()
     print("✅ message sanitizer regression passed")
 

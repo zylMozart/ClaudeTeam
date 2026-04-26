@@ -55,12 +55,15 @@ def collect_team_status(session=None):
     # 延迟导入避免循环依赖
     import sys
     sys.path.insert(0, _SCRIPTS_DIR)
+    from concurrent.futures import ThreadPoolExecutor
     from cli_adapters import adapter_for_agent
     from config import resolve_model_for_agent, resolve_thinking_for_agent
     from tmux_utils import is_agent_idle
 
-    rows = []
-    for name, info in agents.items():
+    items = list(agents.items())
+
+    def probe(item):
+        name, info = item
         adapter = adapter_for_agent(name)
         try:
             model = resolve_model_for_agent(name)
@@ -70,10 +73,8 @@ def collect_team_status(session=None):
             thinking = resolve_thinking_for_agent(name)
         except Exception:
             thinking = "?"
-
         cli = info.get("cli", "claude-code")
         role = info.get("role", name)
-
         pane = _capture_last(session, name)
         if pane is None:
             status = "offline"
@@ -83,11 +84,14 @@ def collect_team_status(session=None):
             status = "busy"
         else:
             status = "idle"
-
-        rows.append({
+        return {
             "name": name, "role": role, "cli": cli,
             "model": model, "thinking": thinking, "status": status,
-        })
+        }
+
+    # 并行 is_agent_idle：N agent × 3s 串行 → 整体 ~3s。
+    with ThreadPoolExecutor(max_workers=max(1, len(items))) as ex:
+        rows = list(ex.map(probe, items))
     return rows
 
 

@@ -9,6 +9,8 @@
   matched=True 时 reply 是要回显给用户的文本；matched=False 时交给正常路径。
   任何 side effect（tmux send-keys / subprocess）都在这里执行。
 """
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -19,6 +21,16 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from cli_credentials import (
+    STATUS_API_FAILED,
+    STATUS_AUTH_EXPIRED,
+    STATUS_CONTAINER_LOGIN_REQUIRED,
+    STATUS_OK,
+    classify_failure,
+    inspect_cli,
+    status_detail,
+    status_label,
+)
 from message_renderer import render_feishu_markdown
 
 PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or
@@ -239,8 +251,25 @@ def _find_cred(*candidates) -> Path | None:
 
 # Kimi /usage 输出:  Weekly limit  ━━━━  99% left  (resets in 4d 39m)
 _KIMI_USAGE_RE = re.compile(
-    r"(?P<label>[\w ]+?)\s+[━─]+\s+(?P<left>[\d.]+)%\s+left\s+"
-    r"\(resets\s+in\s+(?P<reset>.+?)\)")
+    r"(?P<label>[\w ]+?)\s+[━─╸╺╾╼╴╶╌╍]+\s+(?P<left>[\d.]+)%\s+"
+    r"(?:left|remaining)\s+\(resets?\s+in\s+(?P<reset>.+?)\)",
+    re.I,
+)
+_KIMI_USAGE_BLOCK_RE = re.compile(
+    r"(?P<label>(?:Weekly|Daily|Monthly|5h|5-hour|Hourly)[^\n:]*?(?:limit|usage)[^\n]*?)"
+    r"[\s━─╸╺╾╼╴╶╌╍]+(?P<left>[\d.]+)%\s*(?:left|remaining)"
+    r".{0,160}?\(?resets?\s+in\s+(?P<reset>[0-9dhm\s]+)\)?",
+    re.I | re.S,
+)
+_KIMI_BUSY_MARKERS = (
+    "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",
+    "Thinking",
+    "esc to interrupt",
+    "queued",
+    "Queued",
+    "queued input",
+    "Queued input",
+)
 
 
 def _team_agents_by_cli(cli_name: str) -> list:
@@ -294,13 +323,17 @@ def _tmux_send_and_capture(agent: str, cmd_text: str, wait: int = 4,
     return _capture_tmux_target(tgt, is_ctr, cmd_text, wait=wait, lines=lines)
 
 
-def _find_kimi_tmux_target():
-    """Find a running Kimi pane without assuming the window is named kimi_agent."""
+def _kimi_tmux_candidates():
+    """Return all likely Kimi panes, preferring configured team agents."""
+    seen = set()
+    candidates = []
     configured = _team_agents_by_cli("kimi-code")
     for agent in configured:
         tgt, is_ctr = _tmux_target(agent)
         if tgt is not None:
-            return tgt, is_ctr, f"team agent {agent}"
+            key = repr(tgt)
+            seen.add(key)
+            candidates.append((tgt, is_ctr, f"team agent {agent}"))
 
     r = _run(["tmux", "list-panes", "-a", "-F",
               "#{session_name}:#{window_name}.#{pane_index}\t#{pane_current_command}"])
@@ -309,46 +342,107 @@ def _find_kimi_tmux_target():
             target, _, command = line.partition("\t")
             cmd_name = Path(command.strip()).name.lower()
             if cmd_name in ("kimi", "kimi-cli"):
-                return target.strip(), False, f"tmux pane {target.strip()}"
+                target = target.strip()
+                key = repr(target)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append((target, False, f"tmux pane {target}"))
 
-    return None, False, ("team.json 没有 cli=kimi-code 的 agent，"
-                         "当前 tmux 也没有 kimi/kimi-cli pane")
+    return candidates
 
 
-def _query_kimi_usage() -> list:
-    """向 Kimi pane 发 /usage，解析用量。dedup 同名 label 只取最后一次。"""
-    tgt, is_ctr, source = _find_kimi_tmux_target()
-    if tgt is None:
-        return [{"label": "行动项", "pct": -1,
-                 "detail": (f"⚠️ 需要启动 kimi-code agent 后才能实时查询；当前 {source}。"
-                            "非交互 `kimi --quiet -p /usage` 返回 Unknown slash command。")}]
+def _kimi_pane_is_busy(raw: str) -> bool:
+    tail = "\n".join((raw or "").rstrip().splitlines()[-5:])
+    return any(marker in tail for marker in _KIMI_BUSY_MARKERS)
 
-    raw = _capture_tmux_target(tgt, is_ctr, "/usage", wait=5)
-    seen = {}  # label → metric (后出的覆盖先出的，避免重复 capture)
+
+def _add_kimi_metric(seen: dict, label: str, left: float, reset: str) -> None:
+    used_pct = 100 - left
+    reset_bj = _relative_reset_to_bj(reset)
+    label = " ".join(label.strip().split())
+    left_i = int(round(left))
+    used_i = int(round(used_pct))
+    seen[label] = {
+        "label": label,
+        "pct": used_i,
+        "display_pct": left_i,
+        "color": _remaining_pct_color(left),
+        "detail": (f"剩余 {_fmt_pct(left)}% · 已用 {_fmt_pct(used_pct)}% "
+                   f"· 下次刷新 {reset_bj}"),
+    }
+
+
+def _parse_kimi_usage(raw: str) -> list:
+    seen = {}
     for line in raw.splitlines():
         m = _KIMI_USAGE_RE.search(line)
         if m:
-            left = float(m.group("left"))
-            used_pct = 100 - left
-            reset_bj = _relative_reset_to_bj(m.group("reset"))
-            label = m.group("label").strip()
-            left_i = int(round(left))
-            used_i = int(round(used_pct))
-            seen[label] = {
-                "label": label,
-                "pct": used_i,
-                "display_pct": left_i,
-                "color": _remaining_pct_color(left),
-                "detail": (f"剩余 {_fmt_pct(left)}% · 已用 {_fmt_pct(used_pct)}% "
-                           f"· 下次刷新 {reset_bj}"),
-            }
-    if seen:
-        return list(seen.values())
-    return [
-        {"label": "行动项", "pct": -1,
-         "detail": (f"⚠️ 已向 {source} 发送 /usage，但未解析到 Kimi usage 输出；"
-                    "需要确认该 pane 正在运行 kimi-code 且支持 /usage。")},
-    ]
+            _add_kimi_metric(
+                seen,
+                m.group("label"),
+                float(m.group("left")),
+                m.group("reset"),
+            )
+    for m in _KIMI_USAGE_BLOCK_RE.finditer(raw):
+        _add_kimi_metric(
+            seen,
+            m.group("label"),
+            float(m.group("left")),
+            m.group("reset"),
+        )
+    return list(seen.values())
+
+
+def _query_kimi_usage() -> list:
+    """向 idle Kimi pane 发 /usage，解析用量。dedup 同名 label 只取最后一次。"""
+    candidates = _kimi_tmux_candidates()
+    if not candidates:
+        info = inspect_cli("kimi", respect_enabled=False)
+        return _usage_status_metric(
+            info,
+            STATUS_API_FAILED,
+            ("需要启动 kimi-code agent 后才能实时查询；当前 team.json 没有可用 "
+             "cli=kimi-code pane，tmux 也没有 kimi/kimi-cli pane。"
+             "非交互 kimi --quiet -p /usage 返回 Unknown slash command。"),
+        )
+
+    busy_sources = []
+    not_ready_sources = []
+    for tgt, is_ctr, source in candidates:
+        before = _capture_tmux_target(tgt, is_ctr, "", wait=0, lines=18)
+        if _kimi_pane_is_busy(before):
+            busy_sources.append(source)
+            continue
+
+        raw = _capture_tmux_target(tgt, is_ctr, "/usage", wait=5, lines=50)
+        metrics = _parse_kimi_usage(raw)
+        if metrics:
+            return metrics
+        if _kimi_pane_is_busy(raw):
+            busy_sources.append(source)
+        else:
+            not_ready_sources.append(source)
+
+    info = inspect_cli("kimi", respect_enabled=False)
+    if busy_sources and not not_ready_sources:
+        detail = "⚠️ Kimi pane busy · " + "、".join(busy_sources[:4])
+        if len(busy_sources) > 4:
+            detail += f" 等 {len(busy_sources)} 个 pane"
+        detail += " 正忙，已跳过注入 /usage，避免污染输入队列"
+        return [{"label": "Status", "pct": -1, "detail": detail}]
+    detail = "⚠️ Kimi capture not ready · "
+    if not_ready_sources:
+        detail += "、".join(not_ready_sources[:4])
+        if len(not_ready_sources) > 4:
+            detail += f" 等 {len(not_ready_sources)} 个 pane"
+        detail += " 未返回可解析 API Usage card"
+    if busy_sources:
+        detail += "；忙碌 pane 已跳过: " + "、".join(busy_sources[:4])
+    detail += "；请稍后重试或确认 kimi-code pane 已空闲"
+    if info.get("status") != STATUS_OK:
+        detail += f"；preflight: {status_label(info['status'])}"
+    return [{"label": "Status", "pct": -1, "detail": detail}]
 
 
 # Codex: 无 usage 命令；从 pane banner 读 model + plan（不发命令，不干扰 session）
@@ -362,19 +456,78 @@ _CODEX_USAGE_RE = re.compile(
 
 def _usage_error_detail(tool: str, output: str) -> str:
     clean = " ".join((output or "").split())
-    if ("HTTPError" in clean and "403" in clean) or re.search(r"\b403\b", clean):
-        return (f"{tool} 返回 403：账号权限不足、usage API 被拒绝或当前环境无权访问；"
-                "请确认登录账号/订阅权限，其他 /usage section 已继续查询")
+    status = classify_failure(clean)
+    if status == STATUS_AUTH_EXPIRED:
+        return f"{tool} 登录态已过期或缺失；请重新登录后重试"
+    if status == STATUS_CONTAINER_LOGIN_REQUIRED:
+        return f"{tool} 凭证存在但容器内 refresh/usage 被拒绝；请在容器内重新登录后重试"
+    if status != STATUS_API_FAILED:
+        return f"{tool} {status_label(status)}；请确认账号/订阅权限"
     return f"{tool} 不可用 · {(clean or '无错误输出')[:120]}"
+
+
+def _clean_provider_output(output: str) -> str:
+    text = output or ""
+    low = text.lower()
+    if "403" in low and "401" in low and "refresh" in low:
+        return "HTTP 403 from usage API; HTTP 401 during refresh"
+    cleaned = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("Traceback"):
+            continue
+        if stripped.startswith('File "') or stripped.startswith("File '"):
+            continue
+        if re.match(r"^[A-Za-z_][\w.]*Error:", stripped):
+            cleaned.append(stripped)
+            continue
+        if "http" in stripped.lower() or "error" in stripped.lower() or "token" in stripped.lower():
+            cleaned.append(stripped)
+    return " ".join(cleaned) or "provider 未返回可展示错误摘要"
+
+
+def _usage_status_metric(info: dict, status: str | None = None,
+                         extra: str = "") -> list:
+    row = dict(info)
+    if status:
+        row["status"] = status
+    detail = status_detail(row)
+    if extra:
+        clean = " ".join(_clean_provider_output(extra).split())[:140]
+        if clean:
+            detail = f"{detail}；provider 输出：{clean}"
+    icon = {
+        "disabled": "ℹ️",
+        "tool_missing": "❌",
+        "credential_missing": "🔐",
+        "auth_expired": "🔐",
+        "container_login_required": "🔐",
+        "permission_denied": "⛔",
+        "api_failed": "⚠️",
+        "ok": "✅",
+    }.get(row["status"], "⚠️")
+    return [{"label": "Status", "pct": -1,
+             "detail": f"{icon} {status_label(row['status'])} · {detail}"}]
+
+
+def _usage_preflight(name: str, respect_enabled: bool) -> list | None:
+    info = inspect_cli(name, respect_enabled=respect_enabled)
+    if info["status"] != STATUS_OK:
+        return _usage_status_metric(info)
+    return None
 
 
 def _query_codex_usage() -> list:
     """用 codex-cli-usage 工具查 Codex 额度（百分比 + 重置时间）。"""
     r = _run_usage_tool("codex-cli-usage", timeout=15)
     if r.returncode != 0:
-        # fallback: 工具没装或失败
+        output = (r.stderr or "") + (r.stdout or "")
+        status = classify_failure(output)
+        info = inspect_cli("codex", respect_enabled=False)
         return [{"label": "Codex", "pct": -1,
-                 "detail": _usage_error_detail("codex-cli-usage", (r.stderr or "") + (r.stdout or ""))}]
+                 "detail": _usage_status_metric(info, status, output)[0]["detail"]}]
     metrics = []
     plan = ""
     for line in (r.stdout or "").splitlines():
@@ -417,9 +570,11 @@ def _query_gemini_usage() -> list:
         _run(["gemini", "-p", "Return only OK"], timeout=60)
         r = _run_usage_tool("gemini-cli-usage", timeout=15)
     if r.returncode != 0:
-        # fallback
+        output = (r.stderr or "") + (r.stdout or "")
+        status = classify_failure(output)
+        info = inspect_cli("gemini", respect_enabled=False)
         return [{"label": "Gemini", "pct": -1,
-                 "detail": f"gemini-cli-usage 不可用 · {((r.stderr or r.stdout or '').strip() or '无错误输出')[:120]}"}]
+                 "detail": _usage_status_metric(info, status, output)[0]["detail"]}]
     metrics = []
     auth = ""
     for line in (r.stdout or "").splitlines():
@@ -469,7 +624,7 @@ _CLI_HEADINGS = {
 }
 
 
-def _query_cli(name: str) -> list:
+def _query_cli(name: str, *, respect_enabled: bool = False) -> list:
     """统一入口：返回 [{"label","pct","detail"}, ...]。pct=-1 表示无百分比。
 
     如果 agent 在 lazy-wake（CLI 没跑），尝试用 credential 文件信息代替实时查询。
@@ -477,6 +632,9 @@ def _query_cli(name: str) -> list:
     fn = _CLI_QUERY_MAP.get(name)
     if not fn:
         return []
+    preflight = _usage_preflight(name, respect_enabled)
+    if preflight:
+        return preflight
 
     if name in ("kimi", "codex", "gemini"):
         try:
@@ -484,7 +642,8 @@ def _query_cli(name: str) -> list:
             if result:
                 return result
         except Exception as e:
-            return [{"label": name.title(), "pct": -1, "detail": f"查询异常：{e}"}]
+            info = inspect_cli(name, respect_enabled=False)
+            return _usage_status_metric(info, STATUS_API_FAILED, str(e))
         return [{"label": name.title(), "pct": -1, "detail": "无数据"}]
     else:
         agent = f"{name}_agent"
@@ -642,20 +801,29 @@ def _cmd_usage(text: str):
 
     for t in targets:
         heading = _CLI_HEADINGS.get(t, t)
+        text_lines.append(f"[{heading}]")
         if t == "cc":
+            preflight = _usage_preflight("cc", respect_enabled=False)
+            if preflight:
+                sections.append({"heading": heading, "metrics": preflight})
+                for met in preflight:
+                    text_lines.append(f"  {met['label']}: —  {met['detail']}")
+                continue
             snapshot = PROJECT_ROOT / "scripts" / "usage_snapshot.py"
             r = _run(["python3", str(snapshot)], timeout=30)
             if r.returncode != 0:
+                output = (r.stderr or "") + (r.stdout or "")
+                status = classify_failure(output)
+                info = inspect_cli("cc", respect_enabled=False)
                 sections.append({"heading": heading,
-                                 "metrics": [{"label": "CC", "pct": -1,
-                                              "detail": f"查询失败 (exit {r.returncode})"}]})
+                                 "metrics": _usage_status_metric(info, status, output)})
                 continue
             raw = (r.stdout or "").rstrip()
             cc_metrics = _cc_usage_metrics(raw)
             sections.append({"heading": heading, "metrics": cc_metrics})
             text_lines.append(raw)
         else:
-            metrics = _query_cli(t)
+            metrics = _query_cli(t, respect_enabled=False)
             sections.append({"heading": heading, "metrics": metrics})
             for met in metrics:
                 display_pct = met.get("display_pct", met["pct"])
