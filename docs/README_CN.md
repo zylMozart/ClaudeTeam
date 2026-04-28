@@ -149,6 +149,32 @@ Ctrl+B, d                        # 分离（保持后台运行）
 /fire <角色名>
 ```
 
+### 暂停团队
+
+```bash
+# 本机部署：杀掉 tmux 会话
+tmux kill-session -t <session-name>
+```
+
+```bash
+# Docker 部署：
+docker compose down
+```
+
+所有状态（Bitable、群聊、runtime_config.json）都会保留，随时可以用 `bash scripts/start-team.sh` 或 `docker compose up -d` 重启。
+
+### 销毁团队
+
+彻底重置部署到 git clone 初始状态（删除 Bitable、运行时配置，可选删除所有工作产出）：
+
+```bash
+scripts/reset.sh              # 预览模式：只打印会清理什么
+scripts/reset.sh --yes        # 执行：删除运行时状态 + 飞书 Bitable
+scripts/reset.sh --yes --nuke # 同时删除 workspace/、agents/*、team.json
+```
+
+脚本会处理 Docker 容器、PID 文件、飞书 Bitable 删除，并打印群聊解散的手动步骤（飞书 API 不支持通过接口解散群聊）。
+
 ---
 
 ## 同机多团队部署（Docker）

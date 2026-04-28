@@ -169,6 +169,32 @@ From within Claude Code (as manager):
 /fire <role-name>
 ```
 
+### Stopping the Team
+
+```bash
+# Host-native: kill the tmux session
+tmux kill-session -t <session-name>
+```
+
+```bash
+# Docker:
+docker compose down
+```
+
+All agent state (Bitable, group chat, runtime_config.json) is preserved. Restart anytime with `bash scripts/start-team.sh` or `docker compose up -d`.
+
+### Destroying the Team
+
+To fully reset a deployment back to fresh-clone state (removes Bitable, runtime config, optionally all workspace output):
+
+```bash
+scripts/reset.sh              # dry-run: preview what will be cleaned
+scripts/reset.sh --yes        # execute: remove runtime state + Feishu Bitable
+scripts/reset.sh --yes --nuke # also delete workspace/, agents/*, team.json
+```
+
+The script handles Docker containers, runtime PID files, Feishu Bitable deletion, and prints manual steps for dismissing the group chat (Feishu API doesn't support programmatic group dismissal).
+
 ---
 
 ## Multi-CLI Adapter
