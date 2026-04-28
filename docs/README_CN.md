@@ -12,6 +12,10 @@
 
 *2025，Prompt Engineering。2026，Harness Engineering。*
 
+> **一键部署 — 把这段 prompt 发给你的 Claude Code agent：**
+>
+> `Clone https://github.com/zylMozart/ClaudeTeam.git and follow the README to set up and launch the team.`
+
 ### 效果展示
 
 **飞书群聊 — 实时操控 AI Agent 团队**
@@ -93,6 +97,8 @@ claude
 
 全程约 5 分钟。
 
+> **重要：** 每个团队部署必须使用独立的飞书 App（命名的 lark-cli profile）。不要多个团队共用同一个 App，避免凭据泄漏和事件路由冲突。详见 [多团队部署](multi-team-deployment.md)。
+
 ---
 
 ## 飞书机器人配置
@@ -148,6 +154,10 @@ Ctrl+B, d                        # 分离（保持后台运行）
 /hire <角色名> "<角色描述>"
 /fire <角色名>
 ```
+
+### 暂停与销毁团队
+
+参见 [docs/team-lifecycle.md](team-lifecycle.md) 了解如何暂停（保留状态）或彻底重置部署。
 
 ---
 

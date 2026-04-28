@@ -12,23 +12,23 @@ You don't need a smarter agent. You need a Harness — isolated agents, parallel
 
 *2025, Prompt Engineering. 2026, Harness Engineering.*
 
+> **One-click deploy — paste this prompt to your Claude Code agent:**
+>
+> `Clone https://github.com/zylMozart/ClaudeTeam.git and follow the README to set up and launch the team.`
+
 ### Screenshots
 
 **Feishu Group Chat — Control your AI team in real-time**
 
-<table>
-  <tr>
-    <td><img src="docs/media/example/feishu_example1.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example2.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example3.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example4.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example5.jpg" width="200" /></td>
-  </tr>
-</table>
+
+|     |     |     |     |     |
+| --- | --- | --- | --- | --- |
+|     |     |     |     |     |
+
 
 **tmux Backend — Claude Code agents running in parallel**
 
-<p><img src="docs/media/example/tmux_example.png" width="800" /></p>
+
 
 ---
 
@@ -68,6 +68,7 @@ Feishu Bitable (message storage, status board, kanban)
 
 **Quick Start** (host-native, guided by `claude`):
 
+
 | Requirement     | Version    | Check                                    |
 | --------------- | ---------- | ---------------------------------------- |
 | macOS or Linux  | —          | —                                        |
@@ -76,6 +77,7 @@ Feishu Bitable (message storage, status board, kanban)
 | tmux            | any        | `tmux -V`                                |
 | Claude Code CLI | latest     | `claude --version`                       |
 | Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
+
 
 **Docker Deployment** only needs Docker 20.10+, Docker Compose v2, and a Feishu account.
 
@@ -97,6 +99,8 @@ Claude Code reads this file and auto-guides you through:
 4. **Launching the team** — fully automatic
 
 The whole process takes about 5 minutes.
+
+> **Important:** Each team deployment should use its own dedicated Feishu App (named lark-cli profile). Do not share a single App across multiple teams — this avoids credential leakage and event routing conflicts. See [Multi-team deployment](docs/multi-team-deployment.md) for setup details.
 
 ---
 
@@ -169,19 +173,25 @@ From within Claude Code (as manager):
 /fire <role-name>
 ```
 
+### Stopping & Destroying the Team
+
+See [docs/team-lifecycle.md](docs/team-lifecycle.md) for how to pause (preserving state) or fully reset a deployment.
+
 ---
 
 ## Multi-CLI Adapter
 
 ClaudeTeam supports **heterogeneous teams** — different agents can run different CLI tools in the same team.
 
-| CLI | Adapter name | Install |
-|---|---|---|
+
+| CLI         | Adapter name            | Install                              |
+| ----------- | ----------------------- | ------------------------------------ |
 | Claude Code | `claude-code` (default) | `npm i -g @anthropic-ai/claude-code` |
-| Kimi Code | `kimi-code` | `uv tool install kimi-cli` |
-| Gemini CLI | `gemini-cli` | `npm i -g @google/gemini-cli` |
-| Codex CLI | `codex-cli` | `npm i -g @openai/codex` |
-| Qwen Code | `qwen-code` | `npm i -g qwen-code` |
+| Kimi Code   | `kimi-code`             | `uv tool install kimi-cli`           |
+| Gemini CLI  | `gemini-cli`            | `npm i -g @google/gemini-cli`        |
+| Codex CLI   | `codex-cli`             | `npm i -g @openai/codex`             |
+| Qwen Code   | `qwen-code`             | `npm i -g qwen-code`                 |
+
 
 Each agent in `team.json` supports optional `cli`, `model`, and `thinking` fields:
 
@@ -203,13 +213,16 @@ For CLI credential setup in Docker, see [docs/cli-credentials.md](docs/cli-crede
 
 ## Further Documentation
 
-| Doc | Description |
-|-----|-------------|
-| [Multi-team deployment](docs/multi-team-deployment.md) | Running multiple teams on one host with isolated Feishu Apps |
-| [CLI credentials](docs/cli-credentials.md) | Kimi / Codex / Gemini credential setup, persistence, and `/usage` |
-| [Boss todo](docs/boss-todo.md) | Bitable table for blocking actions that need user/boss intervention |
-| [Operations](docs/OPERATIONS.md) | Docker deployment details, troubleshooting |
-| [Contributing](docs/CONTRIBUTING.md) | How to contribute |
+
+| Doc                                                    | Description                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------------- |
+| [Team lifecycle](docs/team-lifecycle.md)               | How to stop (pause) and destroy (reset) a team                      |
+| [Multi-team deployment](docs/multi-team-deployment.md) | Running multiple teams on one host with isolated Feishu Apps        |
+| [CLI credentials](docs/cli-credentials.md)             | Kimi / Codex / Gemini credential setup, persistence, and `/usage`   |
+| [Boss todo](docs/boss-todo.md)                         | Bitable table for blocking actions that need user/boss intervention |
+| [Operations](docs/OPERATIONS.md)                       | Docker deployment details, troubleshooting                          |
+| [Contributing](docs/CONTRIBUTING.md)                   | How to contribute                                                   |
+
 
 ---
 
@@ -217,7 +230,7 @@ For CLI credential setup in Docker, see [docs/cli-credentials.md](docs/cli-crede
 
 Join our WeChat group for discussions, feedback, and feature requests!
 
-<img src="docs/media/wechat-community-qr.png" width="300" alt="WeChat Group QR Code" />
+
 
 > Note: The QR code refreshes every 7 days. If expired, please open an Issue to request a new one.
 
@@ -252,7 +265,7 @@ Contributions welcome! See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ---
 
-<!-- CLAUDE:START — Everything below is for Claude Code automated setup -->
+
 
 > **Below this line is for Claude Code.**
 > Human users do not need to read past this point — Claude Code handles everything automatically.
@@ -288,12 +301,14 @@ python3 -c "import json; print(json.load(open('team.json'))['session'])" 2>/dev/
 
 ### Decision Tree
 
-| lark-cli | `team.json` | tmux session | Action |
-|----------|------------|--------------|--------|
-| NOT CONFIGURED | — | — | Go to **Phase 1** |
-| CONFIGURED | MISSING | — | Go to **Phase 2** |
-| CONFIGURED | EXISTS | NOT RUNNING | Go to **Phase 4** |
-| CONFIGURED | EXISTS | RUNNING | Go to **Phase 5** |
+
+| lark-cli       | `team.json` | tmux session | Action            |
+| -------------- | ----------- | ------------ | ----------------- |
+| NOT CONFIGURED | —           | —            | Go to **Phase 1** |
+| CONFIGURED     | MISSING     | —            | Go to **Phase 2** |
+| CONFIGURED     | EXISTS      | NOT RUNNING  | Go to **Phase 4** |
+| CONFIGURED     | EXISTS      | RUNNING      | Go to **Phase 5** |
+
 
 ### Handling user-provided credentials
 
@@ -308,7 +323,6 @@ Compare the returned `appId` with the user's:
 - **Match** → keep the existing config, proceed with the status check above.
 - **Different** → ask the user explicitly which App has permissions + publishing completed:
   > I see lark-cli is currently configured with `<existing>`, but you provided `<new>`. Which one has the scopes batch-imported and published? If I switch to the new one and it's a freshly-created empty App, `auth login` will fail with "no permission".
-
   Only after the user confirms should you `config remove` + `config init --app-id ... --app-secret-stdin`.
 
 This avoids a wasted round-trip where the agent switches to an empty App and the user has to re-hand the original credentials.
@@ -345,6 +359,7 @@ npx @larksuite/cli config init --new
 This opens a browser page. Tell the user:
 
 > A browser window has opened. Please:
+>
 > 1. **Scan the QR code** with Feishu to log in
 > 2. Choose **"Create"** (to make a new app) or **"Use Existing App"** (if you already have one)
 > 3. Click **"Confirm"** — that's it!
@@ -366,6 +381,7 @@ open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || xdg-open "https:
 Tell the user:
 
 > I've opened the Permissions page. Please:
+>
 > 1. Click **"Batch import/export scopes"**
 > 2. Select all text in the editor, delete it
 > 3. Paste the JSON I'll give you, then click **"Next, Review New Scopes"** → **"Add"**
@@ -444,6 +460,7 @@ Ask the user to describe their project:
 ### Step 2: Propose a team
 
 Based on the user's description, analyze what roles are needed. Consider:
+
 - Frontend work? → coder
 - Backend/API work? → backend or coder
 - System design needed? → architect
@@ -457,12 +474,14 @@ Propose a team. Example:
 
 > Based on your project, I recommend:
 >
-> | Role | Responsibility |
-> |------|---------------|
+>
+> | Role            | Responsibility                    |
+> | --------------- | --------------------------------- |
 > | 🎯 manager (me) | Coordinate, review, report to you |
-> | 🏗️ architect | System design, tech decisions |
-> | 💻 coder | Implementation |
-> | 🧪 tester | Quality assurance |
+> | 🏗️ architect   | System design, tech decisions     |
+> | 💻 coder        | Implementation                    |
+> | 🧪 tester       | Quality assurance                 |
+>
 >
 > Should I start building this team? You can also add or remove roles.
 
@@ -472,6 +491,7 @@ Propose a team. Example:
 Do NOT create any agents without the user saying "yes" / "ok" / "go ahead" or similar.
 
 The user may:
+
 - **Approve as-is** → proceed
 - **Modify** (add/remove roles) → adjust proposal, show updated list, ask for confirmation again
 - **Say "just manager for now"** → minimal path (skip /hire, only manager)
@@ -481,22 +501,22 @@ The user may:
 After confirmation, ask the user for a team name, then:
 
 1. Create `team.json` with only `manager`:
+
 ```json
 {"session": "<team-name>", "agents": {"manager": {"role": "主管", "emoji": "🎯", "color": "blue"}}}
 ```
 
-2. Run `python3 scripts/setup.py` to initialize Feishu resources
+1. Run `python3 scripts/setup.py` to initialize Feishu resources
+2. Run `bash scripts/start-team.sh` to start tmux (starts manager + router + watchdog)
+3. For each additional role the user confirmed, execute `/hire`:
 
-3. Run `bash scripts/start-team.sh` to start tmux (starts manager + router + watchdog)
-
-4. For each additional role the user confirmed, execute `/hire`:
 ```
 /hire architect 系统架构师，负责技术方案设计
 /hire coder 软件工程师，负责代码实现
 /hire tester 测试工程师，负责质量保障
 ```
 
-5. **Generate and send the Feishu group chat invite link to the user.** This is the final deliverable — without it the user cannot interact with the team.
+1. **Generate and send the Feishu group chat invite link to the user.** This is the final deliverable — without it the user cannot interact with the team.
 
 ```bash
 # Get chat_id from runtime config
@@ -515,11 +535,12 @@ Extract the `share_link` from the response and send it to the user. Tell them:
 
 **⚠️ MANDATORY: Do NOT skip this step. The invite link is the primary way the user interacts with their team.**
 
-6. Once all agents are hired and the link is delivered, enter Phase 5.
+1. Once all agents are hired and the link is delivered, enter Phase 5.
 
 ### Minimal Path
 
 If the user says "just manager" or "no team yet":
+
 1. Create team.json with only manager
 2. Run setup.py + start-team.sh
 3. Generate and send the group chat invite link to the user
