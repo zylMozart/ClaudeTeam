@@ -20,14 +20,17 @@ You don't need a smarter agent. You need a Harness — isolated agents, parallel
 
 **Feishu Group Chat — Control your AI team in real-time**
 
-
-|     |     |     |     |     |
-| --- | --- | --- | --- | --- |
-|     |     |     |     |     |
-
+<table><tr>
+<td><img src="docs/media/example/feishu_example1.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example2.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example3.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example4.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example5.jpg" width="200" /></td>
+</tr></table>
 
 **tmux Backend — Claude Code agents running in parallel**
 
+<p><img src="docs/media/example/tmux_example.png" width="800" /></p>
 
 
 ---
@@ -230,7 +233,7 @@ For CLI credential setup in Docker, see [docs/cli-credentials.md](docs/cli-crede
 
 Join our WeChat group for discussions, feedback, and feature requests!
 
-
+<img src="docs/media/wechat-community-qr.png" width="300" alt="WeChat Group QR Code" />
 
 > Note: The QR code refreshes every 7 days. If expired, please open an Issue to request a new one.
 
