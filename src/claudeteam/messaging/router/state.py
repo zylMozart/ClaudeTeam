@@ -45,6 +45,40 @@ class RouterState:
         if len(self.seen_ids) > SEEN_IDS_MAX:
             self.seen_ids.popitem(last=False)
 
+    # ── bot self-filter ───────────────────────────────────────────
+
+    def init_bot_id(self, cfg: dict, *, save_config: callable, lark_run: callable) -> None:
+        cached = cfg.get("bot_open_id", "")
+        if cached:
+            self.bot_open_id = cached
+            print(f"🤖 Bot open_id (cached): {cached}")
+            return
+        chat_id = cfg.get("chat_id", "")
+        if not chat_id:
+            print("⚠️ 无 chat_id，自回声过滤将不可用")
+            return
+        try:
+            data = lark_run([
+                "im", "chat.members", "get",
+                "--params", json.dumps({"chat_id": chat_id, "member_id_type": "open_id"}),
+                "--as", "bot", "--page-all", "--format", "json",
+            ], timeout=40)
+        except Exception as exc:
+            print(f"⚠️ 获取 bot info 异常: {exc}，自回声过滤将不可用")
+            return
+        if data is None:
+            print("⚠️ 获取群成员失败，自回声过滤将不可用")
+            return
+        for item in data.get("items", []):
+            if item.get("member_id_type") == "open_id" and not item.get("tenant_key"):
+                self.bot_open_id = item.get("member_id", "")
+                if self.bot_open_id:
+                    print(f"🤖 Bot open_id: {self.bot_open_id}")
+                    cfg["bot_open_id"] = self.bot_open_id
+                    save_config(cfg)
+                return
+        print("⚠️ 群成员中无 bot 条目(不影响上游事件过滤,自回声防护降级)")
+
     # ── agent list ────────────────────────────────────────────────
 
     def reload_agents(self, team_file: str) -> List[str]:

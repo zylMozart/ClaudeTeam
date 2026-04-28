@@ -89,8 +89,8 @@ class _RouterRuntime:
 
         agents = self.state.reload_agents(self.team_file)
 
-        from claudeteam.commands.slash.standalone import dispatch as _slash_dispatch
-        from claudeteam.integrations.feishu.client import _lark_run, _lark_im_send, get_chat_id
+        from claudeteam.commands.slash.standalone import dispatch as _slash_dispatch, is_slash_command
+        from claudeteam.integrations.feishu.client import _lark_im_send, get_chat_id
         from claudeteam.messaging.service import sanitize_agent_message, build_system_card
 
         result = classify_event(
@@ -101,13 +101,18 @@ class _RouterRuntime:
             sanitize=sanitize_agent_message,
             parse_targets=lambda t: self.state.parse_targets(t, agents),
             parse_sender=lambda t: self.state.parse_sender(t, agents),
-            is_slash=lambda t: _slash_dispatch(t)[0],
+            is_slash=is_slash_command,
         )
 
         if result.action == EventAction.DROP:
+            if result.reason == "empty_text" and event.get("image_key"):
+                self.state.mark_seen(result.msg_id)
+                self._handle_image(event, "", agents)
+                self._advance_cursor()
             return
 
         self.state.mark_seen(result.msg_id)
+        self._handle_image(event, result.text, agents)
 
         if result.action == EventAction.SLASH:
             _, reply = _slash_dispatch(result.text)
@@ -119,8 +124,51 @@ class _RouterRuntime:
         print(f"[{time.strftime('%H:%M:%S')}] 新消息: {result.text[:500]}")
         for target in result.targets:
             print(f"  路由: {target} ← {result.sender or '用户'}")
-            self._deliver(target, result.text, result.sender, result.msg_id)
+            self._deliver(target, result.text, result.sender, result.msg_id, result.parent_id, result.root_id)
         self._advance_cursor()
+
+        is_boss_msg = result.sender is None and "manager" in result.targets
+        if is_boss_msg:
+            self._maybe_trigger_reflection()
+
+    def _handle_image(self, event: dict, text: str, agents: list[str]) -> None:
+        image_key = event.get("image_key", "")
+        msg_id = event.get("message_id", "")
+        if not image_key or not msg_id:
+            return
+
+        def _download_async() -> None:
+            path = self._download_image(msg_id, image_key)
+            if not path:
+                return
+            targets = self.state.parse_targets(text, agents) if text else []
+            agent = targets[0] if targets else "manager"
+            from claudeteam.messaging.router._tpl import TPL_IMAGE_DOWNLOADED
+            self._enqueue(agent, TPL_IMAGE_DOWNLOADED.format(path=path), f"{msg_id}_img", is_user_msg=True)
+
+        threading.Thread(target=_download_async, daemon=True).start()
+
+    def _download_image(self, message_id: str, file_key: str) -> Optional[str]:
+        os.makedirs(self.images_dir, exist_ok=True)
+        output_name = f"{int(time.time())}_{message_id[:8]}_{file_key[:8]}"
+        r = subprocess.run(
+            self.lark_cli + ["im", "+messages-resources-download",
+                             "--message-id", message_id,
+                             "--file-key", file_key,
+                             "--type", "image",
+                             "--output", output_name,
+                             "--as", "bot"],
+            capture_output=True, text=True, timeout=30, cwd=self.images_dir,
+        )
+        if r.returncode != 0:
+            print(f"  ⚠️ 图片下载失败: {r.stderr.strip()[:100]}")
+            return None
+        for name in os.listdir(self.images_dir):
+            if name.startswith(output_name):
+                path = os.path.join(self.images_dir, name)
+                print(f"  📥 图片已保存: {path}")
+                return path
+        return None
 
     def _handle_slash_reply(self, result, reply, _lark_im_send, get_chat_id, build_system_card):
         first = result.text.strip().split()[0] if result.text.strip() else ""
@@ -148,12 +196,30 @@ class _RouterRuntime:
         except Exception as e:
             print(f"  ⚠️ slash 回显失败: {e}")
 
-    def _deliver(self, agent: str, text: str, sender: Optional[str], msg_id: str) -> None:
+    def _deliver(
+        self,
+        agent: str,
+        text: str,
+        sender: Optional[str],
+        msg_id: str,
+        parent_id: str = "",
+        root_id: str = "",
+    ) -> None:
         """Deliver a routed message to one agent (wake if needed, then inject or enqueue)."""
         from claudeteam.messaging.service import sanitize_agent_message
         text = sanitize_agent_message(text)
+        ref_lines = [
+            "",
+            f"Feishu message_id={msg_id}",
+            f"如需引用回复，使用: python3 scripts/feishu_msg.py say {agent} \"回复内容\" --reply {msg_id}",
+        ]
+        if parent_id:
+            ref_lines.insert(2, f"parent_id={parent_id}")
+        if root_id:
+            ref_lines.insert(3 if parent_id else 2, f"root_id={root_id}")
+        ref_context = "\n".join(ref_lines)
 
-        wake_on_deliver(
+        wake_ready = wake_on_deliver(
             agent, self.lifecycle_sh,
             has_live_cli=lambda a: agent_has_live_cli(
                 a, self.tmux_session,
@@ -170,9 +236,9 @@ class _RouterRuntime:
 
         if sender:
             from claudeteam.messaging.router._tpl import TPL_AGENT_NOTIFY
-            prompt = TPL_AGENT_NOTIFY.format(sender=sender, agent=agent, preview=text[:500])
+            prompt = TPL_AGENT_NOTIFY.format(sender=sender, agent=agent, preview=(text + ref_context)[:800])
         else:
-            content = self._render_inbox(text)
+            content = self._render_inbox(text + ref_context)
             if len(content) > 400:
                 msg_file = os.path.join(self.router_msg_dir, f"router_msg_{agent}.txt")
                 os.makedirs(os.path.dirname(msg_file), exist_ok=True)
@@ -187,14 +253,88 @@ class _RouterRuntime:
         from claudeteam.runtime.tmux_utils import inject_when_idle
         is_user_msg = (sender is None)
         has_pending = self._has_pending(agent)
-        if not has_pending:
-            ok = inject_when_idle(self.tmux_session, agent, prompt, wait_secs=15, force_after_wait=True)
+        if not wake_ready:
+            self._enqueue(agent, prompt, msg_id, is_user_msg=is_user_msg)
+            print(f"  📥 wake 失败，消息已入队 {agent}（等待下次 ready 后投递）")
+            return
+        if agent == "manager" and is_user_msg:
+            ok = inject_when_idle(
+                self.tmux_session, agent, prompt,
+                wait_secs=3, force_after_wait=True,
+                submit_keys=self._adapter(agent).submit_keys(),
+            )
+            if ok:
+                print(f"  → 已触发 {agent} 窗口（老板消息实时投递）")
+                return
+            detail = getattr(ok, "error", "") or "not submitted"
+            print(f"  📥 实时投递失败 {agent}: {detail}，转入队列")
+        elif not has_pending:
+            ok = inject_when_idle(
+                self.tmux_session, agent, prompt,
+                wait_secs=30, force_after_wait=False,
+                submit_keys=self._adapter(agent).submit_keys(),
+            )
             if ok:
                 print(f"  → 已触发 {agent} 窗口（直接投递）")
                 return
+            detail = getattr(ok, "error", "") or "not submitted"
+            print(f"  📥 直接投递未提交 {agent}: {detail}，转入队列")
         self._enqueue(agent, prompt, msg_id, is_user_msg=is_user_msg)
         label = "队列有积压，保证 FIFO" if has_pending else "agent 忙碌，等待投递"
         print(f"  📥 消息已入队 {agent}（{label}）")
+
+    # ── reflection meeting ─────────────────────────────────────────
+
+    def _maybe_trigger_reflection(self) -> None:
+        from claudeteam.messaging.router.reflection import increment_and_check, reset_counter, build_reflection_prompt, load_counter
+        from claudeteam.runtime.paths import runtime_state_dir
+        state_dir = str(runtime_state_dir())
+        if not increment_and_check(state_dir):
+            return
+        counter_data = load_counter(state_dir)
+        msg_count = counter_data["count"]
+        print(f"[reflection] 老板消息计数达到 {msg_count}，检查是否可以开反思大会")
+        try:
+            from claudeteam.runtime.agent_state import classify
+            agents = self.state.reload_agents(self.team_file)
+            non_manager = [a for a in agents if a != "manager"]
+            busy = []
+            for agent in non_manager:
+                pane = _capture_pane(self.tmux_session, agent)
+                st = classify(pane)
+                if st.get("code") in ("busy", "permission_wait"):
+                    busy.append(agent)
+            if busy:
+                print(f"[reflection] 有 agent 忙碌中 ({busy})，延后反思大会")
+                return
+        except Exception as e:
+            print(f"[reflection] agent 状态检查失败: {e}，延后反思大会")
+            return
+        reset_counter(state_dir)
+        print(f"[reflection] 全员空闲，触发反思大会（{msg_count} 条消息后）")
+        from claudeteam.runtime.tmux_utils import inject_when_idle
+        for agent in non_manager:
+            prompt = build_reflection_prompt(agent, msg_count)
+            try:
+                inject_when_idle(
+                    self.tmux_session, agent, prompt,
+                    wait_secs=5, force_after_wait=False,
+                    submit_keys=self._adapter(agent).submit_keys(),
+                )
+            except Exception:
+                pass
+        manager_prompt = (
+            f"【反思大会已触发】已处理 {msg_count} 条老板消息，已向 {len(non_manager)} 名员工发送反思提示。\n"
+            f"请等待员工提交反思，然后汇总发给老板。"
+        )
+        try:
+            inject_when_idle(
+                self.tmux_session, "manager", manager_prompt,
+                wait_secs=3, force_after_wait=False,
+                submit_keys=self._adapter("manager").submit_keys(),
+            )
+        except Exception:
+            pass
 
     # ── background loops ──────────────────────────────────────────
 
@@ -257,7 +397,9 @@ class _RouterRuntime:
                     text = raw or ""
                 ev = {"message_id": m.get("message_id", ""), "chat_id": chat_id,
                       "sender_id": m.get("sender", {}).get("id", ""),
-                      "text": text, "message_type": "text"}
+                      "text": text, "message_type": "text",
+                      "parent_id": m.get("parent_id", ""),
+                      "root_id": m.get("root_id", "")}
                 try:
                     self.handle_event(ev)
                     replayed += 1
@@ -296,21 +438,15 @@ def _pid_file_is_live_router(path: str) -> bool:
         os.kill(old_pid, 0)
         with open(f"/proc/{old_pid}/cmdline", "rb") as f:
             cmdline = f.read().decode("utf-8", errors="ignore")
-        return "feishu_router.py" in cmdline
+        return "feishu_router.py" in cmdline or "claudeteam.messaging.router.daemon" in cmdline
     except (ValueError, OSError):
         return False
 
 
 def main() -> None:
     """Wire up all dependencies and run the router event loop."""
-    # Ensure scripts/ is in sys.path for scripts-layer imports
-    _scripts = os.path.join(os.path.dirname(__file__), *(['..'] * 4), 'scripts')
-    _scripts = os.path.normpath(_scripts)
-    if _scripts not in sys.path:
-        sys.path.insert(0, _scripts)
-
-    from claudeteam.runtime.config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, LARK_CLI
-    from claudeteam.runtime.paths import runtime_state_file, legacy_script_state_file
+    from claudeteam.runtime.config import AGENTS, TMUX_SESSION, PROJECT_ROOT, load_runtime_config, save_runtime_config, LARK_CLI
+    from claudeteam.runtime.paths import runtime_state_file, legacy_script_state_file, ensure_parent
 
     cfg_data = load_runtime_config()
     chat_id = cfg_data.get("chat_id", "")
@@ -335,16 +471,21 @@ def main() -> None:
                 old_pid = f.read().strip()
             print(f"❌ Router 已在运行 (PID {old_pid})，请勿重复启动")
             sys.exit(1)
-    with open(pid_file, "w") as f:
-        f.write(str(os.getpid()))
+    pid_str = str(os.getpid())
+    for pf in (pid_file, legacy_pid_file):
+        ensure_parent(pf)
+        with open(pf, "w") as f:
+            f.write(pid_str)
 
     def _cleanup_pid():
         try:
-            if os.path.exists(pid_file):
-                with open(pid_file) as f:
-                    pid = int(f.read().strip())
-                if pid == os.getpid():
-                    os.remove(pid_file)
+            my_pid = os.getpid()
+            for pf in (pid_file, legacy_pid_file):
+                if os.path.exists(pf):
+                    with open(pf) as f:
+                        pid = int(f.read().strip())
+                    if pid == my_pid:
+                        os.remove(pf)
         except Exception:
             pass
 
@@ -353,6 +494,10 @@ def main() -> None:
 
     print("🚀 Router Daemon 启动 (messaging/router)")
     runtime._refresh_heartbeat()
+    from claudeteam.integrations.feishu.client import _lark_run
+    def _save_public_runtime_config(cfg: dict) -> None:
+        save_runtime_config({k: v for k, v in cfg.items() if not k.startswith("_")})
+    runtime.state.init_bot_id(cfg_data, save_config=_save_public_runtime_config, lark_run=_lark_run)
     print(f"💬 监听群组: {chat_id}")
     print(f"👥 Agent 列表: {', '.join(runtime.state.reload_agents(team_file))}")
 
@@ -360,14 +505,34 @@ def main() -> None:
     threading.Thread(target=lambda: runtime.catchup_from_history(chat_id), daemon=True).start()
 
     def _poll_loop():
+        last_replay_time = time.time()
+        warned = False
         while True:
             try:
-                runtime.catchup_from_history(chat_id)
+                n = runtime.catchup_from_history(chat_id)
+                if n > 0:
+                    last_replay_time = time.time()
+                    warned = False
                 runtime._refresh_heartbeat()
+                if (not warned
+                        and runtime.state.first_event_at is None
+                        and time.time() - last_replay_time > 300):
+                    print("  ⚠️ 5 分钟内 WebSocket/catchup 都没有 replay 新消息，若群里有消息请检查事件订阅")
+                    warned = True
             except Exception as e:
                 print(f"  ⚠️ 轮询 catchup 异常: {e}")
-            time.sleep(5)
+            time.sleep(int(os.environ.get("CATCHUP_POLL_INTERVAL", 30)))
     threading.Thread(target=_poll_loop, daemon=True).start()
+
+    def _event_watchdog():
+        time.sleep(45)
+        if runtime.state.first_event_at is None:
+            print("=" * 60)
+            print("⚠️ Router 启动 45 秒内未收到任何 Feishu 事件")
+            print("   如果群里发消息没反应，请检查 App 事件订阅 im.message.receive_v1")
+            print("   可运行: python3 scripts/setup.py 重新完成事件订阅")
+            print("=" * 60)
+    threading.Thread(target=_event_watchdog, daemon=True).start()
 
     stdin_mode = "--stdin" in sys.argv
     if stdin_mode:

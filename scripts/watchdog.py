@@ -444,10 +444,6 @@ def _notify_recovered(proc_name):
         return
     st["was_unhealthy"] = False
     log(f"✅ {proc_name} 已恢复健康")
-    _send_manager_alert(
-        f"[watchdog] ✅ {proc_name} 已恢复健康",
-        log_label=f"{proc_name} 恢复",
-    )
 
 
 def check_once():
@@ -511,11 +507,7 @@ def check_once():
 
         restart_process(proc)
         time.sleep(2)
-        _throttled_alert(
-            name,
-            _watchdog_messages.build_burst_alert(name),
-            log_label=f"{name} 重启",
-        )
+        log(f"ℹ️ {name} 已自动重启，静默处理（仅 cooldown 时告警）")
 
     if all_ok:
         log("✅ 所有守护进程运行正常")

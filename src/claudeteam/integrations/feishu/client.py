@@ -9,14 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
-
-THIS_FILE = Path(__file__).resolve()
-SCRIPTS_ROOT = THIS_FILE.parents[4] / "scripts"
-if str(SCRIPTS_ROOT) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_ROOT))
-
-from claudeteam.runtime.config import LARK_CLI, load_runtime_config
+from claudeteam.runtime.config import LARK_CLI, get_chat_id as _runtime_get_chat_id
 
 # 服务器侧 /records/search 状态码:
 #   800080303 "unsafe_operation_blocked" = 端点在当前品牌(目前仅国际版 Lark)
@@ -68,27 +61,65 @@ def _check_lark_result(result, action, *, fatal=True):
     return False
 
 
-def _lark_im_send_with_run(run_fn, chat_id, content=None, markdown=None, image=None, card=None):
+def _lark_im_send_with_run(
+    run_fn,
+    chat_id,
+    content=None,
+    markdown=None,
+    image=None,
+    card=None,
+    *,
+    reply_to="",
+    reply_in_thread=False,
+    msg_type="",
+):
     """通过 lark-cli 向群组发送消息。
 
     默认 --as user：以老板身份发言（无 bot 标识）。若 user OAuth 未配置,
     可通过环境变量 CLAUDETEAM_LARK_SEND_AS=bot 降级为机器人身份。
     """
     send_as = os.environ.get("CLAUDETEAM_LARK_SEND_AS", "user")
-    args = ["im", "+messages-send", "--chat-id", chat_id, "--as", send_as]
+    if reply_to:
+        args = ["im", "+messages-reply", "--message-id", reply_to, "--as", send_as]
+        if reply_in_thread:
+            args.append("--reply-in-thread")
+    else:
+        args = ["im", "+messages-send", "--chat-id", chat_id, "--as", send_as]
     if markdown:
         args += ["--markdown", markdown]
     elif image:
         args += ["--image", image]
     elif card:
         args += ["--content", json.dumps(card, ensure_ascii=False), "--msg-type", "interactive"]
+    elif content and msg_type:
+        args += ["--content", content, "--msg-type", msg_type]
     elif content:
         args += ["--text", content]
     return run_fn(args)
 
 
-def _lark_im_send(chat_id, content=None, markdown=None, image=None, card=None):
-    return _lark_im_send_with_run(_lark_run, chat_id, content, markdown, image, card)
+def _lark_im_send(
+    chat_id,
+    content=None,
+    markdown=None,
+    image=None,
+    card=None,
+    *,
+    reply_to="",
+    reply_in_thread=False,
+    msg_type="",
+):
+    return _lark_im_send_with_run(
+        _lark_run,
+        chat_id,
+        content,
+        markdown,
+        image,
+        card,
+        reply_to=reply_to,
+        reply_in_thread=reply_in_thread,
+        msg_type=msg_type,
+    )
 
 
 def _lark_base_create_with_run(run_fn, base_token, table_id, fields_json):
@@ -107,10 +138,7 @@ def _lark_base_create(base_token, table_id, fields_json):
 
 def get_chat_id() -> str:
     """Return the configured Feishu group chat_id, or empty string if not set."""
-    try:
-        return load_runtime_config().get("chat_id", "")
-    except Exception:
-        return ""
+    return _runtime_get_chat_id()
 
 
 def _lark_base_search(base_token, table_id, search_json):

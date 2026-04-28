@@ -3,9 +3,13 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(__file__))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SCRIPT_DIR)
+_SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 import tmux_inject_diagnose
-import tmux_utils
+from claudeteam.runtime import tmux_utils
 
 
 class R:
@@ -48,15 +52,23 @@ def test_unsafe_input_not_injected():
 
 def test_busy_not_forced():
     calls = []
+    old_legacy = os.environ.get("CLAUDETEAM_IDLE_LEGACY")
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         return R(0)
 
-    with Patch(tmux_utils, capture_pane=lambda s, w: "Thinking\n"):
-        with Patch(tmux_utils.subprocess, run=fake_run):
-            result = tmux_utils.inject_when_idle(
-                "s", "manager", "hello", wait_secs=0.1, force_after_wait=False)
+    try:
+        os.environ["CLAUDETEAM_IDLE_LEGACY"] = "1"
+        with Patch(tmux_utils, capture_pane=lambda s, w: "Thinking\n"):
+            with Patch(tmux_utils.subprocess, run=fake_run):
+                result = tmux_utils.inject_when_idle(
+                    "s", "manager", "hello", wait_secs=0.1, force_after_wait=False)
+    finally:
+        if old_legacy is None:
+            os.environ.pop("CLAUDETEAM_IDLE_LEGACY", None)
+        else:
+            os.environ["CLAUDETEAM_IDLE_LEGACY"] = old_legacy
     assert result.busy_before
     assert result.error == "pane busy"
     assert not any(cmd[:1] == ["tmux"] and "send-keys" in cmd for cmd in calls), calls
@@ -118,11 +130,19 @@ def test_diagnose_reports_agent_and_tail():
 
 
 def main():
-    test_unsafe_input_not_injected()
-    test_busy_not_forced()
-    test_idle_injects_and_submits()
-    test_submitted_history_is_not_residual()
-    test_diagnose_reports_agent_and_tail()
+    old_legacy = os.environ.get("CLAUDETEAM_IDLE_LEGACY")
+    try:
+        os.environ["CLAUDETEAM_IDLE_LEGACY"] = "1"
+        test_unsafe_input_not_injected()
+        test_busy_not_forced()
+        test_idle_injects_and_submits()
+        test_submitted_history_is_not_residual()
+        test_diagnose_reports_agent_and_tail()
+    finally:
+        if old_legacy is None:
+            os.environ.pop("CLAUDETEAM_IDLE_LEGACY", None)
+        else:
+            os.environ["CLAUDETEAM_IDLE_LEGACY"] = old_legacy
     print("✅ regression_tmux_inject passed")
 
 

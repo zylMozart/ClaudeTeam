@@ -25,6 +25,7 @@ FEISHU_TAG_RE = re.compile(
 
 ANGLE_TAG_RE = re.compile(r"<[^>\n]+>")
 
+ORDERED_LIST_RE = re.compile(r"^(\d+)\.\s")
 PIPE_TABLE_RE = re.compile(r"^\s*\|.+\|\s*$")
 CODE_FENCE_RE = re.compile(r"^\s*```")
 
@@ -94,10 +95,24 @@ def truncate_long(text: str, limit: int) -> str:
     return text[:limit].rstrip() + "\n\n[内容过长，已截断用于卡片预览]"
 
 
+def neutralize_ordered_lists(text: str) -> str:
+    """Convert ``1. foo`` to ``**1.** foo`` so Feishu won't auto-indent items 2+."""
+    out = []
+    in_fence = False
+    for line in str(text or "").splitlines():
+        if CODE_FENCE_RE.match(line):
+            in_fence = not in_fence
+        if not in_fence:
+            line = ORDERED_LIST_RE.sub(r"**\1.** ", line)
+        out.append(line)
+    return "\n".join(out)
+
+
 def normalize_body(body: str, *, card: bool = False, card_limit: int | None = None) -> str:
     body = strip_runtime_commands(body)
     body = escape_feishu_tags(body)
     body = degrade_pipe_tables(body)
+    body = neutralize_ordered_lists(body)
     body = balance_code_fences(body)
     return body.strip()
 

@@ -19,6 +19,8 @@ import threading
 import time
 from typing import List, Optional
 
+from claudeteam.runtime.tmux_utils import wait_cli_ui_ready as _wait_cli_ui_ready
+
 
 WAKE_DEBOUNCE_MS = 500
 WAKE_READY_TIMEOUT_S = 30
@@ -45,31 +47,52 @@ def cli_pids_in_pane(
     *,
     get_process_name: callable,
 ) -> List[int]:
-    """Return PIDs of CLI children under the agent's tmux pane shell."""
+    """Return PIDs of CLI descendants under the agent's tmux pane shell."""
     bash_pid = _pane_bash_pid(agent_name, tmux_session)
     if bash_pid is None:
         return []
     proc_name = get_process_name(agent_name)
-    result = []
+    children: dict[int, list[int]] = {}
+    comms: dict[int, str] = {}
     for proc_dir in glob.glob("/proc/[0-9]*"):
         try:
+            pid = int(os.path.basename(proc_dir))
             with open(f"{proc_dir}/status") as f:
                 status = f.read()
-        except OSError:
+        except (OSError, ValueError):
             continue
-        if f"\nPPid:\t{bash_pid}\n" not in status:
+        ppid = _parse_ppid(status)
+        if ppid is None:
             continue
+        children.setdefault(ppid, []).append(pid)
         try:
             with open(f"{proc_dir}/comm") as f:
-                comm = f.read().strip()
+                comms[pid] = f.read().strip()
         except OSError:
+            pass
+
+    result = []
+    stack = list(children.get(bash_pid, []))
+    seen = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
             continue
-        if comm == proc_name:
-            try:
-                result.append(int(os.path.basename(proc_dir)))
-            except ValueError:
-                pass
+        seen.add(pid)
+        if comms.get(pid) == proc_name:
+            result.append(pid)
+        stack.extend(children.get(pid, []))
     return result
+
+
+def _parse_ppid(status: str) -> Optional[int]:
+    for line in status.splitlines():
+        if line.startswith("PPid:"):
+            try:
+                return int(line.split()[1])
+            except (IndexError, ValueError):
+                return None
+    return None
 
 
 def _pane_bash_pid(agent_name: str, tmux_session: str) -> Optional[int]:
@@ -93,24 +116,14 @@ def wait_cli_ui_ready(
     get_ready_markers: callable,
     get_process_name: callable,
     timeout_s: float = WAKE_READY_TIMEOUT_S,
-) -> bool:
-    """Poll tmux pane until CLI UI ready markers appear."""
-    markers = get_ready_markers(agent_name)
-    proc_name = get_process_name(agent_name)
-    not_ready = ("Loading configuration",)
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        pane = capture_pane_fn(agent_name)
-        tail = "\n".join(pane.splitlines()[-30:])
-        if any(m in tail for m in not_ready):
-            time.sleep(0.5)
-            continue
-        if any(m in tail for m in markers):
-            if proc_name == "kimi":
-                time.sleep(1.5)
-            return True
-        time.sleep(0.5)
-    return False
+):
+    """Poll tmux pane until CLI UI ready markers appear, returning WakeReadyResult."""
+    return _wait_cli_ui_ready(
+        lambda: capture_pane_fn(agent_name),
+        get_ready_markers(agent_name),
+        process_name=get_process_name(agent_name),
+        timeout_s=timeout_s,
+    )
 
 
 def wake_on_deliver(
@@ -125,7 +138,10 @@ def wake_on_deliver(
     Idempotent + concurrency-safe. Returns True when agent is ready.
     """
     if has_live_cli(agent_name):
-        return wait_ready(agent_name, timeout_s=min(10, WAKE_READY_TIMEOUT_S))
+        ready = wait_ready(agent_name, timeout_s=min(10, WAKE_READY_TIMEOUT_S))
+        if not ready:
+            print(f"  ⚠️ wake_on_deliver: {agent_name} live CLI not ready: {ready.reason}")
+        return bool(ready)
 
     now = time.time()
     spawn_thread = False
@@ -136,7 +152,8 @@ def wake_on_deliver(
             ev = st["ready_event"]
         else:
             ev = threading.Event()
-            _wake_state[agent_name] = {"started_at": now, "ready_event": ev}
+            st = {"started_at": now, "ready_event": ev, "ok": False, "reason": "wake_in_progress"}
+            _wake_state[agent_name] = st
             spawn_thread = True
 
     if spawn_thread:
@@ -149,17 +166,27 @@ def wake_on_deliver(
                         capture_output=True, text=True, timeout=20,
                     )
                     if r.returncode != 0:
+                        st["reason"] = "wake_failed"
                         print(f"  ⚠️ wake_on_deliver: lifecycle wake "
                               f"{agent_name} 退出 {r.returncode}: "
                               f"{(r.stderr or '').strip()[:200]}")
-                    wait_ready(agent_name)
+                        return
+                    ready = wait_ready(agent_name)
+                    st["ok"] = bool(ready)
+                    st["reason"] = ready.reason
+                    if not ready:
+                        print(f"  ⚠️ wake_on_deliver: {agent_name} UI 未 ready: {ready.reason}")
             except subprocess.TimeoutExpired:
+                st["reason"] = "wake_timeout"
                 print(f"  ⚠️ wake_on_deliver: lifecycle wake {agent_name} 超时")
             except Exception as e:
+                st["reason"] = "unknown_error"
                 print(f"  ⚠️ wake_on_deliver: {agent_name} 异常: {e}")
             finally:
                 ev.set()
 
         threading.Thread(target=_do_wake, daemon=True).start()
 
-    return ev.wait(WAKE_READY_TIMEOUT_S + 5)
+    if not ev.wait(WAKE_READY_TIMEOUT_S + 5):
+        return False
+    return bool(st.get("ok"))

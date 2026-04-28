@@ -11,7 +11,8 @@ for _p in (_ROOT / "scripts", _ROOT / "src", _ROOT):
         sys.path.insert(0, str(_p))
 
 import feishu_msg
-import feishu_router
+from claudeteam.messaging.router import daemon as router_daemon
+from claudeteam.messaging.router.daemon import _RouterRuntime
 from claudeteam.storage import local_facts
 from claudeteam.runtime import queue as msg_queue
 
@@ -69,10 +70,10 @@ def check_send_direct():
         feishu_msg._notify_agent_tmux,
     )
     try:
-        feishu_msg.bitable_insert_message = (
-            lambda to, frm, content, priority:
-            captured.append(("bitable", to, frm, content, priority)) or "rid"
-        )
+        def fake_bitable_insert_message(to, frm, content, priority, *args, **kwargs):
+            captured.append(("bitable", to, frm, content, priority))
+            return "rid"
+        feishu_msg.bitable_insert_message = fake_bitable_insert_message
         feishu_msg.post_to_group = (
             lambda frm, to, content, priority:
             captured.append(("group", to, frm, content, priority)) or True
@@ -170,47 +171,53 @@ def check_queue():
     assert_eq(injected, ["排队任务"], "queue inject")
 
 
+def make_router_runtime(tmp):
+    team_file = Path(tmp) / "team.json"
+    team_file.write_text('{"agents":{"manager":{},"devops":{}}}\n', encoding="utf-8")
+    runtime = _RouterRuntime(
+        cfg={"chat_id": "", "_lark_cli": ["lark"], "_tmux_session": "sess", "_images_dir": str(tmp)},
+        team_file=str(team_file),
+        scripts_dir=str(Path(tmp) / "scripts"),
+    )
+    runtime._refresh_heartbeat = lambda: None
+    runtime._advance_cursor = lambda: None
+    runtime._advance_cursor_to = lambda ts: None
+    runtime._load_cursor = lambda: 1776720000.0
+    runtime._render_inbox = lambda text: text
+    runtime._render_tmux = lambda title, subtitle, content, agent: content
+    runtime._adapter = lambda agent: type("Adapter", (), {
+        "process_name": lambda self: "claude",
+        "ready_markers": lambda self: ["ready"],
+        "submit_keys": lambda self: ["Enter"],
+    })()
+    return runtime
+
+
 def check_router_default_route():
     injected = []
-    old = (
-        feishu_router.wake_on_deliver,
-        feishu_router.has_pending_messages,
-        feishu_router.inject_when_idle,
-        feishu_router.enqueue_message,
-        feishu_router._refresh_heartbeat,
-        feishu_router._advance_cursor,
-    )
-    try:
-        feishu_router._state.seen_ids.clear()
-        feishu_router._state.chat_id = ""
-        feishu_router.wake_on_deliver = lambda agent: True
-        feishu_router.has_pending_messages = lambda agent: False
-        feishu_router.inject_when_idle = (
-            lambda session, agent, prompt, **kw:
-            injected.append((agent, prompt)) or True
-        )
-        feishu_router.enqueue_message = (
-            lambda agent, prompt, msg_id, is_user_msg=False:
-            injected.append((agent, prompt))
-        )
-        feishu_router._refresh_heartbeat = lambda: None
-        feishu_router._advance_cursor = lambda: None
-        feishu_router.handle_event({
-            "message_id": "regression-msg-1",
-            "chat_id": "",
-            "sender_id": "user-open-id",
-            "text": f"{SPAWN_MODEL}\n默认路由任务",
-            "message_type": "text",
-        })
-    finally:
-        (
-            feishu_router.wake_on_deliver,
-            feishu_router.has_pending_messages,
-            feishu_router.inject_when_idle,
-            feishu_router.enqueue_message,
-            feishu_router._refresh_heartbeat,
-            feishu_router._advance_cursor,
-        ) = old
+    with tempfile.TemporaryDirectory() as tmp:
+        runtime = make_router_runtime(tmp)
+        old_wake = router_daemon.wake_on_deliver
+        old_inject = router_daemon.inject_when_idle if hasattr(router_daemon, "inject_when_idle") else None
+        try:
+            router_daemon.wake_on_deliver = lambda *a, **kw: True
+            import claudeteam.runtime.tmux_utils as tmux_utils
+            old_tmux_inject = tmux_utils.inject_when_idle
+            tmux_utils.inject_when_idle = lambda session, agent, prompt, **kw: injected.append((agent, prompt)) or True
+            runtime._has_pending = lambda agent: False
+            runtime._enqueue = lambda agent, prompt, msg_id, is_user_msg=False: injected.append((agent, prompt))
+            runtime.handle_event({
+                "message_id": "regression-msg-1",
+                "chat_id": "",
+                "sender_id": "user-open-id",
+                "text": f"{SPAWN_MODEL}\n默认路由任务",
+                "message_type": "text",
+            })
+        finally:
+            router_daemon.wake_on_deliver = old_wake
+            if old_inject is not None:
+                router_daemon.inject_when_idle = old_inject
+            tmux_utils.inject_when_idle = old_tmux_inject
 
     assert injected, "router did not inject"
     agent, prompt = injected[0]
@@ -219,61 +226,63 @@ def check_router_default_route():
     assert "默认路由任务" in prompt
 
 
+def check_router_wake_failure_queues_without_injecting():
+    calls = []
+    with tempfile.TemporaryDirectory() as tmp:
+        runtime = make_router_runtime(tmp)
+        old_wake = router_daemon.wake_on_deliver
+        try:
+            router_daemon.wake_on_deliver = lambda *a, **kw: False
+            import claudeteam.runtime.tmux_utils as tmux_utils
+            old_tmux_inject = tmux_utils.inject_when_idle
+            tmux_utils.inject_when_idle = lambda session, agent, prompt, **kw: calls.append(("inject", agent, prompt)) or True
+            runtime._has_pending = lambda agent: False
+            runtime._enqueue = lambda agent, prompt, msg_id, is_user_msg=False: calls.append(("enqueue", agent, prompt, msg_id, is_user_msg))
+            runtime.handle_event({
+                "message_id": "regression-wake-fail-1",
+                "chat_id": "",
+                "sender_id": "user-open-id",
+                "text": "worker task after wake failure",
+                "message_type": "text",
+            })
+        finally:
+            router_daemon.wake_on_deliver = old_wake
+            tmux_utils.inject_when_idle = old_tmux_inject
+
+    assert calls, "wake failure did not enqueue"
+    assert calls[0][0] == "enqueue", calls
+    assert not any(c[0] == "inject" for c in calls), calls
+
+
 def check_history_replay_route():
     injected = []
-    old = (
-        feishu_router._load_cursor,
-        feishu_router._advance_cursor,
-        feishu_router._advance_cursor_to,
-        feishu_router._refresh_heartbeat,
-        feishu_router._lark_run,
-        feishu_router.wake_on_deliver,
-        feishu_router.has_pending_messages,
-        feishu_router.inject_when_idle,
-        feishu_router.enqueue_message,
-    )
-    try:
-        feishu_router._state.seen_ids.clear()
-        feishu_router._state.chat_id = ""
-        feishu_router._load_cursor = lambda: 1776720000.0
-        feishu_router._advance_cursor = lambda: None
-        feishu_router._advance_cursor_to = lambda ts: None
-        feishu_router._refresh_heartbeat = lambda: None
-        feishu_router._lark_run = lambda args, timeout=40: {
-            "messages": [{
-                "message_id": "regression-replay-1",
-                "create_time": "1776720001000",
-                "sender": {"sender_type": "user", "id": "user-open-id"},
-                "msg_type": "text",
-                "content": json.dumps({
-                    "text": f"{SPAWN}\nreplay任务\n{SPAWN_MODEL}"
-                }),
-            }],
-            "has_more": False,
-        }
-        feishu_router.wake_on_deliver = lambda agent: True
-        feishu_router.has_pending_messages = lambda agent: False
-        feishu_router.inject_when_idle = (
-            lambda session, agent, prompt, **kw:
-            injected.append((agent, prompt)) or True
-        )
-        feishu_router.enqueue_message = (
-            lambda agent, prompt, msg_id, is_user_msg=False:
-            injected.append((agent, prompt))
-        )
-        replayed = feishu_router._catchup_from_history("chat-id")
-    finally:
-        (
-            feishu_router._load_cursor,
-            feishu_router._advance_cursor,
-            feishu_router._advance_cursor_to,
-            feishu_router._refresh_heartbeat,
-            feishu_router._lark_run,
-            feishu_router.wake_on_deliver,
-            feishu_router.has_pending_messages,
-            feishu_router.inject_when_idle,
-            feishu_router.enqueue_message,
-        ) = old
+    with tempfile.TemporaryDirectory() as tmp:
+        runtime = make_router_runtime(tmp)
+        old_wake = router_daemon.wake_on_deliver
+        try:
+            router_daemon.wake_on_deliver = lambda *a, **kw: True
+            import claudeteam.runtime.tmux_utils as tmux_utils
+            old_tmux_inject = tmux_utils.inject_when_idle
+            tmux_utils.inject_when_idle = lambda session, agent, prompt, **kw: injected.append((agent, prompt)) or True
+            runtime._has_pending = lambda agent: False
+            runtime._enqueue = lambda agent, prompt, msg_id, is_user_msg=False: injected.append((agent, prompt))
+            from claudeteam.integrations.feishu import client as feishu_client
+            old_lark_run = feishu_client._lark_run
+            feishu_client._lark_run = lambda args, timeout=40: {
+                "messages": [{
+                    "message_id": "regression-replay-1",
+                    "create_time": "1776720001000",
+                    "sender": {"sender_type": "user", "id": "user-open-id"},
+                    "msg_type": "text",
+                    "content": json.dumps({"text": f"{SPAWN}\nreplay任务\n{SPAWN_MODEL}"}),
+                }],
+                "has_more": False,
+            }
+            replayed = runtime.catchup_from_history("chat-id")
+        finally:
+            router_daemon.wake_on_deliver = old_wake
+            tmux_utils.inject_when_idle = old_tmux_inject
+            feishu_client._lark_run = old_lark_run
 
     assert_eq(replayed, 1, "history replay count")
     assert injected, "history replay did not inject"
@@ -291,6 +300,7 @@ def main():
         check_say_file()
         check_queue()
         check_router_default_route()
+        check_router_wake_failure_queues_without_injecting()
         check_history_replay_route()
     print("✅ message sanitizer regression passed")
 

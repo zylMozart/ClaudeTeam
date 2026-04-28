@@ -6,6 +6,8 @@ All handlers receive SlashContext for dependency injection.
 """
 from __future__ import annotations
 
+import re
+
 from .context import SlashContext
 from . import help_, tmux_, team, usage, health
 
@@ -14,14 +16,35 @@ from . import help_, tmux_, team, usage, health
 _HANDLERS = [
     help_.handle,
     team.handle_team,
-    team.handle_stop,
-    team.handle_clear,
     usage.handle_usage,
     health.handle_health,
     tmux_.handle_tmux,
     tmux_.handle_send,
     tmux_.handle_compact,
+    tmux_.handle_stop,
+    tmux_.handle_clear,
 ]
+
+_MATCHERS = [
+    r"/help\s*",
+    r"/team\s*",
+    r"/usage(?:\s+\S+)?\s*",
+    r"/health\s*",
+    r"/tmux(?:\s+[A-Za-z0-9_-]+)?(?:\s+\d+)?\s*",
+    r"/send(?:\s+\S+(?:\s+.+)?)?\s*",
+    r"/compact(?:\s+\S+)?\s*",
+    r"/stop(?:\s+\S+)?\s*",
+    r"/clear(?:\s+\S+)?\s*",
+]
+
+
+def is_slash_command(text: str) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return False
+    return any(re.fullmatch(pattern, stripped, re.DOTALL) for pattern in _MATCHERS)
 
 
 def dispatch(text: str, ctx: SlashContext) -> tuple[bool, object]:

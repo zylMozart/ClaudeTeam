@@ -43,6 +43,7 @@ class SlashContext:
     now_bj: Callable[[], datetime] = field(default=_now_bj)
     # Optional: injected by shell in P3.5b; None → handler shows stub message
     collect_health: Optional[Callable[[], dict]] = field(default=None)
+    live_usage: bool = False
 
     @property
     def agent_set(self) -> frozenset:

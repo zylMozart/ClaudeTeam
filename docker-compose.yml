@@ -42,6 +42,8 @@ services:
     # 用户读不到。Claude Code 的 --dangerously-skip-permissions 模式本来就要求
     # IS_SANDBOX=1 表示受信任环境,以 root 身份运行容器不额外降低安全性。
     user: "0:0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     # ── 环境变量 ──────────────────────────────────────────────
     environment:
@@ -109,8 +111,8 @@ services:
       # 两者缺一不可,否则容器内 Claude Code 会显示 "Select login method" 菜单。
       # 不用 :ro —— Claude Code 需要刷写 OAuth token + 更新 projects 等运行态。
       # 如果走 API key 路线 (.env 里填 ANTHROPIC_API_KEY),这两行可以去掉。
-      - ~/.claude/.credentials.json:/home/claudeteam/.claude/.credentials.json
-      - ~/.claude.json:/home/claudeteam/.claude.json
+      - /home/admin/.claude/.credentials.json:/home/claudeteam/.claude/.credentials.json
+      - /home/admin/.claude.json:/home/claudeteam/.claude.json
 
       # Kimi Code 凭证持久化 — 避免每次容器重建都要手动 /login
       # kimi-cli 把 OAuth token + config + sessions 存在 $HOME/.kimi/

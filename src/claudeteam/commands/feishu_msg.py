@@ -11,7 +11,7 @@ USAGE_TEXT = """飞书通讯脚本 — ClaudeTeam（lark-cli 封装层）
 用法:
   python3 scripts/feishu_msg.py send <收件人> <发件人> "<消息>" [优先级]
   python3 scripts/feishu_msg.py direct <收件人> <发件人> "<消息>"
-  python3 scripts/feishu_msg.py say <发件人> ["<消息>"] [--image <路径>]
+  python3 scripts/feishu_msg.py say <发件人> ["<消息>"] [--image <路径>] [--reply <message_id>] [--reply-in-thread]
   python3 scripts/feishu_msg.py inbox <agent名称>
   python3 scripts/feishu_msg.py read <record_id>
   python3 scripts/feishu_msg.py status <agent> <状态> "<任务>" ["<阻塞原因>"]
@@ -24,7 +24,7 @@ USAGE_TEXT = """飞书通讯脚本 — ClaudeTeam（lark-cli 封装层）
 类型:   状态更新 | 任务日志 | 消息发出 | 消息收到 | 产出记录 | 阻塞上报
 """
 
-SAY_USAGE = '用法: say <发件人> ["<消息>"] [--image <路径>]'
+SAY_USAGE = '用法: say <发件人> ["<消息>"] [--image <路径>] [--reply <message_id>] [--reply-in-thread]'
 SEND_USAGE = '用法: send <收件人> <发件人> "<消息>" [优先级] [--task <task_id>] [--file <路径>]'
 DIRECT_USAGE = "用法: direct <收件人> <发件人> '<消息>'"
 INBOX_USAGE = "用法: inbox <agent>"
@@ -54,7 +54,7 @@ class DispatchResult:
 COMMAND_PARAM_KEYS: dict[str, tuple[str, ...]] = {
     "send": ("to_agent", "from_agent", "message", "priority", "task_id", "file_path"),
     "direct": ("to_agent", "from_agent", "message"),
-    "say": ("from_agent", "message", "image_path"),
+    "say": ("from_agent", "message", "image_path", "reply_to", "reply_in_thread"),
     "inbox": ("agent_name",),
     "read": ("record_id",),
     "status": ("agent_name", "status", "task", "blocker"),
@@ -80,10 +80,20 @@ def parse_argv(argv) -> ParsedCommand:
     if cmd == "say":
         say_args = list(args[1:])
         image_path = ""
-        if "--image" in say_args:
-            idx = say_args.index("--image")
-            image_path = say_args[idx + 1] if idx + 1 < len(say_args) else ""
-            say_args = [a for i, a in enumerate(say_args) if i != idx and i != idx + 1]
+        reply_to = ""
+        reply_in_thread = False
+        if "--reply-in-thread" in say_args:
+            say_args = [a for a in say_args if a != "--reply-in-thread"]
+            reply_in_thread = True
+        for flag in ("--image", "--reply"):
+            if flag in say_args:
+                idx = say_args.index(flag)
+                val = say_args[idx + 1] if idx + 1 < len(say_args) else ""
+                say_args = [a for i, a in enumerate(say_args) if i != idx and i != idx + 1]
+                if flag == "--image":
+                    image_path = val
+                else:
+                    reply_to = val
         if len(say_args) < 1:
             return _usage_error("say", SAY_USAGE)
         return ParsedCommand(
@@ -92,6 +102,8 @@ def parse_argv(argv) -> ParsedCommand:
                 "from_agent": say_args[0],
                 "message": say_args[1] if len(say_args) > 1 else "",
                 "image_path": image_path,
+                "reply_to": reply_to,
+                "reply_in_thread": reply_in_thread,
             },
         )
 

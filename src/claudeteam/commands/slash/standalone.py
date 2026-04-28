@@ -19,7 +19,7 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from claudeteam.commands.slash.context import SlashContext
-from claudeteam.commands.slash.dispatch import dispatch as _src_dispatch
+from claudeteam.commands.slash.dispatch import dispatch as _src_dispatch, is_slash_command as _is_slash_command
 from claudeteam.runtime.health import collect_health as _collect_health_impl
 from claudeteam.runtime.config import PROJECT_ROOT
 
@@ -48,7 +48,14 @@ def _send_to_agent(session: str, agent: str, msg: str) -> bool:
     target = f"{session}:{agent}"
     try:
         from claudeteam.runtime.tmux_utils import inject_when_idle
-        return inject_when_idle(session, agent, msg, wait_secs=5, force_after_wait=True)
+        result = inject_when_idle(session, agent, msg, wait_secs=5, force_after_wait=True)
+        if result:
+            return True
+        if getattr(result, "unsafe_input", False):
+            subprocess.run(["tmux", "send-keys", "-t", target, "C-u"], capture_output=True, timeout=5)
+            time.sleep(0.2)
+            return bool(inject_when_idle(session, agent, msg, wait_secs=5, force_after_wait=True))
+        return False
     except Exception:
         pass
     r = subprocess.run(["tmux", "send-keys", "-l", "-t", target, msg],
@@ -93,42 +100,16 @@ def build_context() -> SlashContext:
         query_usage=_query_usage,
         now_bj=lambda: datetime.now(BJ_TZ),
         collect_health=lambda: _collect_health_impl(agent_set, session),
+        live_usage=True,
     )
 
 
-_scripts_slash_mod = None
 
-def _try_scripts_slash(text: str):
-    """Delegate to scripts/slash_commands.py if available (richer card format)."""
-    global _scripts_slash_mod
-    if _scripts_slash_mod is False:
-        return None
-    if _scripts_slash_mod is None:
-        sc = Path(PROJECT_ROOT) / "scripts" / "slash_commands.py"
-        if not sc.exists():
-            _scripts_slash_mod = False
-            return None
-        try:
-            scripts_dir = str(Path(PROJECT_ROOT) / "scripts")
-            if scripts_dir not in sys.path:
-                sys.path.insert(0, scripts_dir)
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("_slash_commands_scripts", str(sc))
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            _scripts_slash_mod = mod
-        except Exception:
-            _scripts_slash_mod = False
-            return None
-    try:
-        return _scripts_slash_mod.dispatch(text)
-    except Exception:
-        return None
+def is_slash_command(text: str) -> bool:
+    """Return whether text is a recognized slash command without side effects."""
+    return _is_slash_command(text)
 
 
 def dispatch(text: str):
     """Route text to a slash handler. Returns (matched: bool, reply)."""
-    result = _try_scripts_slash(text)
-    if result is not None and result[0]:
-        return result
     return _src_dispatch(text, build_context())

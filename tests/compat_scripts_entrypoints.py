@@ -29,6 +29,7 @@ for path in (SCRIPTS, SRC, ROOT):
 RESOLVE_SCRIPT = ROOT / "src" / "claudeteam" / "cli_adapters" / "resolve.py"
 FEISHU_MSG_SCRIPT = ROOT / "scripts" / "feishu_msg.py"
 WATCHDOG_SCRIPT = ROOT / "scripts" / "watchdog.py"
+FEISHU_ROUTER_SCRIPT = ROOT / "scripts" / "feishu_router.py"
 MODULE_WRAPPERS = ()
 
 
@@ -3913,6 +3914,14 @@ def test_watchdog_orphans_wrapper_gate() -> None:
         watchdog.os.kill = old_os_kill
 
 
+def test_feishu_router_wrapper_delegates_to_src_daemon() -> None:
+    text = FEISHU_ROUTER_SCRIPT.read_text(encoding="utf-8")
+    assert "claudeteam.messaging.router.daemon import main" in text
+    assert "raise SystemExit(main())" in text
+    assert "event +subscribe" not in text
+    assert "class RouterState" not in text
+
+
 def test_module_wrapper_scripts_execute_cleanly() -> None:
     for script in MODULE_WRAPPERS:
         result = run_python(script)
@@ -4019,6 +4028,7 @@ def main() -> int:
     test_watchdog_proc_match_wrapper_gate()
     test_watchdog_orphans_helper_import_and_contract_gate_when_present()
     test_watchdog_orphans_wrapper_gate()
+    test_feishu_router_wrapper_delegates_to_src_daemon()
     test_module_wrapper_scripts_execute_cleanly()
     test_resolve_usage_and_unknown_attribute_exit_codes()
     test_resolve_spawn_and_resume_contracts()

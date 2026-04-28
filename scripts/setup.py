@@ -4,9 +4,19 @@
 底层通过 lark-cli 执行飞书 API 操作（im/base 命令）。
 运行：python3 scripts/setup.py
 """
-import sys, os, json, time, subprocess, glob, shutil
+import sys, os, json, time, subprocess, shutil
 
-from claudeteam.runtime.config import AGENTS, CONFIG_FILE, TMUX_SESSION, PROJECT_ROOT, save_runtime_config, get_lark_cli
+from claudeteam.runtime.config import (
+    AGENTS,
+    CONFIG_FILE,
+    TMUX_SESSION,
+    PROJECT_ROOT,
+    get_lark_cli,
+    load_runtime_config,
+    load_runtime_config_from_path,
+    save_runtime_config,
+    scan_other_deployments,
+)
 
 LARK_CLI = get_lark_cli()  # 自动带 --profile（如已初始化）
 
@@ -17,51 +27,7 @@ TEAM_JSON_BACKUP = os.path.join(os.path.dirname(__file__), ".team.json.prev")
 # ── 同机多团队部署的 profile 冲突检查 ─────────────────────────────
 
 def _scan_other_deployments(current_root):
-    """扫描宿主机上其他 ClaudeTeam 部署的 runtime_config.json。
-
-    搜索范围: $HOME 以及 $CLAUDE_TEAM_SEARCH_PATHS (冒号分隔) 下的
-    */ClaudeTeam/scripts/runtime_config.json 文件。当前项目自身排除在外。
-
-    返回 list[dict]: [{"path": <project_root>, "session": ..., "lark_profile": ...}, ...]
-    """
-    search_roots = [os.path.expanduser("~")]
-    extra = os.environ.get("CLAUDE_TEAM_SEARCH_PATHS", "")
-    if extra:
-        search_roots.extend(p for p in extra.split(":") if p)
-
-    current_real = os.path.realpath(current_root)
-    results = []
-    seen = set()
-
-    for root in search_roots:
-        if not os.path.isdir(root):
-            continue
-        pattern = os.path.join(root, "**", "ClaudeTeam", "scripts", "runtime_config.json")
-        for cfg_path in glob.iglob(pattern, recursive=True):
-            project_root = os.path.dirname(os.path.dirname(cfg_path))
-            real = os.path.realpath(project_root)
-            if real == current_real or real in seen:
-                continue
-            seen.add(real)
-            try:
-                with open(cfg_path) as f:
-                    cfg = json.load(f)
-            except Exception:
-                continue
-            team_path = os.path.join(project_root, "team.json")
-            session = ""
-            if os.path.exists(team_path):
-                try:
-                    with open(team_path) as f:
-                        session = json.load(f).get("session", "")
-                except Exception:
-                    pass
-            results.append({
-                "path": project_root,
-                "session": session,
-                "lark_profile": cfg.get("lark_profile"),
-            })
-    return results
+    return scan_other_deployments(current_root)
 
 
 def _current_default_profile():
@@ -459,8 +425,7 @@ def ensure_boss_todo_table():
     if not os.path.exists(CONFIG_FILE) or os.path.getsize(CONFIG_FILE) == 0:
         print(f"❌ 未找到有效 {CONFIG_FILE}，请先运行 python3 scripts/setup.py")
         sys.exit(1)
-    with open(CONFIG_FILE) as f:
-        cfg = json.load(f)
+    cfg = load_runtime_config()
     base_token = cfg.get("bitable_app_token")
     if not base_token:
         print("❌ runtime_config.json 缺少 bitable_app_token，无法创建老板代办表")
@@ -724,8 +689,7 @@ def main(argv=None):
     existing = {}
     if os.path.exists(CONFIG_FILE) and os.path.getsize(CONFIG_FILE) > 0:
         try:
-            with open(CONFIG_FILE) as f:
-                existing = json.load(f)
+            existing = load_runtime_config_from_path(CONFIG_FILE)
         except json.JSONDecodeError:
             print(f"⚠️  {CONFIG_FILE} 不是合法 JSON,当作未初始化处理")
             existing = {}

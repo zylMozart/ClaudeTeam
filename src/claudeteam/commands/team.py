@@ -28,7 +28,7 @@ def parse(text: str):
 def parse_agent_state(buf: str) -> tuple[str, str]:
     """Classify tmux pane content → (emoji, label)."""
     if not buf:
-        return ("❔", "无窗口")
+        return ("⬜", "无窗口")
     low = buf.lower()
     tail_lines = [l for l in buf.splitlines() if l.strip()]
     tail = tail_lines[-1] if tail_lines else ""

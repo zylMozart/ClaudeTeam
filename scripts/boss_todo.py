@@ -13,8 +13,10 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(__file__))
-from config import CONFIG_FILE, LARK_CLI
+_SRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+from claudeteam.runtime.config import LARK_CLI, load_runtime_config
 
 
 TABLE_NAME = "老板代办"
@@ -46,20 +48,6 @@ def extract_text(value):
     if value is None:
         return ""
     return str(value)
-
-
-def runtime_config_path():
-    return os.environ.get("CLAUDETEAM_RUNTIME_CONFIG") or CONFIG_FILE
-
-
-def load_runtime_config_file():
-    path = runtime_config_path()
-    if not os.path.exists(path):
-        print(f"❌ 未找到 runtime_config.json: {path}", file=sys.stderr)
-        print("   请先运行 python3 scripts/setup.py，或让 devops 写入老板代办表配置。", file=sys.stderr)
-        sys.exit(1)
-    with open(path) as f:
-        return json.load(f)
 
 
 def resolve_boss_todo_config(cfg):
@@ -400,7 +388,7 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    cfg = resolve_boss_todo_config(load_runtime_config_file())
+    cfg = resolve_boss_todo_config(load_runtime_config())
     store = make_store(cfg)
     if args.cmd == "create":
         cmd_create(store, args, cfg)
