@@ -424,7 +424,7 @@ In the page that opens:
 
 **Why a second authentication step?** The App ID / App Secret you already provided gives the *bot* permission to act. Feishu's permission model requires a *separate* user token for features that act on the user's personal data (their calendar, their docs, their private tasks, contact search). This scan is a one-time consent to let agents act on the user's behalf — it is unrelated to the App configuration itself, and cannot be skipped by providing more credentials.
 
-**Is this step optional?** Yes, for most ClaudeTeam use cases. The core loop (group chat, Bitable kanban, agent coordination) runs entirely on the bot identity. Only skip this if the user explicitly wants calendar / docs / personal-task automation. When in doubt, ask the user whether they need those features before running this step.
+**Is this step required?** Yes. Without user authorization, agents cannot send messages to the Feishu group chat (`say` command). The bot token only covers Bitable operations. Skip this step only if you exclusively use Bitable-based messaging.
 
 If proceeding, run:
 

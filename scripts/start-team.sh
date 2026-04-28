@@ -239,8 +239,11 @@ spawn_agent_window() {
   if [ "$first" = "--first" ]; then
     tmux new-session -d -s "$SESSION" -n "$agent" -c "$ROOT"
     # B4: 注入环境变量白名单到 tmux session (bash 3.2 兼容)
+    # Always inject CLAUDETEAM_FEISHU_REMOTE=1 so agents can use `feishu_msg.py say`
+    tmux set-environment -t "$SESSION" CLAUDETEAM_FEISHU_REMOTE 1
     for _var in ANTHROPIC_API_KEY CLAUDETEAM_LAZY_MODE CLAUDETEAM_LAZY_AGENTS \
                 CLAUDETEAM_DEFAULT_MODEL CLAUDETEAM_ENABLE_FEISHU_REMOTE \
+                CLAUDETEAM_FEISHU_REMOTE \
                 CLAUDETEAM_PROBE_TIMEOUT PYTHONPATH PATH; do
       eval "_val=\${$_var+SET}"
       if [ "$_val" = "SET" ]; then

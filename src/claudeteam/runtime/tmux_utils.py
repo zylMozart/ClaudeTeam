@@ -61,6 +61,29 @@ _PERMISSION_RE = re.compile(
 )
 _LOADING_RE = re.compile(r"loading configuration|resuming conversation|starting claude code|starting .*cli", re.I)
 _ERROR_RE = re.compile(r"traceback|fatal error|command not found|no such file|permission denied", re.I)
+
+# Claude Code CLI header separator: ─────────────── agent_name ──
+# Uses Unicode box-drawing character U+2500 (─).
+# The separator MUST contain non-dash text (the agent/session name) between
+# the dash runs.  A line of pure dashes (e.g. ────────────────) is just a
+# visual divider within the CLI UI and should NOT be treated as the header.
+_CLI_HEADER_SEP_RE = re.compile(r"[─]{3,}\s+\S.*[─]{2,}")
+
+# Shell commands that launched a CLI — these appear as shell history lines
+# with a prompt like `❯ IS_SANDBOX=1 claude ...` and must not be treated as
+# residual unsubmitted input.
+_SHELL_HISTORY_CMD_PATTERNS = (
+    "claude --dangerously-skip-permissions",
+    "IS_SANDBOX=1",
+    "kimi ",
+    "gemini ",
+    "codex ",
+    "qwen ",
+    "claude --",
+    "npx claude",
+    "claude-code",
+)
+
 _READY_PLACEHOLDERS = (
     "tab to queue message",
     "? for shortcuts",
@@ -142,12 +165,45 @@ def _tail_summary(text, max_len=240):
 
 
 def detect_unsubmitted_input_text(pane_text):
-    """Return residual input text if the visible prompt appears non-empty."""
+    """Return residual input text if the visible prompt appears non-empty.
+
+    Key insight: when a CLI (Claude Code, etc.) is running, the pane looks like:
+
+        ❯ IS_SANDBOX=1 claude --dangerously-skip-permissions ...   ← shell history
+        ─────────────────── agent_name ──                          ← CLI header separator
+        ... CLI output ...
+        ❯                                                          ← active input area
+
+    Any ``❯ <text>`` line that appears ABOVE (or at) the CLI header separator
+    is **shell history** — an already-executed command — and must NOT be treated
+    as residual unsubmitted input.  Only lines BELOW the last separator are
+    candidates for active input detection.
+
+    Additionally, lines that match common CLI spawn patterns (e.g. containing
+    ``claude --dangerously-skip-permissions``) are always ignored regardless of
+    position.
+    """
     lines = _strip_control(pane_text).rstrip().splitlines()
-    for raw in reversed(lines[-8:]):
+    tail = lines[-8:]
+
+    # Find the last CLI header separator in the tail window.
+    # Everything at or above this index is shell history / CLI chrome.
+    sep_idx = -1  # -1 means "no separator found"
+    for i, raw in enumerate(tail):
+        if _CLI_HEADER_SEP_RE.search(raw):
+            sep_idx = i
+
+    # Only inspect lines BELOW the separator (the active input area).
+    # If no separator is found the pane may still be in the shell or in a CLI
+    # that hasn't rendered its header yet — in that case we still scan, but
+    # apply the shell-history skip list aggressively.
+    candidate_start = sep_idx + 1 if sep_idx >= 0 else 0
+
+    for raw in reversed(tail[candidate_start:]):
         s = raw.strip()
         if not s:
             continue
+        # Empty prompt or placeholder → prompt is clean
         if _EMPTY_INPUT_PROMPT_RE.match(s) or any(ph in s for ph in _READY_PLACEHOLDERS):
             return ""
         m = _INPUT_PROMPT_RE.match(s)
@@ -156,6 +212,9 @@ def detect_unsubmitted_input_text(pane_text):
         text = m.group("text").strip()
         if not text or any(ph in text for ph in _READY_PLACEHOLDERS):
             return ""
+        # Skip lines that look like shell commands used to launch a CLI
+        if any(pat in text for pat in _SHELL_HISTORY_CMD_PATTERNS):
+            continue
         return text
     return ""
 
