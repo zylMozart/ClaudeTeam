@@ -109,6 +109,37 @@ The whole process takes about 5 minutes.
 
 ---
 
+## Feishu Bot Setup
+
+ClaudeTeam requires a Feishu enterprise custom app (bot) with the correct permissions, event subscriptions, and callbacks configured. There are two ways to set this up:
+
+### Automated Setup (recommended)
+
+Use the included Playwright script to create and fully configure a Feishu bot in one command — no manual clicking through the developer console.
+
+```bash
+cd scripts/feishu_bot_creator
+npm install
+npx playwright install chromium
+
+# Step 1: Login (scan QR code with Feishu, one-time)
+node create_feishu_bot.js login
+
+# Step 2: Create a bot
+node create_feishu_bot.js create my-bot "My ClaudeTeam bot"
+
+# Or batch-create multiple bots
+node create_feishu_bot.js batch bots.json
+```
+
+The script automates all 7 steps: app creation, bot capability, permission import (483 scopes), data access range, event subscriptions (persistent connection + message events), card callbacks, and version publishing.
+
+### Manual Setup
+
+Follow the step-by-step guide with screenshots: **[Feishu Bot Setup Guide (飞书机器人创建指南)](docs/setup_feishu_bots.md)**
+
+---
+
 ## Docker Deployment (alternative, hands-off)
 
 If you want a fully containerized deploy with no shared state on the host, use this flow instead of `claude`:

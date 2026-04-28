@@ -95,6 +95,37 @@ claude
 
 ---
 
+## 飞书机器人配置
+
+ClaudeTeam 需要一个飞书企业自建应用（机器人），并配置正确的权限、事件订阅和回调。有两种方式：
+
+### 自动化配置（推荐）
+
+使用内置的 Playwright 脚本一键创建并配置飞书机器人，无需手动操作开发者后台。
+
+```bash
+cd scripts/feishu_bot_creator
+npm install
+npx playwright install chromium
+
+# 第一步：登录（飞书扫码，仅需一次）
+node create_feishu_bot.js login
+
+# 第二步：创建机器人
+node create_feishu_bot.js create my-bot "我的 ClaudeTeam 机器人"
+
+# 或批量创建多个机器人
+node create_feishu_bot.js batch bots.json
+```
+
+脚本自动完成全部 7 个步骤：创建应用、添加机器人能力、导入权限（483 条）、配置数据范围、事件订阅（长连接 + 消息事件）、卡片回调、创建版本并发布。
+
+### 手动配置
+
+参考带截图的分步指南：**[飞书机器人创建指南](setup_feishu_bots.md)**
+
+---
+
 ## 使用方法
 
 ### 与团队对话
