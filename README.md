@@ -72,14 +72,15 @@ Feishu Bitable (message storage, status board, kanban)
 **Quick Start** (host-native, guided by `claude`):
 
 
-| Requirement     | Version    | Check                                    |
-| --------------- | ---------- | ---------------------------------------- |
-| macOS or Linux  | —          | —                                        |
-| Python          | 3.8+       | `python3 --version`                      |
-| Node.js         | 18+        | `node --version`                         |
-| tmux            | any        | `tmux -V`                                |
-| Claude Code CLI | latest     | `claude --version`                       |
-| Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
+| Requirement     | Version    | Check                                                                             |
+| -----------------| ------------| -----------------------------------------------------------------------------------|
+| macOS or Linux  | —          | —                                                                                 |
+| Python          | 3.10+      | `python3 --version`                                                               |
+| Node.js         | 18+        | `node --version`                                                                  |
+| tmux            | any        | `tmux -V`                                                                         |
+| Claude Code CLI | latest     | `claude --version`                                                                |
+| Playwright      | auto       | `cd scripts/feishu_bot_creator && npm install && npx playwright install chromium` |
+| Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn)                                          |
 
 
 **Docker Deployment** only needs Docker 20.10+, Docker Compose v2, and a Feishu account.
@@ -351,85 +352,79 @@ If the line count is 0, the App is missing event subscriptions. Run `config init
 
 ## Phase 1: Configure Feishu App
 
-`lark-cli config init --new` handles everything: app creation, permissions, event subscription, and publishing — all in one command.
+### Choose setup path
 
-### Step 1: Run config init
+| Situation                                | Path                                                               |
+| ------------------------------------------| --------------------------------------------------------------------|
+| **No existing Feishu App** (most users)  | **Path A: Automated Bot Creator** ← default, always try this first |
+| User explicitly provides App ID + Secret | **Path B: Configure existing App**                                 |
 
-```bash
-npx @larksuite/cli config init --new
-```
+**⚠️ IMPORTANT: Default to Path A.** Unless the user hands you an App ID and Secret upfront, always use the automated bot creator. It creates a fully configured Feishu App in one shot — all 483 permissions, event subscriptions, callbacks, and publishing — with only one QR scan from the user. Path B is the fallback for users who already have a configured App.
 
-This opens a browser page. Tell the user:
+---
 
-> A browser window has opened. Please:
->
-> 1. **Scan the QR code** with Feishu to log in
-> 2. Choose **"Create"** (to make a new app) or **"Use Existing App"** (if you already have one)
-> 3. Click **"Confirm"** — that's it!
+### Path A: Automated Bot Creator (default)
 
-Wait for the CLI to print `OK: 应用配置成功!` — this means the app is created, permissions and events are configured, and the app is published.
+The Playwright-based bot creator at `scripts/feishu_bot_creator/` automates all 7 configuration steps that would otherwise require manual clicks in the Feishu developer console. **Use this path by default.**
 
-### Step 2: Add remaining permissions
-
-`config init` adds basic scopes, but ClaudeTeam needs more (Bitable, chat management, etc.). Batch-import them:
-
-Open the app's Permissions page:
+#### Step A1: Install dependencies
 
 ```bash
-# Get the App ID from lark-cli config
-APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
-open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || xdg-open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || echo "Please open: https://open.feishu.cn/app/${APP_ID}/auth"
+cd scripts/feishu_bot_creator && npm install && npx playwright install chromium
 ```
 
-Tell the user:
+If this fails (e.g. network issue, unsupported platform), fall back to Path B.
 
-> I've opened the Permissions page. Please:
->
-> 1. Click **"Batch import/export scopes"**
-> 2. Select all text in the editor, delete it
-> 3. Paste the JSON I'll give you, then click **"Next, Review New Scopes"** → **"Add"**
-
-`config/feishu_scopes.json` is already in the exact format Feishu's batch import expects — paste it as-is:
+#### Step A2: Login (one-time QR scan)
 
 ```bash
-cat config/feishu_scopes.json
+cd scripts/feishu_bot_creator && node create_feishu_bot.js login
 ```
 
-The shipped file includes both tenant and user scopes for the full ClaudeTeam feature set: IM, Bitable/Base, Docs/Docx, Drive, Wiki, Sheets, Tasks, contacts, search, and long-lived user authorization via `offline_access`. Feishu's umbrella scopes are inconsistent, so the file intentionally keeps both broad scopes such as `im:message` / `bitable:app` and fine-grained scopes such as `base:record:*`. If you ever see `99991672 Access denied. One of the following scopes is required: [some:scope]` at runtime, add `some:scope` to `feishu_scopes.json`, re-import, and re-publish.
+A browser window opens. Tell the user:
 
-**⚠️ Don't forget to publish.** After adding the scopes, click **"Create version & Publish"** in the top-right corner of the developer console. Without publishing, every API call will keep failing with `99991672`.
+> A browser window has opened. Please **scan the QR code with Feishu** to log in.
 
-### Step 2.5: Subscribe to events (only if you didn't use `config init --new`)
+Wait for `Login complete. Cookies saved.` in the output. Cookies are cached — subsequent runs skip this step.
 
-If Phase 1 Step 1 used `npx @larksuite/cli config init --new` and you scanned the QR code, **skip this step** — the CLI already pushed event subscriptions to the Feishu server side as part of app creation.
-
-If instead you supplied an existing `App ID` + `App Secret` (e.g. via `config init --app-id ... --app-secret-stdin`, or you created the App manually in the Feishu web console), then your App **does not yet have any events subscribed on the server side**. Symptom: router starts fine, `chat-search --as bot` returns `ok: true`, but the router's "45 seconds 0 events" warning fires and messages from your group never reach any agent.
-
-**To fix in the Feishu developer console:**
+#### Step A3: Create the bot
 
 ```bash
-APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
-open "https://open.feishu.cn/app/${APP_ID}/event" 2>/dev/null \
-  || echo "Open: https://open.feishu.cn/app/${APP_ID}/event"
+cd scripts/feishu_bot_creator && node create_feishu_bot.js create claudeteam-bot "ClaudeTeam multi-agent coordination bot"
 ```
 
-In the page that opens:
+The script automates all 7 steps:
+1. Creates the custom app
+2. Adds bot capability
+3. Imports all 483 permissions (tenant + user scopes)
+4. Sets data access range to "All"
+5. Configures event subscriptions (persistent connection + message events)
+6. Configures card callbacks (persistent connection)
+7. Creates version and publishes
 
-1. Sidebar → **"事件与回调" → "事件订阅"**
-2. Set **传输方式 / Transport** to **"长连接" (long-polling / WebSocket)**, NOT webhook (ClaudeTeam's router uses `lark-cli event +subscribe` over WebSocket)
-3. Click **"添加事件" / Add Event**, search for `im.message.receive_v1` (display name: "**接收消息 v2.0**" or "**Receive Message**") → Add
-4. Save
-5. **Re-publish a new version** (top-right corner). Without re-publishing, the new event subscription is staged but not live.
+Watch for the final line: `Result: cli_xxxxxxxxx` — this is the **App ID**.
 
-**To verify it actually works:** restart the router (or the whole container) and watch for the "45 seconds 0 events" warning. If it stays silent past 45 seconds and you can see incoming messages flowing through, you're good.
+#### Step A4: Get App Secret and configure lark-cli
 
-### Step 3: User login (enables calendar, docs, tasks, contacts)
+The bot is created and published, but lark-cli still needs credentials to make API calls. Tell the user:
 
-**Why a second authentication step?** The App ID / App Secret you already provided gives the *bot* permission to act. Feishu's permission model requires a *separate* user token for features that act on the user's personal data (their calendar, their docs, their private tasks, contact search). This scan is a one-time consent to let agents act on the user's behalf — it is unrelated to the App configuration itself, and cannot be skipped by providing more credentials.
+> The bot has been created! Now I need the App Secret. I'll open the credentials page — please copy the **App Secret** and paste it here.
 
-**Is this step required?** Yes. Without user authorization, agents cannot send messages to the Feishu group chat (`say` command). The bot token only covers Bitable operations. Skip this step only if you exclusively use Bitable-based messaging.
+```bash
+APP_ID=<app_id_from_step_A3>
+open "https://open.feishu.cn/app/${APP_ID}/credentials" 2>/dev/null \
+  || echo "Please open: https://open.feishu.cn/app/${APP_ID}/credentials"
+```
 
-If proceeding, run:
+Once the user provides the App Secret, configure lark-cli:
+
+```bash
+echo "<app_secret>" | npx @larksuite/cli config init --app-id <app_id> --app-secret-stdin
+```
+
+#### Step A5: User login
+
+Run `auth login` to get a user token (required for group chat messaging):
 
 ```bash
 npx @larksuite/cli auth login --domain all
@@ -439,15 +434,79 @@ This prints a device-flow verification URL. **Do not ask the user to run the com
 
 > Please open this link in your browser and authorize with your Feishu account: `<url>`. Authorization code: `<code>`.
 
-Wait for `OK: 登录成功!`. If you see `no permission`, the scopes from Step 2 were not published yet — go back and publish, then retry.
+Wait for `OK: 登录成功!`. If you see `no permission`, the app may not be fully published — go back to the Feishu developer console, publish a new version, then retry.
 
-### Step 4: Verify
+#### Step A6: Verify
 
 ```bash
 npx @larksuite/cli im +chat-search --query "test" --as bot
 ```
 
 If it returns `{"ok": true, ...}`, you're good. Proceed to Phase 2.
+
+---
+
+### Path B: Configure existing App (fallback)
+
+Use this path **only** when the user explicitly provides an App ID and App Secret. This means they already have a Feishu App — you just need to wire it into lark-cli.
+
+#### Step B1: Configure lark-cli
+
+```bash
+echo "<app_secret>" | npx @larksuite/cli config init --app-id <app_id> --app-secret-stdin
+```
+
+**⚠️ `config init --app-id` does NOT configure permissions or event subscriptions.** It only writes credentials. The App must already have the correct setup on the Feishu server side.
+
+#### Step B2: Verify event subscriptions
+
+The most common problem with existing Apps: no event subscriptions configured → router connects fine but never receives messages.
+
+```bash
+npx @larksuite/cli im +chat-search --query "test" --as bot
+```
+
+If this succeeds, the bot token works. But you still need to verify events will flow. Check if the App has `im.message.receive_v1` subscribed with persistent connection transport:
+
+```bash
+APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
+open "https://open.feishu.cn/app/${APP_ID}/event" 2>/dev/null \
+  || echo "Open: https://open.feishu.cn/app/${APP_ID}/event"
+```
+
+Tell the user to verify in the page:
+1. **传输方式 / Transport** must be **"长连接" (persistent connection / WebSocket)**, NOT webhook
+2. **im.message.receive_v1** must be in the event list
+3. If either is missing, add them, then **re-publish a new version**
+
+If the App is missing many permissions (e.g. Bitable scopes), consider using the automated bot creator (Path A Step A3 with the existing App's name) to create a properly configured App instead of manually patching.
+
+#### Step B3: Add remaining permissions (if needed)
+
+If the App was created via `config init --new`, it only has basic scopes. Open the permissions page and batch-import the full scope set:
+
+```bash
+APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
+open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null \
+  || echo "Please open: https://open.feishu.cn/app/${APP_ID}/auth"
+```
+
+Tell the user:
+> Click **"Batch import/export scopes"** → select all → delete → paste the JSON below → **"Next, Review New Scopes"** → **"Add"**.
+
+```bash
+cat config/feishu_scopes.json
+```
+
+**⚠️ Don't forget to publish** after adding scopes. Without publishing, API calls fail with `99991672`.
+
+#### Step B4: User login
+
+Same as Path A Step A5 — run `npx @larksuite/cli auth login --domain all` and give the user the verification URL.
+
+#### Step B5: Verify
+
+Same as Path A Step A6.
 
 ---
 
