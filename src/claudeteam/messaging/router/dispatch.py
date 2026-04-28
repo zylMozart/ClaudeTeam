@@ -37,6 +37,8 @@ class DispatchResult:
     text: str                   # sanitized message text
     msg_id: str = ""
     reason: str = ""            # drop reason or slash command token
+    parent_id: str = ""
+    root_id: str = ""
 
 
 def classify_event(
@@ -67,46 +69,48 @@ def classify_event(
         is_slash:       callable(text) -> bool, True if text is a slash cmd
     """
     msg_id = event.get("message_id", "")
+    parent_id = event.get("parent_id", "")
+    root_id = event.get("root_id", "")
     if not msg_id:
-        return DispatchResult(EventAction.DROP, [], None, "", "", "no_msg_id")
+        return DispatchResult(EventAction.DROP, [], None, "", "", "no_msg_id", parent_id, root_id)
 
     if is_seen(msg_id):
-        return DispatchResult(EventAction.DROP, [], None, "", msg_id, "dedup")
+        return DispatchResult(EventAction.DROP, [], None, "", msg_id, "dedup", parent_id, root_id)
 
     event_chat_id = event.get("chat_id", "")
     if chat_id and event_chat_id and event_chat_id != chat_id:
-        return DispatchResult(EventAction.DROP, [], None, "", msg_id, "cross_team")
+        return DispatchResult(EventAction.DROP, [], None, "", msg_id, "cross_team", parent_id, root_id)
 
     sender_id = event.get("sender_id", "")
     if is_bot_message(sender_id):
-        return DispatchResult(EventAction.DROP, [], None, "", msg_id, "bot_self")
+        return DispatchResult(EventAction.DROP, [], None, "", msg_id, "bot_self", parent_id, root_id)
 
     raw_text = event.get("text", event.get("content", ""))
     text = sanitize(raw_text)
     if not text:
-        return DispatchResult(EventAction.DROP, [], None, "", msg_id, "empty_text")
+        return DispatchResult(EventAction.DROP, [], None, "", msg_id, "empty_text", parent_id, root_id)
 
     if is_slash(text):
-        return DispatchResult(EventAction.SLASH, [], None, text, msg_id, "slash")
+        return DispatchResult(EventAction.SLASH, [], None, text, msg_id, "slash", parent_id, root_id)
 
     sender = parse_sender(text)
     targets = parse_targets(text)
 
     if targets:
         routable = [t for t in targets if t != sender]
-        return DispatchResult(EventAction.ROUTE, routable, sender, text, msg_id)
+        return DispatchResult(EventAction.ROUTE, routable, sender, text, msg_id, "", parent_id, root_id)
 
     # Per-agent prefix routing for user messages without explicit @-mention.
     if sender is None and parse_prefix_target is not None:
         prefix_target, stripped = parse_prefix_target(text)
         if prefix_target:
             return DispatchResult(
-                EventAction.ROUTE, [prefix_target], None, stripped, msg_id, "prefix_route"
+                EventAction.ROUTE, [prefix_target], None, stripped, msg_id, "prefix_route", parent_id, root_id
             )
 
     if sender is None:
         # Unsolicited user message → default delivery target is manager
-        return DispatchResult(EventAction.ROUTE, ["manager"], None, text, msg_id)
+        return DispatchResult(EventAction.ROUTE, ["manager"], None, text, msg_id, "", parent_id, root_id)
 
     # Agent broadcast with no @-target: nothing to do
-    return DispatchResult(EventAction.DROP, [], sender, text, msg_id, "agent_no_target")
+    return DispatchResult(EventAction.DROP, [], sender, text, msg_id, "agent_no_target", parent_id, root_id)

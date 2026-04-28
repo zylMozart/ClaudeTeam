@@ -12,23 +12,26 @@ You don't need a smarter agent. You need a Harness — isolated agents, parallel
 
 *2025, Prompt Engineering. 2026, Harness Engineering.*
 
+> **One-click deploy — paste this prompt to your Claude Code agent:**
+>
+> `Clone https://github.com/zylMozart/ClaudeTeam.git and follow the README to set up and launch the team.`
+
 ### Screenshots
 
 **Feishu Group Chat — Control your AI team in real-time**
 
-<table>
-  <tr>
-    <td><img src="docs/media/example/feishu_example1.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example2.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example3.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example4.jpg" width="200" /></td>
-    <td><img src="docs/media/example/feishu_example5.jpg" width="200" /></td>
-  </tr>
-</table>
+<table><tr>
+<td><img src="docs/media/example/feishu_example1.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example2.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example3.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example4.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example5.jpg" width="200" /></td>
+</tr></table>
 
 **tmux Backend — Claude Code agents running in parallel**
 
 <p><img src="docs/media/example/tmux_example.png" width="800" /></p>
+
 
 ---
 
@@ -59,32 +62,28 @@ Feishu Bitable (message storage, status board, kanban)
 - **Team management** — `/hire` and `/fire` slash commands to add or remove agents on the fly
 - **Watchdog** — Crashed agents auto-restart, with notifications in Feishu
 - **Kanban board** — Task status synced to Feishu Bitable in real-time
+- **Multi-CLI support** — Mix Claude Code, Kimi, Gemini CLI, Codex CLI, Qwen Code in one team
 - **Extensible** — Add any role you need: architect, tester, researcher, ops, educator...
 
 ---
 
 ## Prerequisites
 
-For the **Quick Start** path (host-native, guided by `claude`):
+**Quick Start** (host-native, guided by `claude`):
 
-| Requirement     | Version    | Check                                    |
-| --------------- | ---------- | ---------------------------------------- |
-| macOS or Linux  | —          | —                                        |
-| Python          | 3.8+       | `python3 --version`                      |
-| Node.js         | 18+        | `node --version`                         |
-| tmux            | any        | `tmux -V`                                |
-| Claude Code CLI | latest     | `claude --version`                       |
-| Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
 
-For the **Docker Deployment** path, you only need:
+| Requirement     | Version    | Check                                                                             |
+| -----------------| ------------| -----------------------------------------------------------------------------------|
+| macOS or Linux  | —          | —                                                                                 |
+| Python          | 3.10+      | `python3 --version`                                                               |
+| Node.js         | 18+        | `node --version`                                                                  |
+| tmux            | any        | `tmux -V`                                                                         |
+| Claude Code CLI | latest     | `claude --version`                                                                |
+| Playwright      | auto       | `cd scripts/feishu_bot_creator && npm install && npx playwright install chromium` |
+| Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn)                                          |
 
-| Requirement     | Version    | Check                                    |
-| --------------- | ---------- | ---------------------------------------- |
-| Docker          | 20.10+     | `docker --version`                       |
-| Docker Compose  | v2         | `docker compose version`                 |
-| Feishu account  | Enterprise | [open.feishu.cn](https://open.feishu.cn) |
 
-Python / Node.js / tmux / Claude Code CLI all live inside the image and don't need to be on the host.
+**Docker Deployment** only needs Docker 20.10+, Docker Compose v2, and a Feishu account.
 
 ---
 
@@ -96,7 +95,7 @@ cd ClaudeTeam
 claude
 ```
 
-That's it. Claude Code reads this file and auto-guides you through:
+Claude Code reads this file and auto-guides you through:
 
 1. **Creating a Feishu app** — Agent opens the browser for you, you just click and paste credentials
 2. **Designing your team** — Agent asks what roles you need
@@ -105,68 +104,53 @@ That's it. Claude Code reads this file and auto-guides you through:
 
 The whole process takes about 5 minutes.
 
-> **Heads up.** The "fully automatic" claim only holds when Phase 1 uses `npx @larksuite/cli config init --new`, which scans a QR code, *creates* a fresh Feishu App, AND pushes event subscriptions to the server in one shot. If you instead supply an existing App's `App ID` / `App Secret` directly (e.g. you already created it via the Feishu web console), you must complete two extra manual steps in the Feishu developer console: **batch-import the scopes** and **add the `im.message.receive_v1` event subscription**, then publish a new version. Both are covered in [Phase 1](#phase-1-configure-feishu-app) below — read those steps if `claude` doesn't auto-handle them for you.
+> **Important:** Each team deployment should use its own dedicated Feishu App (named lark-cli profile). Do not share a single App across multiple teams — this avoids credential leakage and event routing conflicts. See [Multi-team deployment](docs/multi-team-deployment.md) for setup details.
 
 ---
 
-## Docker Deployment (alternative, hands-off)
+## Feishu Bot Setup
 
-If you want a fully containerized deploy with no shared state on the host, use this flow instead of `claude`:
+ClaudeTeam requires a Feishu enterprise custom app (bot) with the correct permissions, event subscriptions, and callbacks configured. There are two ways to set this up:
+
+### Automated Setup (recommended)
+
+Use the included Playwright script to create and fully configure a Feishu bot in one command.
 
 ```bash
-git clone https://github.com/zylMozart/ClaudeTeam.git
-cd ClaudeTeam
+cd scripts/feishu_bot_creator
+npm install
+npx playwright install chromium
 
-# 1. Credentials live in project-local .env (gitignored).
-cp .env.example .env
-$EDITOR .env                        # fill FEISHU_APP_ID / FEISHU_APP_SECRET
+# Step 1: Login (scan QR code with Feishu, one-time)
+node create_feishu_bot.js login
 
-# 2. Define the team you want.
-$EDITOR team.json                   # session name + agents (see templates/)
+# Step 2: Create a bot
+node create_feishu_bot.js create my-bot "My ClaudeTeam bot"
 
-# 3. Bind-mount target must exist before first run, otherwise Docker turns it
-#    into a directory.
+# Or batch-create multiple bots
+node create_feishu_bot.js batch bots.json
+```
+
+The script automates all 7 steps: app creation, bot capability, permission import (483 scopes), data access range, event subscriptions (persistent connection + message events), card callbacks, and version publishing.
+
+### Manual Setup
+
+Follow the step-by-step guide: **[Feishu Bot Setup Guide (飞书机器人创建指南)](docs/setup_feishu_bots.md)**
+
+---
+
+## Docker Deployment
+
+```bash
+cp .env.example .env && $EDITOR .env    # fill FEISHU_APP_ID / FEISHU_APP_SECRET
+$EDITOR team.json                        # session name + agents (see templates/)
 touch scripts/runtime_config.json
-
-# 4. Build the image.
 docker compose build
-
-# 5. One-shot init: container creates the Bitable / group chat / inbox /
-#    status / kanban / boss todo tables and writes scripts/runtime_config.json.
-#    Exits when done.
-docker compose run --rm team init
-
-# 6. Start the team for real (manager + workers + router + watchdog).
-docker compose up -d
+docker compose run --rm team init        # creates Bitable / group chat / tables
+docker compose up -d                     # start the team
 ```
 
-Why this flow:
-
-- **Feishu credentials never touch the host.** They live in `.env` and only get materialized inside the container's writable layer at startup. Nothing is written to `~/.lark-cli` on the host. Multiple ClaudeTeam deployments on the same host can't see each other's Feishu identities.
-- **Claude Code credentials are shared via bind mount** (`~/.claude/.credentials.json` + `~/.claude.json`). Same Anthropic account in multiple deployments is the normal case, so this is fine. If you'd rather use an API key, set `ANTHROPIC_API_KEY` in `.env` — the bind mounts become optional.
-- **Kimi/Codex/Gemini credentials live in project-local directories** (`.kimi-credentials/`, `.codex-credentials/`, `.gemini-credentials/`). They are bind-mounted into the container and are gitignored. Copy existing host login state into these directories before first `docker compose up`, or complete each CLI login inside the container.
-- **The whole `scripts/` directory is bind-mounted** so you can edit Python scripts on the host and they take effect on container restart, no rebuild needed.
-
-**Before this works** you still have to do the two manual Feishu console steps once (scopes batch-import + event subscription). See [Phase 1](#phase-1-configure-feishu-app) below — those steps apply to both Quick Start and Docker Deployment.
-
-To interact with the team:
-
-```bash
-docker compose logs -f                                  # follow startup logs
-docker compose exec team tmux attach -t <session>       # attach to tmux
-docker compose down                                     # stop
-```
-
-**Post-startup health check (important!):** After `docker compose up -d`, attach to the tmux session and **check every agent window** (Ctrl-b + n to cycle). Third-party CLIs (Kimi, Codex, Gemini) often show interactive prompts on first launch that block the agent:
-
-- **"Do you trust this folder?"** — type `y` + Enter to proceed
-- **"A new version is available, update?"** — type `n` + Enter or Ctrl-C to skip
-- **Device-code login** — follow the URL + code shown on screen to authorize
-- **Permission prompts** — Claude Code may ask "Allow access?" — approve as needed
-
-If any agent window is stuck on a prompt, the agent can't start working. Clear all prompts, then verify each agent shows an active CLI cursor (`>` or `$`). Once all windows are clean, your team is fully operational.
-
-The Feishu group chat invite link is printed at the end of `docker compose run --rm team init` — open it on your phone, join the group, and chat with the manager.
+See [Docker details](docs/OPERATIONS.md) for credential mounts, health checks, and multi-team isolation.
 
 ---
 
@@ -193,120 +177,27 @@ From within Claude Code (as manager):
 /fire <role-name>
 ```
 
----
+### Stopping & Destroying the Team
 
-## Running Multiple Teams on One Host
-
-You can run N teams side-by-side on the same machine — each team has its own project directory, its own `team.json`, its own tmux session, its own Feishu group chat. **But you have to choose how they share the Feishu identity:**
-
-### Option A — Shared Feishu App (simpler, recommended for hobby / dev)
-
-All teams use the **same** Feishu App (same App ID / App Secret). Each team has its own group chat; the router filters incoming events by `chat_id` so messages never cross team boundaries.
-
-**Setup:**
-```bash
-# First team — normal flow
-cd ~/project/teamA && claude     # follows README Phase 1 & 2 as usual
-
-# Second team — setup.py detects the shared profile and asks you to confirm
-cd ~/project/teamB && claude
-# ...when setup.py prints the "profile conflict" warning, rerun it with:
-CLAUDE_TEAM_ACCEPT_SHARED_PROFILE=1 python3 scripts/setup.py
-```
-
-**Pros:** Zero extra Feishu setup. One App, one permissions page, one publish step.
-**Cons:** All teams share a single bot identity. If App Secret leaks, every team is compromised. Depends on the router's `chat_id` event filter being correct.
-
-### Option B — Separate Feishu App per team (real isolation)
-
-Each team gets its own Feishu App, saved as a **named lark-cli profile**.
-
-**Setup:**
-```bash
-cd ~/project/teamB
-
-# 1) Create a new Feishu App under a named profile (scan QR, click through)
-npx @larksuite/cli config init --new --name teamB
-
-# 2) Run setup.py with the profile override — it writes lark_profile=teamB
-#    into runtime_config.json so all subsequent scripts use the right identity.
-LARK_CLI_PROFILE=teamB python3 scripts/setup.py
-
-# 3) Start the team as usual
-bash scripts/start-team.sh
-```
-
-`start-team.sh`, `feishu_router.py`, `watchdog.py` all read `lark_profile` from `runtime_config.json` and pass `--profile <name>` to every `lark-cli` call, so the two teams never share credentials, events, or bot state.
-
-**Pros:** True identity isolation. A leaked secret or misconfigured bot in team A can't touch team B.
-**Cons:** Double the Feishu admin work (two Apps, two permission pages, two publish steps).
-
-### Deciding which one you need
-
-| | Option A | Option B |
-|---|---|---|
-| Different teams owned by the same person | ✅ | overkill |
-| Different teams owned by different people | ❌ | ✅ |
-| Testing + staging + prod on one box | ❌ (easy to confuse) | ✅ |
-| Single-user hobby projects | ✅ | overkill |
-| You're unsure | start with A, migrate to B if needed | |
-
-Under the hood, both options rely on the `chat_id` filter in `feishu_router.py` — Option A as the primary isolation mechanism, Option B as defense-in-depth.
-
-### Docker: isolating containers, volumes, and networks
-
-`docker-compose.yml` intentionally **does not** set `container_name:`. A fixed container name is globally unique, so the second `docker compose up` on the same host would see "container `claudeteam` already exists" and happily recreate it — wiping the first team. Instead, Compose auto-names containers as `<project>-team-1`, where `<project>` comes from `COMPOSE_PROJECT_NAME` (or the current directory basename if unset).
-
-For multi-team hosts, tie the project name to each team's `session` so it shows up clearly in `docker ps`:
-
-```bash
-# Preferred: use the shipped script, it exports COMPOSE_PROJECT_NAME=claudeteam-<session> for you
-bash scripts/docker-deploy.sh
-
-# Manual path: set it yourself before every docker compose call
-cd ~/project/teamA
-export COMPOSE_PROJECT_NAME=claudeteam-$(python3 -c 'import json; print(json.load(open("team.json"))["session"])')
-docker compose up -d
-docker compose exec team tmux attach -t "$(python3 -c 'import json; print(json.load(open("team.json"))["session"])')"
-docker compose down
-```
-
-The same `COMPOSE_PROJECT_NAME` must be set for every subsequent `docker compose ...` invocation in that shell — otherwise Compose falls back to the directory basename and can't find your containers/volumes. If you bounce between teams frequently, consider a small shell alias per team or put `export COMPOSE_PROJECT_NAME=claudeteam-<session>` at the bottom of the team's `.env` and source it.
-
-Top-level `volumes:` and `networks:` declared in `docker-compose.yml` are already auto-prefixed by the project name, so this change is the single knob that isolates *everything* at once.
+See [docs/team-lifecycle.md](docs/team-lifecycle.md) for how to pause (preserving state) or fully reset a deployment.
 
 ---
 
 ## Multi-CLI Adapter
 
-ClaudeTeam supports **heterogeneous teams** — different agents can run different CLI tools (Claude Code, Kimi, Gemini CLI, Codex CLI, Qwen Code) in the same team.
+ClaudeTeam supports **heterogeneous teams** — different agents can run different CLI tools in the same team.
 
-### How it works
 
-`scripts/cli_adapters/` contains a Python ABC (`CliAdapter`) with per-CLI implementations. Each adapter defines:
-- `spawn_cmd` — the shell command to start the CLI in a tmux pane
-- `ready_markers` — strings that indicate the CLI UI is ready
-- `busy_markers` — strings that indicate the agent is busy (spinner, "Thinking", etc.)
-- `process_name` — the `/proc/<pid>/comm` name for liveness checks
-
-### Supported CLIs
-
-| CLI | Adapter name | Install |
-|---|---|---|
+| CLI         | Adapter name            | Install                              |
+| ----------- | ----------------------- | ------------------------------------ |
 | Claude Code | `claude-code` (default) | `npm i -g @anthropic-ai/claude-code` |
-| Kimi Code | `kimi-code` | `uv tool install kimi-cli` |
-| Gemini CLI | `gemini-cli` | `npm i -g @google/gemini-cli` |
-| Codex CLI | `codex-cli` | `npm i -g @openai/codex` |
-| Qwen Code | `qwen-code` | `npm i -g qwen-code` |
+| Kimi Code   | `kimi-code`             | `uv tool install kimi-cli`           |
+| Gemini CLI  | `gemini-cli`            | `npm i -g @google/gemini-cli`        |
+| Codex CLI   | `codex-cli`             | `npm i -g @openai/codex`             |
+| Qwen Code   | `qwen-code`             | `npm i -g qwen-code`                 |
 
-### Configuring per-agent CLI, model, and thinking level
 
-Each agent in `team.json` supports three optional fields:
-- `cli` — which CLI to use (default: `claude-code`)
-- `model` — which model to use (e.g., `opus`, `sonnet`, `haiku`)
-- `thinking` — thinking depth: `high`, `default`, `low`, or `off`
-
-The manager (or team lead) controls model and thinking assignments at runtime.
+Each agent in `team.json` supports optional `cli`, `model`, and `thinking` fields:
 
 ```json
 {
@@ -320,139 +211,22 @@ The manager (or team lead) controls model and thinking assignments at runtime.
 }
 ```
 
-### Kimi CLI credential setup (Docker)
+For CLI credential setup in Docker, see [docs/cli-credentials.md](docs/cli-credentials.md).
 
-After `docker compose up`, kimi-code agents will prompt for login via a **device code flow**. You'll see a message like:
+---
 
-```
-Please visit the following URL to finish authorization.
-Verification URL: https://www.kimi.com/code/authorize_device?user_code=XXXX-YYYY
-```
+## Further Documentation
 
-Open the URL in your browser, authorize with your Moonshot account, and the kimi CLI will save credentials to `$HOME/.kimi/` inside the container.
 
-**Credential persistence:** The `.kimi-credentials/` directory in the project root is bind-mounted into the container (see `docker-compose.yml`). After first login, subsequent container recreations (`docker compose down && up`) reuse the saved tokens automatically — no re-login needed.
+| Doc                                                    | Description                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------------- |
+| [Team lifecycle](docs/team-lifecycle.md)               | How to stop (pause) and destroy (reset) a team                      |
+| [Multi-team deployment](docs/multi-team-deployment.md) | Running multiple teams on one host with isolated Feishu Apps        |
+| [CLI credentials](docs/cli-credentials.md)             | Kimi / Codex / Gemini credential setup, persistence, and `/usage`   |
+| [Boss todo](docs/boss-todo.md)                         | Bitable table for blocking actions that need user/boss intervention |
+| [Operations](docs/OPERATIONS.md)                       | Docker deployment details, troubleshooting                          |
+| [Contributing](docs/CONTRIBUTING.md)                   | How to contribute                                                   |
 
-If the host already has a known-good Kimi login:
-
-```bash
-mkdir -p .kimi-credentials
-rsync -a ~/.kimi/ .kimi-credentials/
-```
-
-**If kimi login expires:** Remove the `.kimi-credentials/` directory and restart the container. The kimi agents will prompt for login again.
-
-```bash
-rm -rf .kimi-credentials/
-docker compose restart
-```
-
-### Codex CLI credential setup (Docker)
-
-Codex agents prompt for login via **device code flow** on first run:
-
-```
-https://auth.openai.com/codex/device
-Enter this one-time code: XXXX-XXXXX
-```
-
-Open the URL, sign in with your ChatGPT account, and enter the code. Credentials are saved to `.codex-credentials/` (bind-mounted) and persist across container recreations.
-
-If the host already has a Codex login:
-
-```bash
-mkdir -p .codex-credentials
-rsync -a ~/.codex/ .codex-credentials/
-```
-
-Copying `.codex` is necessary but not always sufficient for Codex usage in a new container. If `/usage codex` or `/usage all` still reports HTTP `403` from the usage API and `401` during refresh, treat it as a container login/permission problem, not as a missing mount. Run `codex` inside the container and complete ChatGPT login there, or use host-side `codex-cli-usage status` until a host-side usage bridge is available.
-
-### Gemini CLI credential setup (Docker)
-
-Gemini agents prompt for **Google OAuth** on first run. You'll see a long Google OAuth URL — open it in your browser, authorize, and paste the authorization code back into the terminal. Credentials are saved to `.gemini-credentials/` (bind-mounted) and persist across container recreations.
-
-If the host already has a Gemini login:
-
-```bash
-mkdir -p .gemini-credentials
-rsync -a ~/.gemini/ .gemini-credentials/
-```
-
-If copied Gemini credentials are expired, run `gemini` inside the container and complete Google login again.
-
-Do not commit `.kimi-credentials/`, `.codex-credentials/`, or `.gemini-credentials/`; they contain OAuth/token material and are intentionally listed in `.gitignore`.
-
-### Credential persistence summary
-
-| CLI | Credential dir | Bind mount | First login | Persists? |
-|---|---|---|---|---|
-| Claude Code | `~/.claude/` | ✅ (built-in) | OAuth (automatic) | ✅ |
-| Kimi | `.kimi-credentials/` | ✅ | Device code | ✅ |
-| Codex | `.codex-credentials/` | ✅ | Device code | ✅ |
-| Gemini | `.gemini-credentials/` | ✅ | Google OAuth | ✅ |
-
-All CLIs are pre-configured with auto-approve flags (e.g., `--yolo`, `--dangerously-bypass-approvals-and-sandbox`) so agents never see permission prompts during operation.
-
-### `/usage` per-CLI quota dependencies
-
-The `/usage` slash command queries real-time quota for each CLI. These tools are pre-installed in the Docker image:
-
-| CLI | Quota tool | Install | What it shows |
-|---|---|---|---|
-| Claude Code | `usage_snapshot.py` | Built-in | 5h/7d/Sonnet % + Extra usage |
-| Kimi | `/usage` (built into kimi CLI) | N/A | Weekly % + 5h % + reset time |
-| Codex | `codex-cli-usage` | `uv tool install codex-cli-usage` | Session % + reset time |
-| Gemini | `gemini-cli-usage` | `uv tool install gemini-cli-usage` | Per-model % + reset time |
-
-Usage: `/usage` (CC default), `/usage kimi`, `/usage codex`, `/usage gemini`, `/usage all`.
-
-`/usage all` also runs a lightweight credential inventory before each provider query. It always attempts all four providers (Claude, Kimi, Codex, Gemini) because its product goal is "all CLI usage", not "only CLIs currently used by team agents". If a CLI has no tools or credentials, the section says so explicitly; if credentials exist but a provider rejects refresh or usage calls, the section reports the actionable status such as permission denied, expired login, or container-local re-login required. `team.json` still controls which agents are launched, but it does not hide an otherwise queryable CLI from `/usage all`.
-
-### Boss todo Bitable
-
-Boss todos are blocking actions that only the user/boss can complete: OAuth login, credential handoff, approval, PR publishing, external billing, or explicit confirmation. They are stored in a dedicated Feishu Bitable table named `老板代办`; they are not written to `task_tracker.py` or employee task files.
-
-New `setup.py` runs create or reuse this table automatically and writes:
-
-```json
-{
-  "boss_todo": {
-    "base_token": "<same as bitable_app_token>",
-    "table_id": "tbl...",
-    "table_name": "老板代办",
-    "view_link": "",
-    "dedupe_keys": ["来源任务", "标题"]
-  }
-}
-```
-
-For an existing deployment whose `runtime_config.json` predates this table, run:
-
-```bash
-python3 scripts/setup.py ensure-boss-todo
-```
-
-The runtime reader also accepts the legacy flat keys `boss_todo_table_id`, `boss_todo_link`, and `boss_todo_dedupe_keys`. If no table ID is configured, `scripts/boss_todo.py` fails loudly and tells you to run `ensure-boss-todo` or ask devops to write the config.
-
-Common commands:
-
-```bash
-python3 scripts/boss_todo.py upsert "Gemini OAuth 重新登录" \
-  --source-task usage-credential-p0 \
-  --source-type login \
-  --priority 高 \
-  --note "token 已过期，需要老板重新登录"
-
-python3 scripts/boss_todo.py list --status 待处理
-
-python3 scripts/boss_todo.py done "Gemini OAuth 重新登录" \
-  --source-task usage-credential-p0 \
-  --note "老板已登录，devops 验证通过"
-```
-
-### Adding a new adapter
-
-Create `scripts/cli_adapters/my_cli.py` (~40 lines), implement the 4 abstract methods, and register it in `__init__.py`.
 
 ---
 
@@ -469,16 +243,13 @@ Join our WeChat group for discussions, feedback, and feature requests!
 ## FAQ
 
 **Q: Does this work with other LLMs?**
-A: Yes! The multi-CLI adapter system supports Claude Code, Kimi, Gemini CLI, Codex CLI, and Qwen Code. See the "Multi-CLI Adapter" section above.
+A: Yes! The multi-CLI adapter system supports Claude Code, Kimi, Gemini CLI, Codex CLI, and Qwen Code.
 
 **Q: Can I use Slack/Discord instead of Feishu?**
 A: Not out of the box. The messaging layer is Feishu-specific.
 
 **Q: How many agents can I run?**
 A: Tested up to 10. 8GB RAM handles 5 comfortably.
-
-**Q: Is `--dangerously-skip-permissions` safe?**
-A: Required for autonomous operation. Only use in trusted environments.
 
 **Q: What if an agent crashes?**
 A: The watchdog auto-restarts it and notifies you in Feishu.
@@ -498,7 +269,7 @@ Contributions welcome! See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ---
 
-<!-- CLAUDE:START — Everything below is for Claude Code automated setup -->
+
 
 > **Below this line is for Claude Code.**
 > Human users do not need to read past this point — Claude Code handles everything automatically.
@@ -534,12 +305,14 @@ python3 -c "import json; print(json.load(open('team.json'))['session'])" 2>/dev/
 
 ### Decision Tree
 
-| lark-cli | `team.json` | tmux session | Action |
-|----------|------------|--------------|--------|
-| NOT CONFIGURED | — | — | Go to **Phase 1** |
-| CONFIGURED | MISSING | — | Go to **Phase 2** |
-| CONFIGURED | EXISTS | NOT RUNNING | Go to **Phase 4** |
-| CONFIGURED | EXISTS | RUNNING | Go to **Phase 5** |
+
+| lark-cli       | `team.json` | tmux session | Action            |
+| -------------- | ----------- | ------------ | ----------------- |
+| NOT CONFIGURED | —           | —            | Go to **Phase 1** |
+| CONFIGURED     | MISSING     | —            | Go to **Phase 2** |
+| CONFIGURED     | EXISTS      | NOT RUNNING  | Go to **Phase 4** |
+| CONFIGURED     | EXISTS      | RUNNING      | Go to **Phase 5** |
+
 
 ### Handling user-provided credentials
 
@@ -554,7 +327,6 @@ Compare the returned `appId` with the user's:
 - **Match** → keep the existing config, proceed with the status check above.
 - **Different** → ask the user explicitly which App has permissions + publishing completed:
   > I see lark-cli is currently configured with `<existing>`, but you provided `<new>`. Which one has the scopes batch-imported and published? If I switch to the new one and it's a freshly-created empty App, `auth login` will fail with "no permission".
-
   Only after the user confirms should you `config remove` + `config init --app-id ... --app-secret-stdin`.
 
 This avoids a wasted round-trip where the agent switches to an empty App and the user has to re-hand the original credentials.
@@ -580,83 +352,79 @@ If the line count is 0, the App is missing event subscriptions. Run `config init
 
 ## Phase 1: Configure Feishu App
 
-`lark-cli config init --new` handles everything: app creation, permissions, event subscription, and publishing — all in one command.
+### Choose setup path
 
-### Step 1: Run config init
+| Situation                                | Path                                                               |
+| ------------------------------------------| --------------------------------------------------------------------|
+| **No existing Feishu App** (most users)  | **Path A: Automated Bot Creator** ← default, always try this first |
+| User explicitly provides App ID + Secret | **Path B: Configure existing App**                                 |
 
-```bash
-npx @larksuite/cli config init --new
-```
+**⚠️ IMPORTANT: Default to Path A.** Unless the user hands you an App ID and Secret upfront, always use the automated bot creator. It creates a fully configured Feishu App in one shot — all 483 permissions, event subscriptions, callbacks, and publishing — with only one QR scan from the user. Path B is the fallback for users who already have a configured App.
 
-This opens a browser page. Tell the user:
+---
 
-> A browser window has opened. Please:
-> 1. **Scan the QR code** with Feishu to log in
-> 2. Choose **"Create"** (to make a new app) or **"Use Existing App"** (if you already have one)
-> 3. Click **"Confirm"** — that's it!
+### Path A: Automated Bot Creator (default)
 
-Wait for the CLI to print `OK: 应用配置成功!` — this means the app is created, permissions and events are configured, and the app is published.
+The Playwright-based bot creator at `scripts/feishu_bot_creator/` automates all 7 configuration steps that would otherwise require manual clicks in the Feishu developer console. **Use this path by default.**
 
-### Step 2: Add remaining permissions
-
-`config init` adds basic scopes, but ClaudeTeam needs more (Bitable, chat management, etc.). Batch-import them:
-
-Open the app's Permissions page:
+#### Step A1: Install dependencies
 
 ```bash
-# Get the App ID from lark-cli config
-APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
-open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || xdg-open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null || echo "Please open: https://open.feishu.cn/app/${APP_ID}/auth"
+cd scripts/feishu_bot_creator && npm install && npx playwright install chromium
 ```
 
-Tell the user:
+If this fails (e.g. network issue, unsupported platform), fall back to Path B.
 
-> I've opened the Permissions page. Please:
-> 1. Click **"Batch import/export scopes"**
-> 2. Select all text in the editor, delete it
-> 3. Paste the JSON I'll give you, then click **"Next, Review New Scopes"** → **"Add"**
-
-`config/feishu_scopes.json` is already in the exact format Feishu's batch import expects — paste it as-is:
+#### Step A2: Login (one-time QR scan)
 
 ```bash
-cat config/feishu_scopes.json
+cd scripts/feishu_bot_creator && node create_feishu_bot.js login
 ```
 
-The shipped file includes both tenant and user scopes for the full ClaudeTeam feature set: IM, Bitable/Base, Docs/Docx, Drive, Wiki, Sheets, Tasks, contacts, search, and long-lived user authorization via `offline_access`. Feishu's umbrella scopes are inconsistent, so the file intentionally keeps both broad scopes such as `im:message` / `bitable:app` and fine-grained scopes such as `base:record:*`. If you ever see `99991672 Access denied. One of the following scopes is required: [some:scope]` at runtime, add `some:scope` to `feishu_scopes.json`, re-import, and re-publish.
+A browser window opens. Tell the user:
 
-**⚠️ Don't forget to publish.** After adding the scopes, click **"Create version & Publish"** in the top-right corner of the developer console. Without publishing, every API call will keep failing with `99991672`.
+> A browser window has opened. Please **scan the QR code with Feishu** to log in.
 
-### Step 2.5: Subscribe to events (only if you didn't use `config init --new`)
+Wait for `Login complete. Cookies saved.` in the output. Cookies are cached — subsequent runs skip this step.
 
-If Phase 1 Step 1 used `npx @larksuite/cli config init --new` and you scanned the QR code, **skip this step** — the CLI already pushed event subscriptions to the Feishu server side as part of app creation.
-
-If instead you supplied an existing `App ID` + `App Secret` (e.g. via `config init --app-id ... --app-secret-stdin`, or you created the App manually in the Feishu web console), then your App **does not yet have any events subscribed on the server side**. Symptom: router starts fine, `chat-search --as bot` returns `ok: true`, but the router's "45 seconds 0 events" warning fires and messages from your group never reach any agent.
-
-**To fix in the Feishu developer console:**
+#### Step A3: Create the bot
 
 ```bash
-APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
-open "https://open.feishu.cn/app/${APP_ID}/event" 2>/dev/null \
-  || echo "Open: https://open.feishu.cn/app/${APP_ID}/event"
+cd scripts/feishu_bot_creator && node create_feishu_bot.js create claudeteam-bot "ClaudeTeam multi-agent coordination bot"
 ```
 
-In the page that opens:
+The script automates all 7 steps:
+1. Creates the custom app
+2. Adds bot capability
+3. Imports all 483 permissions (tenant + user scopes)
+4. Sets data access range to "All"
+5. Configures event subscriptions (persistent connection + message events)
+6. Configures card callbacks (persistent connection)
+7. Creates version and publishes
 
-1. Sidebar → **"事件与回调" → "事件订阅"**
-2. Set **传输方式 / Transport** to **"长连接" (long-polling / WebSocket)**, NOT webhook (ClaudeTeam's router uses `lark-cli event +subscribe` over WebSocket)
-3. Click **"添加事件" / Add Event**, search for `im.message.receive_v1` (display name: "**接收消息 v2.0**" or "**Receive Message**") → Add
-4. Save
-5. **Re-publish a new version** (top-right corner). Without re-publishing, the new event subscription is staged but not live.
+Watch for the final line: `Result: cli_xxxxxxxxx` — this is the **App ID**.
 
-**To verify it actually works:** restart the router (or the whole container) and watch for the "45 seconds 0 events" warning. If it stays silent past 45 seconds and you can see incoming messages flowing through, you're good.
+#### Step A4: Get App Secret and configure lark-cli
 
-### Step 3: User login (enables calendar, docs, tasks, contacts)
+The bot is created and published, but lark-cli still needs credentials to make API calls. Tell the user:
 
-**Why a second authentication step?** The App ID / App Secret you already provided gives the *bot* permission to act. Feishu's permission model requires a *separate* user token for features that act on the user's personal data (their calendar, their docs, their private tasks, contact search). This scan is a one-time consent to let agents act on the user's behalf — it is unrelated to the App configuration itself, and cannot be skipped by providing more credentials.
+> The bot has been created! Now I need the App Secret. I'll open the credentials page — please copy the **App Secret** and paste it here.
 
-**Is this step optional?** Yes, for most ClaudeTeam use cases. The core loop (group chat, Bitable kanban, agent coordination) runs entirely on the bot identity. Only skip this if the user explicitly wants calendar / docs / personal-task automation. When in doubt, ask the user whether they need those features before running this step.
+```bash
+APP_ID=<app_id_from_step_A3>
+open "https://open.feishu.cn/app/${APP_ID}/credentials" 2>/dev/null \
+  || echo "Please open: https://open.feishu.cn/app/${APP_ID}/credentials"
+```
 
-If proceeding, run:
+Once the user provides the App Secret, configure lark-cli:
+
+```bash
+echo "<app_secret>" | npx @larksuite/cli config init --app-id <app_id> --app-secret-stdin
+```
+
+#### Step A5: User login
+
+Run `auth login` to get a user token (required for group chat messaging):
 
 ```bash
 npx @larksuite/cli auth login --domain all
@@ -666,15 +434,79 @@ This prints a device-flow verification URL. **Do not ask the user to run the com
 
 > Please open this link in your browser and authorize with your Feishu account: `<url>`. Authorization code: `<code>`.
 
-Wait for `OK: 登录成功!`. If you see `no permission`, the scopes from Step 2 were not published yet — go back and publish, then retry.
+Wait for `OK: 登录成功!`. If you see `no permission`, the app may not be fully published — go back to the Feishu developer console, publish a new version, then retry.
 
-### Step 4: Verify
+#### Step A6: Verify
 
 ```bash
 npx @larksuite/cli im +chat-search --query "test" --as bot
 ```
 
 If it returns `{"ok": true, ...}`, you're good. Proceed to Phase 2.
+
+---
+
+### Path B: Configure existing App (fallback)
+
+Use this path **only** when the user explicitly provides an App ID and App Secret. This means they already have a Feishu App — you just need to wire it into lark-cli.
+
+#### Step B1: Configure lark-cli
+
+```bash
+echo "<app_secret>" | npx @larksuite/cli config init --app-id <app_id> --app-secret-stdin
+```
+
+**⚠️ `config init --app-id` does NOT configure permissions or event subscriptions.** It only writes credentials. The App must already have the correct setup on the Feishu server side.
+
+#### Step B2: Verify event subscriptions
+
+The most common problem with existing Apps: no event subscriptions configured → router connects fine but never receives messages.
+
+```bash
+npx @larksuite/cli im +chat-search --query "test" --as bot
+```
+
+If this succeeds, the bot token works. But you still need to verify events will flow. Check if the App has `im.message.receive_v1` subscribed with persistent connection transport:
+
+```bash
+APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
+open "https://open.feishu.cn/app/${APP_ID}/event" 2>/dev/null \
+  || echo "Open: https://open.feishu.cn/app/${APP_ID}/event"
+```
+
+Tell the user to verify in the page:
+1. **传输方式 / Transport** must be **"长连接" (persistent connection / WebSocket)**, NOT webhook
+2. **im.message.receive_v1** must be in the event list
+3. If either is missing, add them, then **re-publish a new version**
+
+If the App is missing many permissions (e.g. Bitable scopes), consider using the automated bot creator (Path A Step A3 with the existing App's name) to create a properly configured App instead of manually patching.
+
+#### Step B3: Add remaining permissions (if needed)
+
+If the App was created via `config init --new`, it only has basic scopes. Open the permissions page and batch-import the full scope set:
+
+```bash
+APP_ID=$(npx @larksuite/cli config show 2>/dev/null | grep -o 'cli_[a-z0-9]*' | head -1)
+open "https://open.feishu.cn/app/${APP_ID}/auth" 2>/dev/null \
+  || echo "Please open: https://open.feishu.cn/app/${APP_ID}/auth"
+```
+
+Tell the user:
+> Click **"Batch import/export scopes"** → select all → delete → paste the JSON below → **"Next, Review New Scopes"** → **"Add"**.
+
+```bash
+cat config/feishu_scopes.json
+```
+
+**⚠️ Don't forget to publish** after adding scopes. Without publishing, API calls fail with `99991672`.
+
+#### Step B4: User login
+
+Same as Path A Step A5 — run `npx @larksuite/cli auth login --domain all` and give the user the verification URL.
+
+#### Step B5: Verify
+
+Same as Path A Step A6.
 
 ---
 
@@ -690,6 +522,7 @@ Ask the user to describe their project:
 ### Step 2: Propose a team
 
 Based on the user's description, analyze what roles are needed. Consider:
+
 - Frontend work? → coder
 - Backend/API work? → backend or coder
 - System design needed? → architect
@@ -703,12 +536,14 @@ Propose a team. Example:
 
 > Based on your project, I recommend:
 >
-> | Role | Responsibility |
-> |------|---------------|
+>
+> | Role            | Responsibility                    |
+> | --------------- | --------------------------------- |
 > | 🎯 manager (me) | Coordinate, review, report to you |
-> | 🏗️ architect | System design, tech decisions |
-> | 💻 coder | Implementation |
-> | 🧪 tester | Quality assurance |
+> | 🏗️ architect   | System design, tech decisions     |
+> | 💻 coder        | Implementation                    |
+> | 🧪 tester       | Quality assurance                 |
+>
 >
 > Should I start building this team? You can also add or remove roles.
 
@@ -718,6 +553,7 @@ Propose a team. Example:
 Do NOT create any agents without the user saying "yes" / "ok" / "go ahead" or similar.
 
 The user may:
+
 - **Approve as-is** → proceed
 - **Modify** (add/remove roles) → adjust proposal, show updated list, ask for confirmation again
 - **Say "just manager for now"** → minimal path (skip /hire, only manager)
@@ -727,22 +563,22 @@ The user may:
 After confirmation, ask the user for a team name, then:
 
 1. Create `team.json` with only `manager`:
+
 ```json
 {"session": "<team-name>", "agents": {"manager": {"role": "主管", "emoji": "🎯", "color": "blue"}}}
 ```
 
-2. Run `python3 scripts/setup.py` to initialize Feishu resources
+1. Run `python3 scripts/setup.py` to initialize Feishu resources
+2. Run `bash scripts/start-team.sh` to start tmux (starts manager + router + watchdog)
+3. For each additional role the user confirmed, execute `/hire`:
 
-3. Run `bash scripts/start-team.sh` to start tmux (starts manager + router + watchdog)
-
-4. For each additional role the user confirmed, execute `/hire`:
 ```
 /hire architect 系统架构师，负责技术方案设计
 /hire coder 软件工程师，负责代码实现
 /hire tester 测试工程师，负责质量保障
 ```
 
-5. **Generate and send the Feishu group chat invite link to the user.** This is the final deliverable — without it the user cannot interact with the team.
+1. **Generate and send the Feishu group chat invite link to the user.** This is the final deliverable — without it the user cannot interact with the team.
 
 ```bash
 # Get chat_id from runtime config
@@ -761,11 +597,12 @@ Extract the `share_link` from the response and send it to the user. Tell them:
 
 **⚠️ MANDATORY: Do NOT skip this step. The invite link is the primary way the user interacts with their team.**
 
-6. Once all agents are hired and the link is delivered, enter Phase 5.
+1. Once all agents are hired and the link is delivered, enter Phase 5.
 
 ### Minimal Path
 
 If the user says "just manager" or "no team yet":
+
 1. Create team.json with only manager
 2. Run setup.py + start-team.sh
 3. Generate and send the group chat invite link to the user

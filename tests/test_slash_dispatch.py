@@ -17,6 +17,8 @@ for p in (ROOT / "src", ROOT / "scripts"):
         sys.path.insert(0, str(p))
 
 from claudeteam.commands.slash import SlashContext, dispatch
+from claudeteam.commands.slash.dispatch import is_slash_command
+from claudeteam.commands.slash import standalone
 
 # ── shared stub context ───────────────────────────────────────────────────────
 
@@ -146,6 +148,16 @@ def test_send_not_matched_wrong_prefix():
     matched, _ = dispatch("/sender x y", CTX)
     assert matched is False
 
+
+def test_is_slash_command_has_no_send_side_effect():
+    calls = []
+    ctx = _make_ctx(send_to_agent=lambda session, agent, msg: calls.append((session, agent, msg)) or True)
+    assert is_slash_command("/send manager hello") is True
+    assert calls == []
+    matched, _ = dispatch("/send manager hello", ctx)
+    assert matched is True
+    assert calls == [("TestSession", "manager", "hello")]
+
 # ── /compact ─────────────────────────────────────────────────────────────────
 
 def test_compact_matched_bare():
@@ -181,6 +193,65 @@ def test_plain_text_not_matched():
 def test_unknown_slash_not_matched():
     matched, _ = dispatch("/unknowncmd", CTX)
     assert matched is False
+
+
+def test_standalone_send_clears_residual_input_before_retry():
+    calls = []
+
+    class Result:
+        def __init__(self, ok, unsafe_input=False):
+            self.ok = ok
+            self.submitted = ok
+            self.unsafe_input = unsafe_input
+            self.error = "unsafe unsubmitted input" if unsafe_input else ""
+
+        def __bool__(self):
+            return self.ok
+
+    results = [Result(False, unsafe_input=True), Result(True)]
+
+    def fake_inject(session, agent, msg, wait_secs=5, force_after_wait=True):
+        calls.append(("inject", session, agent, msg))
+        return results.pop(0)
+
+    def fake_run(cmd, **kwargs):
+        calls.append(("run", cmd))
+        class R:
+            returncode = 0
+        return R()
+
+    original_import = __import__
+    original_run = standalone.subprocess.run
+    try:
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "claudeteam.runtime.tmux_utils" and "inject_when_idle" in fromlist:
+                class M:
+                    inject_when_idle = staticmethod(fake_inject)
+                return M
+            return original_import(name, globals, locals, fromlist, level)
+        import builtins
+        builtins.__import__ = fake_import
+        standalone.subprocess.run = fake_run
+        assert standalone._send_to_agent("S", "devops", "hello") is True
+    finally:
+        import builtins
+        builtins.__import__ = original_import
+        standalone.subprocess.run = original_run
+    assert ("run", ["tmux", "send-keys", "-t", "S:devops", "C-u"]) in calls
+    assert [c[0] for c in calls].count("inject") == 2
+
+
+def test_standalone_dispatch_does_not_fallback_to_scripts(monkeypatch=None):
+    original_build_context = standalone.build_context
+    original_src_dispatch = standalone._src_dispatch
+    try:
+        standalone.build_context = lambda: CTX
+        standalone._src_dispatch = lambda text, ctx: (True, "src-only") if text == "/help" else (False, None)
+        assert not hasattr(standalone, "_try_scripts_slash")
+        assert standalone.dispatch("/help") == (True, "src-only")
+    finally:
+        standalone.build_context = original_build_context
+        standalone._src_dispatch = original_src_dispatch
 
 
 # ── runner ────────────────────────────────────────────────────────────────────

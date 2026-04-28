@@ -9,19 +9,6 @@
   python3 -m claudeteam.cli_adapters.resolve <agent> process_name
 """
 import sys
-import os
-from pathlib import Path
-
-THIS_FILE = Path(__file__).resolve()
-PROJECT_ROOT = THIS_FILE.parents[3]
-SRC_ROOT = PROJECT_ROOT / "src"
-SCRIPTS_ROOT = PROJECT_ROOT / "scripts"
-
-# 直接脚本执行时确保 claudeteam 包与 legacy scripts/config.py 都可导入。
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-if str(SCRIPTS_ROOT) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from claudeteam.cli_adapters import adapter_for_agent
 

@@ -41,6 +41,49 @@ _INPUT_PROMPT_RE = re.compile(
     r"^\s*(?:[>❯›]\s+|[│┃]\s*[>❯›]\s+|(?:input|prompt)\s*[:：]\s+)(?P<text>.+?)\s*$",
     re.I,
 )
+_EMPTY_INPUT_PROMPT_RE = re.compile(
+    r"^\s*(?:[>❯›]\s*|[│┃]\s*[>❯›]\s*|(?:input|prompt)\s*[:：]\s*)$",
+    re.I,
+)
+_SHELL_PROMPT_RE = re.compile(
+    r"(?:^|\n)\s*(?:[\w.-]+@[^\s:]+:[^\n]*[$#]|root@[0-9a-f]+:[^\n#]*#)\s*$"
+)
+_AUTH_RE = re.compile(r"auth(?:entication)? required|login required|please log in|sign in", re.I)
+_UPDATE_RE = re.compile(r"update available|install update|new version|upgrade required", re.I)
+_LIMIT_RE = re.compile(
+    r"hit your limit|usage limit|rate limit|monthly limit|try again later|quota exceeded|too many requests",
+    re.I,
+)
+_PERMISSION_RE = re.compile(
+    r"do you want to proceed\?|would you like to .+\?|\b(always allow|allow|deny)\b|"
+    r"\b(yes|no)\b|❯\s*\d+\.|^\s*\d+\.\s*(yes|no)\b|approval required|approve this|proceed\?",
+    re.I | re.M,
+)
+_LOADING_RE = re.compile(r"loading configuration|resuming conversation|starting claude code|starting .*cli", re.I)
+_ERROR_RE = re.compile(r"traceback|fatal error|command not found|no such file|permission denied", re.I)
+
+# Claude Code CLI header separator: ─────────────── agent_name ──
+# Uses Unicode box-drawing character U+2500 (─).
+# The separator MUST contain non-dash text (the agent/session name) between
+# the dash runs.  A line of pure dashes (e.g. ────────────────) is just a
+# visual divider within the CLI UI and should NOT be treated as the header.
+_CLI_HEADER_SEP_RE = re.compile(r"[─]{3,}\s+\S.*[─]{2,}")
+
+# Shell commands that launched a CLI — these appear as shell history lines
+# with a prompt like `❯ IS_SANDBOX=1 claude ...` and must not be treated as
+# residual unsubmitted input.
+_SHELL_HISTORY_CMD_PATTERNS = (
+    "claude --dangerously-skip-permissions",
+    "IS_SANDBOX=1",
+    "kimi ",
+    "gemini ",
+    "codex ",
+    "qwen ",
+    "claude --",
+    "npx claude",
+    "claude-code",
+)
+
 _READY_PLACEHOLDERS = (
     "tab to queue message",
     "? for shortcuts",
@@ -51,6 +94,17 @@ _READY_PLACEHOLDERS = (
     "Use /skills to list available skills",
     "Explain this codebase",
 )
+
+
+@dataclasses.dataclass
+class WakeReadyResult:
+    ok: bool
+    reason: str
+    matched_marker: str = ""
+    tail_summary: str = ""
+
+    def __bool__(self):
+        return self.ok
 
 
 @dataclasses.dataclass
@@ -111,22 +165,107 @@ def _tail_summary(text, max_len=240):
 
 
 def detect_unsubmitted_input_text(pane_text):
-    """Return residual input text if the visible prompt appears non-empty."""
+    """Return residual input text if the visible prompt appears non-empty.
+
+    Key insight: when a CLI (Claude Code, etc.) is running, the pane looks like:
+
+        ❯ IS_SANDBOX=1 claude --dangerously-skip-permissions ...   ← shell history
+        ─────────────────── agent_name ──                          ← CLI header separator
+        ... CLI output ...
+        ❯                                                          ← active input area
+
+    Any ``❯ <text>`` line that appears ABOVE (or at) the CLI header separator
+    is **shell history** — an already-executed command — and must NOT be treated
+    as residual unsubmitted input.  Only lines BELOW the last separator are
+    candidates for active input detection.
+
+    Additionally, lines that match common CLI spawn patterns (e.g. containing
+    ``claude --dangerously-skip-permissions``) are always ignored regardless of
+    position.
+    """
     lines = _strip_control(pane_text).rstrip().splitlines()
-    for raw in reversed(lines[-8:]):
+    tail = lines[-8:]
+
+    # Find the last CLI header separator in the tail window.
+    # Everything at or above this index is shell history / CLI chrome.
+    sep_idx = -1  # -1 means "no separator found"
+    for i, raw in enumerate(tail):
+        if _CLI_HEADER_SEP_RE.search(raw):
+            sep_idx = i
+
+    # Only inspect lines BELOW the separator (the active input area).
+    # If no separator is found the pane may still be in the shell or in a CLI
+    # that hasn't rendered its header yet — in that case we still scan, but
+    # apply the shell-history skip list aggressively.
+    candidate_start = sep_idx + 1 if sep_idx >= 0 else 0
+
+    for raw in reversed(tail[candidate_start:]):
         s = raw.strip()
         if not s:
             continue
+        # Empty prompt or placeholder → prompt is clean
+        if _EMPTY_INPUT_PROMPT_RE.match(s) or any(ph in s for ph in _READY_PLACEHOLDERS):
+            return ""
         m = _INPUT_PROMPT_RE.match(s)
         if not m:
-            if any(ph in s for ph in _READY_PLACEHOLDERS):
-                return ""
             continue
         text = m.group("text").strip()
         if not text or any(ph in text for ph in _READY_PLACEHOLDERS):
             return ""
+        # Skip lines that look like shell commands used to launch a CLI
+        if any(pat in text for pat in _SHELL_HISTORY_CMD_PATTERNS):
+            continue
         return text
     return ""
+
+
+def pane_has_cli_input_prompt(pane_text):
+    """Return True when the current visible UI appears to be an empty CLI input prompt."""
+    lines = [line.strip() for line in _strip_control(pane_text).rstrip().splitlines() if line.strip()]
+    if not lines:
+        return False
+    tail = "\n".join(lines[-8:])
+    if _SHELL_PROMPT_RE.search(tail):
+        return False
+    if detect_unsubmitted_input_text(pane_text):
+        return False
+    last = lines[-1]
+    if _EMPTY_INPUT_PROMPT_RE.match(last):
+        return True
+    return any(ph in tail for ph in _READY_PLACEHOLDERS)
+
+
+def wait_cli_ui_ready(capture_fn, ready_markers, *, process_name="", timeout_s=30):
+    """Poll pane text until CLI UI is ready, returning WakeReadyResult."""
+    markers = list(ready_markers or []) + list(_READY_PLACEHOLDERS)
+    deadline = time.time() + timeout_s
+    last_reason = "timeout"
+    last_tail = ""
+    while time.time() < deadline:
+        pane = capture_fn() or ""
+        tail = "\n".join(_strip_control(pane).splitlines()[-30:])
+        last_tail = _tail_summary(tail)
+        if _AUTH_RE.search(tail):
+            return WakeReadyResult(False, "auth_required", tail_summary=last_tail)
+        if _UPDATE_RE.search(tail):
+            return WakeReadyResult(False, "update_required", tail_summary=last_tail)
+        if _LIMIT_RE.search(tail):
+            return WakeReadyResult(False, "quota_limited", tail_summary=last_tail)
+        if _PERMISSION_RE.search(tail):
+            return WakeReadyResult(False, "permission_prompt", tail_summary=last_tail)
+        if _ERROR_RE.search(tail):
+            return WakeReadyResult(False, "unknown_error", tail_summary=last_tail)
+        if _SHELL_PROMPT_RE.search(tail):
+            last_reason = "shell_prompt"
+        elif _LOADING_RE.search(tail):
+            last_reason = "loading"
+        for marker in markers:
+            if marker and marker in tail:
+                if process_name == "kimi":
+                    time.sleep(1.5)
+                return WakeReadyResult(True, "ready", marker, last_tail)
+        time.sleep(0.5)
+    return WakeReadyResult(False, last_reason, tail_summary=last_tail)
 
 
 def has_unsubmitted_input(session, window):
@@ -363,6 +502,12 @@ def inject_when_idle(session, window, text,
                 result.busy_before = True
                 if not force_after_wait:
                     result.error = "pane busy"
+                    return result
+                latest = capture_pane(session, window)
+                result.tail_summary = _tail_summary("\n".join(latest.splitlines()[-8:]))
+                if not pane_has_cli_input_prompt(latest):
+                    result.unsafe_input = True
+                    result.error = "unsafe forced injection target"
                     return result
                 result.forced = True
 

@@ -54,7 +54,7 @@ def build_system_card(content: str, template: str = "grey") -> dict:
 
 
 def _agent_card_title(from_agent, to_agent, title_suffix=""):
-    info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})
+    info = AGENTS.get(from_agent, {"role": "系统", "emoji": "⚙️", "color": "grey"})
     emoji = info["emoji"]
     role = info["role"]
     if to_agent and to_agent != "*":
@@ -71,7 +71,7 @@ def _agent_card_from_markdown(
     title_suffix="",
     include_priority=True,
 ):
-    info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})
+    info = AGENTS.get(from_agent, {"role": "系统", "emoji": "⚙️", "color": "grey"})
     color = info.get("color", "grey")
     pri_tag = {"高": "🔴 ", "中": "", "低": "🟢 "}.get(priority, "") if include_priority else ""
     return {

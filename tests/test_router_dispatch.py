@@ -160,6 +160,15 @@ def test_route_msg_id_is_preserved():
     assert r.msg_id == "msg-abc"
 
 
+def test_route_parent_and_root_are_preserved():
+    r = _classify({"message_id": "msg-abc", "chat_id": "chat-1",
+                   "parent_id": "om_parent", "root_id": "om_root",
+                   "text": "普通消息"})
+    assert r.action == EventAction.ROUTE
+    assert r.parent_id == "om_parent"
+    assert r.root_id == "om_root"
+
+
 def test_chat_id_empty_means_no_filter():
     """Empty chat_id disables cross-team filtering."""
     r = _classify({"message_id": "m1", "chat_id": "any-chat", "text": "hello"},
@@ -253,6 +262,7 @@ def main() -> int:
         test_route_excludes_sender_from_targets,
         test_route_text_is_sanitized,
         test_route_msg_id_is_preserved,
+        test_route_parent_and_root_are_preserved,
         test_chat_id_empty_means_no_filter,
         test_prefix_route_colon_form,
         test_prefix_route_space_form,

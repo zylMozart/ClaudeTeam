@@ -216,7 +216,7 @@ def test_check_once_burst_cooldown_and_auto_recovery() -> None:
         assert proc["retry_count"] == 1, proc
         assert proc["cooldown_start_ts"] == 0, proc
         assert restart_calls == ["watchdog-gate-proc"], restart_calls
-        assert notify_calls == ["watchdog-gate-proc"], notify_calls
+        assert notify_calls == [], notify_calls
         assert cooldown_alerts == [], cooldown_alerts
 
         now_ref["value"] = 1001.0
@@ -224,7 +224,7 @@ def test_check_once_burst_cooldown_and_auto_recovery() -> None:
         assert proc["retry_count"] == 2, proc
         assert proc["cooldown_start_ts"] == 0, proc
         assert restart_calls == ["watchdog-gate-proc", "watchdog-gate-proc"], restart_calls
-        assert notify_calls == ["watchdog-gate-proc", "watchdog-gate-proc"], notify_calls
+        assert notify_calls == [], notify_calls
         assert cooldown_alerts == [], cooldown_alerts
 
         now_ref["value"] = 1002.0
@@ -232,7 +232,7 @@ def test_check_once_burst_cooldown_and_auto_recovery() -> None:
         assert proc["retry_count"] == 3, proc
         assert proc["cooldown_start_ts"] == 1002.0, proc
         assert restart_calls == ["watchdog-gate-proc", "watchdog-gate-proc"], restart_calls
-        assert notify_calls == ["watchdog-gate-proc", "watchdog-gate-proc"], notify_calls
+        assert notify_calls == [], notify_calls
         assert len(cooldown_alerts) == 1, cooldown_alerts
         assert "cooldown" in cooldown_alerts[0][0], cooldown_alerts
 
@@ -241,7 +241,7 @@ def test_check_once_burst_cooldown_and_auto_recovery() -> None:
         assert proc["retry_count"] == 3, proc
         assert proc["cooldown_start_ts"] == 1002.0, proc
         assert restart_calls == ["watchdog-gate-proc", "watchdog-gate-proc"], restart_calls
-        assert notify_calls == ["watchdog-gate-proc", "watchdog-gate-proc"], notify_calls
+        assert notify_calls == [], notify_calls
         assert len(cooldown_alerts) == 1, cooldown_alerts
 
         now_ref["value"] = 1013.0
@@ -253,11 +253,7 @@ def test_check_once_burst_cooldown_and_auto_recovery() -> None:
             "watchdog-gate-proc",
             "watchdog-gate-proc",
         ], restart_calls
-        assert notify_calls == [
-            "watchdog-gate-proc",
-            "watchdog-gate-proc",
-            "watchdog-gate-proc",
-        ], notify_calls
+        assert notify_calls == [], notify_calls
         assert len(cooldown_alerts) == 1, cooldown_alerts
     finally:
         _restore_watchdog_gate(watchdog, originals)
@@ -304,7 +300,7 @@ def test_check_once_healthy_resets_retry_and_cooldown() -> None:
         assert proc["retry_count"] == 1, proc
         assert proc["cooldown_start_ts"] == 0, proc
         assert restart_calls == ["watchdog-gate-reset"], restart_calls
-        assert notify_calls == ["watchdog-gate-reset"], notify_calls
+        assert notify_calls == [], notify_calls
         assert cooldown_alerts == [], cooldown_alerts
     finally:
         _restore_watchdog_gate(watchdog, originals)

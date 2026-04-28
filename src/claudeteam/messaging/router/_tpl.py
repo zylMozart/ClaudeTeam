@@ -13,3 +13,9 @@ TPL_USER_MSG_LONG = (
     "处理完成后用以下命令回复群里:\n"
     'python3 scripts/feishu_msg.py say {agent} "<你的回复>"'
 )
+
+TPL_IMAGE_DOWNLOADED = (
+    "【Router 补充】图片已下载。\n"
+    "本地路径: {path}\n"
+    "你可以使用 Read 工具查看图片。"
+)

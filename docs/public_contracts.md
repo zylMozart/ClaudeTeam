@@ -1,6 +1,6 @@
 # Public Contracts And Wrapper Compatibility
 
-Date: 2026-04-23
+Date: 2026-04-29
 Owner: toolsmith
 Status: P0 local-core contract draft for restructure worktree
 

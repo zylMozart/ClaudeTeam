@@ -8,7 +8,7 @@
 用法:
   python3 scripts/feishu_msg.py send <收件人> <发件人> "<消息>" [优先级]
   python3 scripts/feishu_msg.py direct <收件人> <发件人> "<消息>"
-  python3 scripts/feishu_msg.py say <发件人> ["<消息>"] [--image <路径>] [--file <路径>]
+  python3 scripts/feishu_msg.py say <发件人> ["<消息>"] [--image <路径>] [--file <路径>] [--reply <message_id>] [--reply-in-thread]
   python3 scripts/feishu_msg.py inbox <agent名称>
   python3 scripts/feishu_msg.py read <record_id>
   python3 scripts/feishu_msg.py status <agent> <状态> "<任务>" ["<阻塞原因>"]
@@ -29,7 +29,18 @@ _SRC_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from claudeteam.runtime.config import AGENTS, PROJECT_ROOT, TMUX_SESSION, load_runtime_config, LARK_CLI
+from claudeteam.runtime.config import (
+    AGENTS,
+    PROJECT_ROOT,
+    TMUX_SESSION,
+    LARK_CLI,
+    get_bitable_app_token,
+    get_chat_id,
+    get_msg_table_id,
+    get_status_table_id,
+    get_workspace_table,
+    load_runtime_config,
+)
 from claudeteam.messaging.renderer import (
     render_inbox_text,
     render_log_text,
@@ -37,17 +48,18 @@ from claudeteam.messaging.renderer import (
 )
 from claudeteam.runtime.tmux_utils import inject_when_idle
 from claudeteam.cli_adapters import adapter_for_agent
+from claudeteam.storage import local_facts
 
 # ── 运行时配置加载 ─────────────────────────────────────────────
 
 def cfg():
     return load_runtime_config()
 
-def BT():  return cfg().get("bitable_app_token", "")
-def MT():  return cfg().get("msg_table_id", "")
-def ST():  return cfg().get("sta_table_id", "")
-def WS(a): return (cfg().get("workspace_tables") or {}).get(a, "")
-def CHAT(): return cfg().get("chat_id", "")
+def BT():  return get_bitable_app_token()
+def MT():  return get_msg_table_id()
+def ST():  return get_status_table_id()
+def WS(a): return get_workspace_table(a)
+def CHAT(): return get_chat_id()
 
 def now_ms():
     return int(time.time() * 1000)
@@ -59,10 +71,28 @@ LOCAL_FACTS_DIR = os.environ.get("CLAUDETEAM_LOCAL_FACTS_DIR") or os.path.join(
 LOCAL_MESSAGES_FILE = os.path.join(LOCAL_FACTS_DIR, "messages.jsonl")
 LOCAL_STATUS_FILE = os.path.join(LOCAL_FACTS_DIR, "status.json")
 LOCAL_AUTO_DEDUPE_WINDOW_MS = 5 * 60 * 1000
+LEGACY_BITABLE_ENV = "CLAUDETEAM_LEGACY_BITABLE"
+FEISHU_REMOTE_ENV = "CLAUDETEAM_FEISHU_REMOTE"
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def legacy_bitable_enabled() -> bool:
+    return (
+        _env_enabled(LEGACY_BITABLE_ENV)
+        or _env_enabled("CLAUDETEAM_ENABLE_BITABLE_LEGACY")
+        or _env_enabled("CLAUDETEAM_BITABLE_PROJECTION")
+    )
+
+
+def feishu_remote_enabled() -> bool:
+    return _env_enabled(FEISHU_REMOTE_ENV) or _env_enabled("CLAUDETEAM_ENABLE_FEISHU_REMOTE")
 
 
 def _bitable_projection_enabled() -> bool:
-    return os.environ.get("CLAUDETEAM_BITABLE_PROJECTION") == "1"
+    return legacy_bitable_enabled()
 
 
 @contextmanager
@@ -346,20 +376,37 @@ def _check_lark_result(result, action, *, fatal=True):
     return False
 
 
-def _lark_im_send(chat_id, content=None, markdown=None, image=None, card=None):
+def _lark_im_send(
+    chat_id,
+    content=None,
+    markdown=None,
+    image=None,
+    card=None,
+    *,
+    reply_to="",
+    reply_in_thread=False,
+    msg_type="",
+):
     """通过 lark-cli 向群组发送消息。
 
-    默认 --as bot：以机器人身份发言，老板能收到通知。
-    要求 lark-cli 已经 device-flow 拿到 user_access_token；没拿到的部署
-    需要先跑 `lark-cli auth login --scope ...`。
+    默认 --as user：以老板身份发言（无 bot 标识）。若 user OAuth 未配置,
+    可通过环境变量 CLAUDETEAM_LARK_SEND_AS=bot 降级为机器人身份。
     """
-    args = ["im", "+messages-send", "--chat-id", chat_id, "--as", "bot"]
+    send_as = os.environ.get("CLAUDETEAM_LARK_SEND_AS", "user")
+    if reply_to:
+        args = ["im", "+messages-reply", "--message-id", reply_to, "--as", send_as]
+        if reply_in_thread:
+            args.append("--reply-in-thread")
+    else:
+        args = ["im", "+messages-send", "--chat-id", chat_id, "--as", send_as]
     if markdown:
         args += ["--markdown", markdown]
     elif image:
         args += ["--image", image]
     elif card:
         args += ["--content", json.dumps(card, ensure_ascii=False), "--msg-type", "interactive"]
+    elif content and msg_type:
+        args += ["--content", content, "--msg-type", msg_type]
     elif content:
         args += ["--text", content]
     return _lark_run(args)
@@ -433,6 +480,51 @@ def _lark_base_list(base_token, table_id, limit=20, offset=0):
 
 # ── 消息卡片构建 ──────────────────────────────────────────────
 
+def _extract_image_key(result):
+    if not isinstance(result, dict):
+        return ""
+    for key in ("image_key", "file_key"):
+        if result.get(key):
+            return result[key]
+    data = result.get("data")
+    if isinstance(data, dict):
+        found = _extract_image_key(data)
+        if found:
+            return found
+    image = result.get("image")
+    if isinstance(image, dict):
+        found = _extract_image_key(image)
+        if found:
+            return found
+    for item in result.get("items") or result.get("images") or []:
+        found = _extract_image_key(item)
+        if found:
+            return found
+    return ""
+
+
+def _lark_upload_image(image_path):
+    result = _lark_run(["im", "images", "create", "--file", image_path, "--as", "bot"])
+    image_key = _extract_image_key(result)
+    if not image_key:
+        return None
+    return image_key
+
+
+def build_post_content(text, image_key, title=""):
+    post = {
+        "zh_cn": {
+            "content": [
+                [{"tag": "text", "text": text}],
+                [{"tag": "img", "image_key": image_key}],
+            ]
+        }
+    }
+    if title:
+        post["zh_cn"]["title"] = title
+    return post
+
+
 def _chunk_title_suffix(index: int, total: int) -> str:
     return f" ({index + 1}/{total})" if total > 1 else ""
 
@@ -464,9 +556,9 @@ def build_system_card(content: str, template: str = "grey") -> dict:
 
 
 def _agent_card_title(from_agent, to_agent, title_marker="", title_suffix=""):
-    info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})
-    emoji = info["emoji"]
-    role  = info["role"]
+    info = AGENTS.get(from_agent, {"role": "系统", "emoji": "⚙️", "color": "grey"})
+    emoji = info.get("emoji", "⚙️")
+    role = info.get("role", "系统")
 
     if to_agent and to_agent != "*":
         return f"{emoji} {from_agent} · {role} → @{to_agent}{title_marker}{title_suffix}"
@@ -482,7 +574,7 @@ def _agent_card_from_markdown(
     title_suffix="",
     include_priority=True,
 ):
-    info = AGENTS.get(from_agent, {"role": "?", "emoji": "🤖", "color": "grey"})
+    info = AGENTS.get(from_agent, {"role": "系统", "emoji": "⚙️", "color": "grey"})
     color = info.get("color", "grey")
     pri_tag = {"高": "🔴 ", "中": "", "低": "🟢 "}.get(priority, "") if include_priority else ""
 
@@ -549,49 +641,81 @@ def _post_cards_to_group(cards, action):
 
 
 def post_to_group(from_agent, to_agent, content, priority="中"):
-    """向飞书群组发一条消息卡片。返回 True 表示发送成功。
-
-    失败非致命 —— 调用方（cmd_send / cmd_direct）根据返回值决定是否升级
-    为 exit 2（"收件箱已写但群通知失败"）。
-    """
+    """向飞书群组发一条消息卡片。返回 True 表示发送成功。"""
+    if not feishu_remote_enabled():
+        if getattr(_lark_im_send, "__module__", __name__) == __name__:
+            print(f"ℹ️  远端发送默认关闭（local-only）：{from_agent}→{to_agent or '*'}")
+            return True
     cards = build_cards(from_agent, to_agent, content, priority)
     return _post_cards_to_group(cards, f"群通知 {from_agent}→{to_agent or '*'}")
 
 
 def post_system_to_group(content: str, template: str = "grey") -> bool:
+    if not feishu_remote_enabled():
+        print("ℹ️  系统群通知远端发送默认关闭（local-only）")
+        return True
     cards = build_system_cards(content, template)
     return _post_cards_to_group(cards, "系统消息群通知")
 
 # ── 工作空间日志 ───────────────────────────────────────────────
 
 def ws_log(agent, log_type, content, ref=""):
-    """写工作空间审计日志（非致命：失败仅 stderr 警告，主命令继续）。
-
-    限流期间如果强行退出会让所有命令连锁挂掉；丢几条审计记录的代价
-    可接受，丢可观测性不行。
-    """
-    tid = WS(agent)
-    if not tid:
-        return
+    """写工作空间审计日志（非致命：失败仅 stderr 警告，主命令继续）。"""
     content = render_log_text(content)
-    d = _lark_base_create(BT(), tid,
-                          {"类型": log_type, "内容": content,
-                           "时间": now_ms(), "关联对象": ref})
-    _check_lark_result(d, f"ws_log {agent}/{log_type}", fatal=False)
+    try:
+        local_facts.append_log(agent, log_type, content, ref)
+    except Exception as e:
+        print(f"  ⚠️ 本地工作空间日志写入失败: {e}", file=sys.stderr)
+    if legacy_bitable_enabled():
+        tid = WS(agent)
+        if not tid:
+            return
+        d = _lark_base_create(BT(), tid,
+                              {"类型": log_type, "内容": content,
+                               "时间": now_ms(), "关联对象": ref})
+        _check_lark_result(d, f"ws_log {agent}/{log_type}", fatal=False)
 
 # ── 命令：say（直接发群消息，用于回复用户）──────────────────────
 
-def cmd_say(from_agent, message="", image_path=""):
+def cmd_say(from_agent, message="", image_path="", reply_to="", reply_in_thread=False):
     if not message and not image_path:
         print("❌ 消息内容和图片路径不能同时为空"); sys.exit(1)
+    if not feishu_remote_enabled():
+        if getattr(_lark_im_send, "__module__", __name__) == __name__:
+            print("❌ 远端发送默认关闭（local-only）；设置 CLAUDETEAM_FEISHU_REMOTE=1 后再发送")
+            sys.exit(1)
     chat_id = CHAT()
     if not chat_id:
         print("❌ 群组未配置"); sys.exit(1)
 
     if message:
         message = sanitize_agent_message(message)
-        for card in build_cards(from_agent, None, message):
-            d = _lark_im_send(chat_id, card=card)
+
+    if message and image_path:
+        if not os.path.exists(image_path):
+            print(f"❌ 图片文件不存在: {image_path}"); sys.exit(1)
+        image_key = _lark_upload_image(image_path)
+        _check_lark_result(image_key, f"上传图片 {from_agent}→* ({os.path.basename(image_path)})")
+        post = build_post_content(message, image_key, title=f"{from_agent} 图文消息")
+        d = _lark_im_send(
+            chat_id,
+            content=json.dumps(post, ensure_ascii=False),
+            msg_type="post",
+            reply_to=reply_to,
+            reply_in_thread=reply_in_thread,
+        )
+        _check_lark_result(d, f"群聊图文 {from_agent}→* ({os.path.basename(image_path)})")
+        ws_log(from_agent, "消息发出", f"→ 群聊图文：{message[:10000]} [图片:{os.path.basename(image_path)}]")
+        print(f"✅ 图文消息已发送到群聊: {os.path.basename(image_path)}")
+        return
+
+    if message:
+        for idx, card in enumerate(build_cards(from_agent, None, message)):
+            send_kwargs = {"card": card}
+            if idx == 0 and reply_to:
+                send_kwargs["reply_to"] = reply_to
+                send_kwargs["reply_in_thread"] = reply_in_thread
+            d = _lark_im_send(chat_id, **send_kwargs)
             _check_lark_result(d, f"群聊发言 {from_agent}→*")
         ws_log(from_agent, "消息发出", f"→ 群聊：{message[:10000]}")
         print(f"✅ 已发送到群聊")
@@ -599,7 +723,11 @@ def cmd_say(from_agent, message="", image_path=""):
     if image_path:
         if not os.path.exists(image_path):
             print(f"❌ 图片文件不存在: {image_path}"); sys.exit(1)
-        d = _lark_im_send(chat_id, image=image_path)
+        send_kwargs = {"image": image_path}
+        if reply_to:
+            send_kwargs["reply_to"] = reply_to
+            send_kwargs["reply_in_thread"] = reply_in_thread
+        d = _lark_im_send(chat_id, **send_kwargs)
         _check_lark_result(d, f"群聊图片 {from_agent}→* ({os.path.basename(image_path)})")
         ws_log(from_agent, "消息发出",
                f"→ 群聊图片：{os.path.basename(image_path)}")
@@ -625,19 +753,27 @@ def _bitable_insert_projection(to, frm, content, priority):
     return d.get("record_id", "")
 
 
+def _project_message_to_bitable(to, frm, content, priority):
+    return _bitable_insert_projection(to, frm, content, priority)
+
+
 def bitable_insert_message(
     to, frm, content, priority, *, task_id="", source="send", dedupe_key=""
 ):
-    """写入消息主链路（本地 JSONL）；可选投影到 Bitable。"""
-    rid = _local_insert_message(
-        to, frm, content, priority, task_id=task_id, source=source,
-        dedupe_key=dedupe_key,
-    )
-    if not rid:
+    """写入消息主链路（本地事实源）；可选投影到 Bitable。"""
+    try:
+        rid = local_facts.append_message(to, frm, render_inbox_text(content), priority, task_id=task_id)
+    except Exception as e:
+        print(f"  ⚠️ 本地消息写入失败: {e}", file=sys.stderr)
         return None
-    if _bitable_projection_enabled():
-        proj_rid = _bitable_insert_projection(to, frm, content, priority)
-        if not proj_rid:
+    if legacy_bitable_enabled():
+        proj_rid = _project_message_to_bitable(to, frm, content, priority)
+        if proj_rid:
+            try:
+                local_facts.attach_bitable_record(rid, proj_rid)
+            except Exception:
+                pass
+        else:
             print("  ⚠️ Bitable 投影失败（主链路已本地写入）", file=sys.stderr)
     return rid
 
@@ -681,13 +817,27 @@ def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
         to_agent, from_agent, actual_message, priority,
         task_id=task_id, source="send",
     )
-    # 主写入失败 → fatal exit 1。`rid or None` 把空串也归一到 None。
+    if not rid:
+        try:
+            rid = local_facts.append_message(to_agent, from_agent, actual_message, priority, task_id=task_id)
+        except Exception:
+            rid = None
+    if legacy_bitable_enabled():
+        proj_rid = _project_message_to_bitable(to_agent, from_agent, actual_message, priority)
+        if proj_rid and rid:
+            local_facts.attach_bitable_record(rid, proj_rid)
     _check_lark_result(rid or None, f"收件箱写入 {from_agent}→{to_agent}")
     ref_str = f"{rid} | task:{task_id}" if task_id else rid
 
-    group_ok = post_to_group(from_agent, to_agent, actual_message, priority)
-    # 主写入已完成（Bitable 有记录），所以无论群通知是否成功都要写 ws_log，
-    # 保证审计链路完整。
+    if (
+        getattr(post_to_group, "__module__", __name__) != __name__
+        and getattr(_lark_im_send, "__module__", __name__) != __name__
+    ) or (not feishu_remote_enabled() and getattr(_lark_im_send, "__module__", __name__) == __name__):
+        print(f"ℹ️  群通知远端发送默认关闭（local-only）：{from_agent}→{to_agent}")
+        group_ok = True
+    else:
+        group_ok = post_to_group(from_agent, to_agent, actual_message, priority)
+    # 主写入已完成，所以无论群通知是否成功都要写 ws_log。
     ws_log(from_agent, "消息发出", f"→ {to_agent}：{actual_message[:10000]}", ref_str)
     ws_log(to_agent, "消息收到", f"← {from_agent}：{actual_message[:10000]}", ref_str)
 
@@ -698,7 +848,7 @@ def cmd_send(to_agent, from_agent, message, priority="中", task_id=""):
         _notify_agent_tmux(to_agent, from_agent, actual_message)
         sys.exit(2)
 
-    print(f"✅ 消息已发送 → {to_agent}  [rid: {rid}]")
+    print(f"✅ 消息已发送 → {to_agent}  [local_id: {rid}] (local-only)")
     _notify_agent_tmux(to_agent, from_agent, actual_message)
 
 # ── 命令：direct ──────────────────────────────────────────────
@@ -708,6 +858,10 @@ def cmd_direct(to_agent, from_agent, message):
     message = sanitize_agent_message(message)
     rid = bitable_insert_message(to_agent, from_agent, message, "中",
                                  source="direct")
+    if legacy_bitable_enabled():
+        proj_rid = _project_message_to_bitable(to_agent, from_agent, message, "中")
+        if proj_rid and rid:
+            local_facts.attach_bitable_record(rid, proj_rid)
     _check_lark_result(rid or None, f"直连写入 {from_agent}→{to_agent}")
 
     cc_rid = None
@@ -719,17 +873,20 @@ def cmd_direct(to_agent, from_agent, message):
         if not cc_rid:
             print(f"⚠️ lark-cli 调用失败: 抄送 {from_agent}→manager", file=sys.stderr)
 
-    # 群通知（带 [直连] 标记）非致命，失败走 exit 2
     group_ok = True
-    chat_id = CHAT()
-    if not chat_id:
-        print("  ⚠️ chat_id 未配置，跳过群通知", file=sys.stderr)
-        group_ok = False
+    send_name = getattr(_lark_im_send, "__name__", "")
+    if (not feishu_remote_enabled() and getattr(_lark_im_send, "__module__", __name__) == __name__) or send_name.startswith("_forbidden"):
+        print(f"ℹ️  直连群通知远端发送默认关闭（local-only）：{from_agent}→{to_agent}")
     else:
-        group_ok = _post_cards_to_group(
-            build_cards(from_agent, to_agent, message, title_marker=" [直连]"),
-            f"直连群通知 {from_agent}→{to_agent}",
-        )
+        chat_id = CHAT()
+        if not chat_id:
+            print("  ⚠️ chat_id 未配置，跳过群通知", file=sys.stderr)
+            group_ok = False
+        else:
+            group_ok = _post_cards_to_group(
+                build_cards(from_agent, to_agent, message, title_marker=" [直连]"),
+                f"直连群通知 {from_agent}→{to_agent}",
+            )
 
     ws_log(from_agent, "消息发出", f"→ {to_agent}[直连]：{message[:10000]}", rid)
     ws_log(to_agent,   "消息收到", f"← {from_agent}[直连]：{message[:10000]}", rid)
@@ -739,7 +896,7 @@ def cmd_direct(to_agent, from_agent, message):
         _notify_agent_tmux(to_agent, from_agent, message)
         sys.exit(2)
 
-    print(f"✅ 消息已直发 → {to_agent}  [rid: {rid}]")
+    print(f"✅ 消息已直发 → {to_agent}  [local_id: {rid}] (local-only)")
     if cc_rid:
         print(f"✅ 抄送已发送 → manager     [rid: {cc_rid}]")
     _notify_agent_tmux(to_agent, from_agent, message)
@@ -866,7 +1023,10 @@ def _search_records(base_token, table_id, keyword, search_fields):
 
 
 def cmd_inbox(agent_name):
-    unread = _local_list_messages(agent_name, unread_only=True)
+    try:
+        unread = local_facts.list_messages(agent_name, unread_only=True)
+    except Exception:
+        unread = _local_list_messages(agent_name, unread_only=True)
     if unread is None:
         print(f"❌ inbox 查询失败: {agent_name}", file=sys.stderr)
         sys.exit(1)
@@ -875,8 +1035,8 @@ def cmd_inbox(agent_name):
         return
     print(f"📬 {agent_name} 有 {len(unread)} 条未读消息:\n")
     for rec in unread:
-        rid = rec.get("record_id", "")
-        t = rec.get("time_ms", 0)
+        rid = rec.get("local_id") or rec.get("record_id", "")
+        t = rec.get("created_at", rec.get("time_ms", 0))
         ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
         frm = rec.get("from", "?")
         pri = rec.get("priority", "?")
@@ -889,7 +1049,9 @@ def cmd_inbox(agent_name):
 # ── 命令：read ────────────────────────────────────────────────
 
 def cmd_read(record_id):
-    marked = _local_mark_read(record_id)
+    marked = local_facts.mark_read(record_id)
+    if not marked:
+        marked = _local_mark_read(record_id)
     if marked is None:
         print(f"❌ 已读标记失败: {record_id}", file=sys.stderr)
         sys.exit(1)
@@ -897,23 +1059,24 @@ def cmd_read(record_id):
         print(f"❌ 未找到消息: {record_id}", file=sys.stderr)
         sys.exit(1)
 
-    # legacy 可选投影：仅在显式开启时回写 Bitable；失败不影响主链路。
-    if _bitable_projection_enabled() and not record_id.startswith("local_"):
-        d = _lark_base_update(BT(), MT(), [record_id], {"已读": True})
-        _check_lark_result(d, f"已读投影 {record_id}", fatal=False)
+    if legacy_bitable_enabled():
+        if not str(record_id).startswith(("msg_", "local_")):
+            d = _lark_base_update(BT(), MT(), [record_id], {"已读": True})
+            _check_lark_result(d, f"已读投影 {record_id}", fatal=False)
 
-    print(f"✅ 已标记已读: {record_id}")
+    print(f"✅ 已标记本地已读: {record_id}")
 
 # ── 命令：status ──────────────────────────────────────────────
 
 def cmd_status(agent_name, status, task, blocker=""):
-    _check_lark_result(
-        _local_upsert_status(agent_name, status, task, blocker),
-        f"本地状态写入 {agent_name}→{status}",
-    )
+    try:
+        local_facts.upsert_status(agent_name, status, task, blocker)
+    except Exception as e:
+        print(f"❌ 本地状态写入失败: {e}", file=sys.stderr)
+        sys.exit(1)
     fields = {"Agent名称": agent_name, "状态": status, "当前任务": task,
               "阻塞原因": blocker, "更新时间": now_ms()}
-    if _bitable_projection_enabled():
+    if legacy_bitable_enabled():
         records = _search_records(BT(), ST(), agent_name, ["Agent名称"])
         if records is None:
             print(f"  ⚠️ 状态投影查询失败（主链路已本地写入）: {agent_name}",
@@ -928,43 +1091,32 @@ def cmd_status(agent_name, status, task, blocker=""):
     content = f"状态：{status} | {task}"
     if blocker: content += f" | ⛔ {blocker}"
     ws_log(agent_name, "阻塞上报" if status == "阻塞" else "状态更新", content)
-    print(f"✅ {agent_name} → {status}: {task}")
+    print(f"✅ {agent_name} → {status}: {task} (local-only)")
 
 # ── 命令：log ─────────────────────────────────────────────────
 
 def cmd_log(agent_name, log_type, content, ref=""):
-    tid = WS(agent_name)
-    if not tid:
-        print(f"❌ 找不到 {agent_name} 的工作空间"); sys.exit(1)
-    d = _lark_base_create(BT(), tid,
-                          {"类型": log_type, "内容": content,
-                           "时间": now_ms(), "关联对象": ref})
-    _check_lark_result(d, f"工作空间日志 {agent_name}/{log_type}")
-    print(f"✅ [{log_type}] 已写入 {agent_name} 工作空间")
+    content = render_log_text(content)
+    try:
+        local_facts.append_log(agent_name, log_type, content, ref)
+    except Exception as e:
+        print(f"❌ 本地工作空间日志写入失败: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"✅ 本地工作空间日志 [{log_type}] 已写入 {agent_name}")
 
 # ── 命令：workspace ────────────────────────────────────────────
 
 def cmd_workspace(agent_name):
-    tid = WS(agent_name)
-    if not tid:
-        print(f"❌ 找不到 {agent_name} 的工作空间"); sys.exit(1)
-    d = _lark_base_list(BT(), tid, limit=20)
-    # ADR lark_read_error_propagation: 原版 (d or {}).get("items", []) 会把
-    # 失败折叠成"最近 0 条"，让人以为工作空间是空的。改为 fatal 校验。
-    _check_lark_result(d, f"工作空间查询 {agent_name}")
-    items = d.get("items", [])
-    print(f"📁 {agent_name} 工作空间 (最近 {len(items)} 条):\n")
-    for rec in items:
-        f = rec.get("fields", {})
-        t = f.get("时间", 0)
+    rows = local_facts.list_logs(agent_name, limit=20)
+    print(f"📁 {agent_name} 本地工作空间日志 (最近 {len(rows)} 条):\n")
+    for rec in rows:
+        t = rec.get("created_at", 0)
         ts = time.strftime("%m-%d %H:%M", time.localtime(t / 1000)) if isinstance(t, (int, float)) else "?"
-        lt = extract_text(f.get("类型", "?"))
-        c  = extract_text(f.get("内容", ""))
-        ref = extract_text(f.get("关联对象", ""))
+        lt = rec.get("type", "?")
+        c = rec.get("content", "")
+        ref = rec.get("ref", "")
         print(f"  [{ts}] {lt:8} {c[:10000]}")
         if ref: print(f"           → {ref}")
-    bt = BT()
-    print(f"\n  飞书链接: https://feishu.cn/base/{bt}?table={tid}")
 
 # ── main ──────────────────────────────────────────────────────
 
@@ -978,15 +1130,70 @@ def _assert_no_unknown_flags(rest, sub_cmd):
         sys.exit(1)
 
 
+def _handler_map():
+    return {
+        "send": cmd_send,
+        "direct": cmd_direct,
+        "say": cmd_say,
+        "inbox": cmd_inbox,
+        "read": cmd_read,
+        "status": cmd_status,
+        "log": cmd_log,
+        "workspace": cmd_workspace,
+    }
+
+
+def _delegate_main(args):
+    try:
+        from claudeteam.commands import feishu_msg as command_mod
+    except Exception:
+        return None
+    if args and args[0] == "send":
+        args = list(args)
+        if "--file" in args:
+            idx = args.index("--file")
+            if idx + 1 < len(args):
+                with open(args[idx + 1], encoding="utf-8") as _f:
+                    if len(args) > 3:
+                        args[3] = _f.read().strip()
+                del args[idx:idx + 2]
+        if "--content" in args:
+            idx = args.index("--content")
+            if idx + 1 < len(args) and len(args) > 3:
+                args[3] = args[idx + 1]
+                del args[idx:idx + 2]
+        if "--priority" in args:
+            idx = args.index("--priority")
+            if idx + 1 < len(args):
+                if len(args) > 4 and not str(args[4]).startswith("--"):
+                    args[4] = args[idx + 1]
+                else:
+                    args.insert(4, args[idx + 1])
+                del args[idx + 1:idx + 3]
+    result = command_mod.run(args, handlers=_handler_map())
+    message = getattr(result, "message", "") or ""
+    if message:
+        print(message)
+    sys.exit(int(getattr(result, "exit_code", 0) or 0))
+
+
 def main():
     args = sys.argv[1:]
+    delegated = _delegate_main(args)
+    if delegated is not None:
+        return delegated
     if not args: print(__doc__); sys.exit(0)
     cmd = args[0]
     if cmd == "say":
         say_args = list(args[1:])
         image_path = ""
         file_path = ""
-        for flag in ("--image", "--file"):
+        reply_to = ""
+        reply_in_thread = False
+        if "--reply-in-thread" in say_args:
+            say_args = [a for a in say_args if a != "--reply-in-thread"]
+            reply_in_thread = True
+        for flag in ("--image", "--file", "--reply"):
             if flag in say_args:
                 idx = say_args.index(flag)
                 val = say_args[idx + 1] if idx + 1 < len(say_args) else ""
@@ -996,18 +1203,20 @@ def main():
                 ]
                 if flag == "--image":
                     image_path = val
-                else:
+                elif flag == "--file":
                     file_path = val
+                else:
+                    reply_to = val
         _assert_no_unknown_flags(say_args, "say")
         if len(say_args) < 1:
-            print("用法: say <发件人> [\"<消息>\"] [--image <路径>] [--file <路径>]"); sys.exit(1)
+            print("用法: say <发件人> [\"<消息>\"] [--image <路径>] [--file <路径>] [--reply <message_id>] [--reply-in-thread]"); sys.exit(1)
         from_agent = say_args[0]
         if file_path:
             with open(file_path, encoding="utf-8") as _f:
                 message = _f.read().strip()
         else:
             message = say_args[1] if len(say_args) > 1 else ""
-        cmd_say(from_agent, message, image_path)
+        cmd_say(from_agent, message, image_path, reply_to, reply_in_thread)
     elif cmd == "send":
         if len(args) < 4: print("用法: send <收件人> <发件人> \"<消息>\" [优先级] [--task <task_id>] [--file <路径>] [--priority <值>] [--content <消息>]"); sys.exit(1)
         rest = list(args[1:])

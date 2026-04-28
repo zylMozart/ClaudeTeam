@@ -170,17 +170,76 @@ def _host_agent_usage(agent_set, session):
             for a, pid in panes.items()]
 
 
+def _container_agent_usage(cname: str, short: str, agent_set):
+    r = _run(["sudo", "-n", "docker", "exec", cname, "tmux",
+              "list-panes", "-a", "-F", "#{session_name}:#{window_name} #{pane_pid}"])
+    if r.returncode != 0:
+        return []
+    panes = {}
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        win = parts[0].partition(":")[2]
+        if win in agent_set and win not in panes:
+            try:
+                panes[win] = int(parts[1])
+            except ValueError:
+                pass
+    if not panes:
+        return []
+    ps = _run(["sudo", "-n", "docker", "exec", cname, "ps", "-eo", "pid,ppid,pcpu,rss"])
+    procs, children = _parse_ps_tree(ps.stdout)
+    return [{"agent": a, "location": short,
+             "cpu": (u := _subtree_usage(pid, procs, children))[0], "mem": u[1]}
+            for a, pid in panes.items()]
+
+
+def _collect_agents(containers: list, agent_set, session: str):
+    agents = _host_agent_usage(agent_set, session)
+    for c in containers:
+        agents.extend(_container_agent_usage(c["name"], c["short"], agent_set))
+    agents.sort(key=lambda a: a["cpu"], reverse=True)
+    return agents
+
+
+def _fmt_mem(b: int) -> str:
+    if b >= 1024**3:
+        return f"{b/1024**3:.2f} GB"
+    if b >= 1024**2:
+        return f"{b/1024**2:.0f} MB"
+    if b >= 1024:
+        return f"{b/1024:.0f} KB"
+    return f"{b} B"
+
+
+def _collect_alarms(host_mem, host_disk, containers):
+    alarms = []
+    if host_mem and host_mem["pct"] >= 90:
+        alarms.append(f"主机内存 **{host_mem['pct']}%**（used {_fmt_mem(host_mem['used'])}）")
+    if host_disk and host_disk["pct"] >= 80:
+        alarms.append(f"磁盘 `{host_disk['mount']}` **{host_disk['pct']}%**")
+    for c in containers:
+        if c["mem_pct"] >= 90:
+            alarms.append(f"容器 `{c['short']}` 内存 **{c['mem_pct']:.1f}%**")
+        if c["cpu_pct"] >= 80:
+            alarms.append(f"容器 `{c['short']}` CPU **{c['cpu_pct']:.1f}%**")
+    dm = _run(["dmesg", "-T"], timeout=3)
+    if dm.returncode == 0 and dm.stdout:
+        oom = [line for line in dm.stdout.splitlines()[-500:]
+               if re.search(r"out of memory|killed process", line, re.I)]
+        if oom:
+            alarms.append(f"内核 OOM/killed 记录 {len(oom)} 条（tail 3）：\n  " + "\n  ".join(oom[-3:]))
+    return alarms
+
+
 def collect_health(agent_set: frozenset, session: str) -> dict:
-    """Collect live server load data. Returns dict for _format_health."""
+    """Collect live server load data. Returns dict for health card/text renderers."""
     cpu = _host_cpu()
     mem = _host_mem()
     disk = _host_disk()
     containers = _docker_stats()
-    agents = _host_agent_usage(agent_set, session)
-    alarms = []
-    if mem and mem["pct"] >= 90:
-        alarms.append(f"主机内存 {mem['pct']}%")
-    if disk and disk["pct"] >= 80:
-        alarms.append(f"磁盘 {disk['mount']} {disk['pct']}%")
+    agents = _collect_agents(containers, agent_set, session)
+    alarms = _collect_alarms(mem, disk, containers)
     return {"host": {"cpu": cpu, "mem": mem, "disk": disk},
             "containers": containers, "agents": agents, "alarms": alarms}

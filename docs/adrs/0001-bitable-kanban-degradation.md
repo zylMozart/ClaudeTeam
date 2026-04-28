@@ -1,6 +1,6 @@
 # ADR 0001: Local Core Facts And Legacy Bitable Boundary
 
-Date: 2026-04-23
+Date: 2026-04-29
 Status: draft, updated for TASK-020 P0
 Owner: toolsmith
 

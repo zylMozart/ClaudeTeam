@@ -55,6 +55,8 @@ CASES = {
     "angle_placeholders": (
         "Use <agent> and <model>, but escape <at id='all'></at>."
     ),
+    "ordered_list": "汇报：\n1. 消息引用已完成\n2. 图文混发已完成\n3. 压缩重读已完成",
+    "ordered_list_in_fence": "```\n1. code\n2. code\n```\n4. real item",
     "multilingual": "中文 English mixed 内容。",
     "emoji": "✅ 状态正常，下一步继续。",
     "feishu_tags": "<at id='all'></at> <button action=\"message\">Run</button>",
@@ -91,8 +93,17 @@ def assert_invariants(name: str, target: str, rendered: str):
         assert "name; value" in rendered, name
     if name == "long_message" and target == "card":
         assert "0123456789" in rendered, name
+    if name == "ordered_list":
+        assert "**1.**" in rendered, name
+        assert "**2.**" in rendered, name
+        assert "**3.**" in rendered, name
+    if name == "ordered_list_in_fence":
+        assert "**4.**" in rendered, name
+        for marker in ("1. code", "2. code"):
+            if "```" in rendered:
+                assert marker in rendered, name + ": code fence content changed"
     if name.startswith("chinese_curly_quote"):
-        assert "“" in rendered and "”" in rendered, name
+        assert "\u201c" in rendered and "\u201d" in rendered, name
 
 
 def check_split_regression():
@@ -214,7 +225,7 @@ def check_delivery_card_splitting():
         "_notify_agent_tmux": feishu_msg._notify_agent_tmux,
     }
 
-    def fake_send(chat_id, content=None, markdown=None, image=None, card=None):
+    def fake_send(chat_id, content=None, markdown=None, image=None, card=None, **kwargs):
         if card:
             captured.append(card)
         return {}
