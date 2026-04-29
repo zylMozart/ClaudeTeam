@@ -37,6 +37,42 @@ This guide defines how to make changes in ClaudeTeam without breaking runtime co
 - Facts storage: `scripts/local_facts.py`
 - Watchdog: `scripts/watchdog.py`
 
+## Tmux Input Submission Helper
+
+When a script or debugging shell types text into an agent's tmux pane, a single
+`tmux send-keys -t <pane> Enter` is **not** enough to submit it. Claude Code
+in INSERT mode treats a bare Enter inside the input buffer as a literal
+newline; only Enter on a settled input line triggers submission.
+
+The fact-of-record submit sequence lives in
+`src/claudeteam/runtime/tmux_utils.py`:
+
+- **Internal**: `_press_submit(target, keys=None)` — used by
+  `inject_when_idle`. Default keys: `("Enter", "C-m")` with a 0.2 s gap.
+- **Public**: `submit_to_pane(session, window, keys=None)` — the same
+  sequence, but takes a `(session, window)` pair so ad-hoc tools and tests
+  stay on the same path.
+
+Per-CLI adapters under `claudeteam.cli_adapters` expose a `submit_keys()`
+method so a CLI that needs a different sequence (e.g. Codex/Gemini → just
+`["Enter"]`) can opt out without forking the helper.
+
+```python
+from claudeteam.runtime.tmux_utils import submit_to_pane
+
+# 默认序列 (Claude Code)
+submit_to_pane("claudeteam", "manager")
+
+# 用 CLI 适配器自带的序列
+from claudeteam.cli_adapters import adapter_for_agent
+adapter = adapter_for_agent("manager")
+submit_to_pane("claudeteam", "manager", keys=adapter.submit_keys())
+```
+
+If you find yourself reimplementing the submit dance with raw `subprocess.run
+(["tmux", "send-keys", ...])`, replace it with `submit_to_pane` — drift
+between callers is how Issue #7 in `docs/DEPLOYMENT_ISSUES.md` got logged.
+
 ## Documentation Workflow
 
 When behavior changes, update these pages together:

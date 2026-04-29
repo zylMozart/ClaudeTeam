@@ -387,7 +387,17 @@ def _tail_text(text, max_len=240):
     return " ".join((text or "").split())[-max_len:]
 
 def _press_submit(target, keys=None):
-    """Submit the current input line in a way that works across CLIs."""
+    """Submit the current input line in a way that works across CLIs.
+
+    Default sequence: ``Enter`` + ``C-m`` with a 0.2s gap. Per-CLI adapters in
+    ``claudeteam.cli_adapters`` may override via the ``keys`` argument
+    (e.g. Codex/Gemini only need ``["Enter"]``).
+
+    For ad-hoc / debug submission from outside the tmux_utils internals,
+    prefer the public :func:`submit_to_pane` wrapper — it accepts a
+    ``(session, window)`` pair instead of a pre-formatted target string and is
+    documented in ``docs/DEVELOPMENT.md`` (Tmux Input Submission Helper).
+    """
     for key in (keys or ("Enter", "C-m")):
         r = subprocess.run(
             ["tmux", "send-keys", "-t", target, key],
@@ -397,6 +407,31 @@ def _press_submit(target, keys=None):
             return False
         time.sleep(0.2)
     return True
+
+
+def submit_to_pane(session, window, keys=None):
+    """Public wrapper around :func:`_press_submit` for ``(session, window)`` callers.
+
+    Use this from scripts / debugging shells that need to submit text already
+    typed into a tmux pane (e.g. an agent window). A single ``tmux send-keys
+    -t <pane> Enter`` is **not** sufficient for Claude Code in INSERT mode —
+    bare Enter inside the input buffer becomes a literal newline; only Enter
+    on a settled input line submits. The default key sequence here is the
+    same one ``inject_when_idle`` (the production injection path) uses, so
+    ad-hoc tooling stays on the same fact-of-record.
+
+    Args:
+        session: tmux session name (e.g. ``"claudeteam"``).
+        window:  tmux window name (typically the agent name).
+        keys:    optional iterable of tmux key tokens. ``None`` (default) →
+                 ``("Enter", "C-m")`` with a 0.2 s gap between each. Override
+                 with a CLI adapter's ``submit_keys()`` if you know the target
+                 CLI needs a different sequence.
+
+    Returns:
+        ``True`` if every send-keys call succeeded; ``False`` otherwise.
+    """
+    return _press_submit(f"{session}:{window}", keys=keys)
 
 def _input_still_visible(session, window, text):
     """Best-effort check: did the prompt remain in the visible input area?"""
