@@ -6,6 +6,25 @@
 """
 import sys, os, json, time, subprocess, shutil
 
+# pyproject.toml 声明 requires-python = ">=3.10"，但 macOS 默认 Python 3.9 + 老
+# pip 在 editable install (`pip install -e .`) 上会失败而无明确版本提示，用户被
+# 推到 PYTHONPATH=src 的兜底路径上当成"装好了"，后面 walrus / | 类型注解 / match
+# 等 3.10+ 语法一旦命中就崩在远端守护里很难调。在 setup 入口提前拦下，给出明确
+# 的升级路径 —— PYTHONPATH=src 仅是开发期 fallback，不是版本兼容靠山。
+if sys.version_info < (3, 10):
+    sys.stderr.write(
+        "❌ ClaudeTeam 需要 Python 3.10+，当前: "
+        f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} "
+        f"({sys.executable})\n"
+        "   pyproject.toml 声明 requires-python>=3.10，请升级后再跑 setup。\n"
+        "   推荐升级路径:\n"
+        "     • macOS:   brew install python@3.11   # 然后用 python3.11 scripts/setup.py\n"
+        "     • Linux:   apt/yum 装 python3.11，或用 pyenv install 3.11 / uv python install 3.11\n"
+        "     • 通用:    pyenv install 3.11.* && pyenv local 3.11.*\n"
+        "   注: PYTHONPATH=src 只是开发期 fallback，不能用作 3.9 的版本兼容补丁。\n"
+    )
+    sys.exit(1)
+
 from claudeteam.runtime.config import (
     AGENTS,
     CONFIG_FILE,
