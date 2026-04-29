@@ -175,6 +175,21 @@ spawn_agent() {
     sleep 0.5
   fi
 
+  # —— [BLOCK 1 fix] 防御纵深: spawn 是冷启动, pane 应当只在 shell 状态. 误调
+  # (重复 /hire / 手工脚本走错路径) 时, 用 pane_current_command 拦住, 避免把
+  # spawn_cmd 打进已经活着的 CLI. 与 wake_agent 区别: spawn 走 return 1 (错误),
+  # 因为冷启动 pane 已被占就是逻辑错误, 不是幂等 no-op.
+  local pane_cmd
+  pane_cmd=$(tmux display-message -t "$session:$agent" -p '#{pane_current_command}' 2>/dev/null)
+  case "$pane_cmd" in
+    bash|zsh|sh|"") : ;;
+    *)
+      echo "❌ spawn_agent: $agent pane 前台是 '$pane_cmd' (非 shell) — 拒绝重复 spawn" >&2
+      return 1
+      ;;
+  esac
+  # —— end [BLOCK 1 fix]
+
   local spawn_cmd
   spawn_cmd=$(python3 -m claudeteam.cli_adapters.resolve "$agent" spawn_cmd "$model")
   tmux send-keys -t "$session:$agent" "$spawn_cmd" Enter
@@ -252,6 +267,25 @@ wake_agent() {
     echo "ℹ️ wake_agent: $agent 已活,跳过"
     return 0
   fi
+
+  # —— [BLOCK 1 fix] 第二道闸门: 不依赖 /proc 的 pane_current_command 兜底
+  # 当上面的 _lifecycle_pids_for_agent 因 comm 截断 / setsid 切链 / Darwin 无
+  # /proc 等原因假阴性时, 这一道用 tmux 自己看到的 kernel 事实拦住, 避免把
+  # spawn_cmd 通过 send-keys 打进活着的 CLI 输入框 (污染 chat 内容).
+  # 取不到 pane_cmd (空串, e.g. 窗口还没建) 时走 ok 分支, 等价于无新闸门, 回退
+  # 到旧行为, 不引入新失败模式.
+  local pane_cmd
+  pane_cmd=$(tmux display-message -t "$session:$agent" -p '#{pane_current_command}' 2>/dev/null)
+  case "$pane_cmd" in
+    bash|zsh|sh|"")
+      :  # pane 在 shell, 或读不到 — 安全 spawn
+      ;;
+    *)
+      echo "⚠️ wake_agent: $agent pane 前台是 '$pane_cmd' (非 shell) — 跳过 spawn,避免 send-keys 打进活着的 CLI 输入框" >&2
+      return 0
+      ;;
+  esac
+  # —— end [BLOCK 1 fix]
 
   if ! tmux has-session -t "$session:$agent" 2>/dev/null; then
     tmux new-window -t "$session" -n "$agent" -c "$_LC_PROJECT_ROOT" 2>/dev/null || {
