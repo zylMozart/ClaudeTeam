@@ -27,6 +27,7 @@ from claudeteam.runtime.config import (
     save_runtime_config,
     scan_other_deployments,
 )
+from claudeteam.runtime.profile_naming import generate_unique_profile_name
 
 LARK_CLI = get_lark_cli()  # 自动带 --profile（如已初始化）
 
@@ -67,6 +68,56 @@ def _current_default_profile():
         return d.get("profile") or d.get("appId") or ""
     except Exception:
         return ""
+
+
+def _lark_cli_config_path():
+    """Return the path to lark-cli's config.json (where named profiles live).
+
+    lark-cli reads ``$HOME/.lark-cli/config.json`` by default both on macOS
+    host runs and in the Docker image (``/home/claudeteam/.lark-cli/...``).
+    The container's bind-mount aliases the same path so a single helper works
+    in both. ``None`` if the file doesn't exist yet.
+    """
+    p = os.path.expanduser("~/.lark-cli/config.json")
+    return p if os.path.exists(p) else None
+
+
+def _profile_exists(profile_name):
+    """Return True if lark-cli's local config has a profile matching ``profile_name``.
+
+    Used by setup.py to decide whether to ask the user to first run
+    ``npx @larksuite/cli config init --new --name <profile_name>``. Reading
+    the JSON file directly avoids the lark-cli CLI's interactive prompts (the
+    ``--profile`` flag on ``config show`` will hang waiting for input when the
+    profile is missing).
+
+    The check is intentionally permissive: it walks every string value in the
+    config and looks for an exact match. lark-cli's per-app schema doesn't
+    expose a documented ``name`` field, but ``--name`` storage details may
+    evolve, so a generic value-search avoids breaking on schema drift. False
+    positives (saying yes when the profile is actually missing) just push the
+    real failure to the next ``lark-cli`` call, where the error message is
+    clearer.
+    """
+    cfg_path = _lark_cli_config_path()
+    if not cfg_path:
+        return False
+    try:
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    def _walk(node):
+        if isinstance(node, str):
+            return node == profile_name
+        if isinstance(node, dict):
+            return any(_walk(v) for v in node.values())
+        if isinstance(node, list):
+            return any(_walk(v) for v in node)
+        return False
+
+    return _walk(cfg)
 
 
 def _normalize_profile(p, default_name):
@@ -683,10 +734,70 @@ def _warmup_lark_cli():
     print()
 
 
+def cmd_rotate_profile():
+    """Voluntary migration from legacy default-appId profile to {session}-{hash6}.
+
+    Workflow (interactive):
+      1. Read existing runtime_config.json.lark_profile (must exist).
+      2. Compute the new ``generate_unique_profile_name(session, root)`` name.
+      3. If old == new (already on the unique scheme), no-op.
+      4. Otherwise prompt y/N. On 'y':
+         - Run ``npx @larksuite/cli config init --new --name <new>`` (foreground;
+           user re-scans QR to bind an App — same or new).
+         - Persist the new name into runtime_config.json.
+         - Print restart hint (router/watchdog/team must restart to pick it up).
+
+    Old deployments are *not* forced to migrate; the main setup path's "existing
+    runtime_config.lark_profile → 沿用" branch keeps them working as-is.
+    """
+    if not os.path.exists(CONFIG_FILE) or os.path.getsize(CONFIG_FILE) == 0:
+        print(f"❌ {CONFIG_FILE} 不存在或为空,先跑一次 setup.py 完成初始化")
+        sys.exit(1)
+    try:
+        existing = load_runtime_config_from_path(CONFIG_FILE)
+    except json.JSONDecodeError:
+        print(f"❌ {CONFIG_FILE} 不是合法 JSON")
+        sys.exit(1)
+    old = (existing.get("lark_profile") or "").strip()
+    if not old:
+        print("❌ 当前 runtime_config.json 没有 lark_profile,直接跑 setup.py 即可")
+        sys.exit(1)
+    new = generate_unique_profile_name(TMUX_SESSION, PROJECT_ROOT)
+    if old == new:
+        print(f"ℹ️  当前 profile {old} 已经是唯一格式,无需 rotate")
+        return
+    print(f"⚠️  即将旋转 profile: {old} → {new}")
+    print(f"   会调用 npx @larksuite/cli config init --new --name {new}")
+    print( "   你需要重扫一次码绑定 App (可复用旧 App 或绑新的)。")
+    print( "   完成后本命令会更新 runtime_config.json,需要手动重启 router/watchdog/team。")
+    try:
+        ans = input("继续? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\n取消")
+        return
+    if ans != "y":
+        print("取消")
+        return
+    rc = subprocess.call(
+        ["npx", "@larksuite/cli", "config", "init", "--new", "--name", new]
+    )
+    if rc != 0:
+        print(f"❌ lark-cli config init 失败 (rc={rc}); runtime_config.json 未改动")
+        sys.exit(rc)
+    existing["lark_profile"] = new
+    save_runtime_config(existing)
+    print(f"✅ {CONFIG_FILE} 已更新: lark_profile = {new}")
+    print( "   下一步: 重启 router / watchdog / team 让新 profile 生效")
+    print( "     bash scripts/stop.sh && bash scripts/start-team.sh")
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "ensure-boss-todo":
         ensure_boss_todo_table()
+        return
+    if argv and argv[0] == "rotate-profile":
+        cmd_rotate_profile()
         return
 
     # P1-12 首次使用 lark-cli 时 npx 会下载 ~80MB 且完全静默。先 warm-up 一次,
@@ -731,35 +842,35 @@ def main(argv=None):
         sys.exit(1)
 
     # 解析本次 setup 将使用的 lark-cli profile。
-    # 优先级: LARK_CLI_PROFILE 环境变量 > lark-cli 当前默认 profile。
+    #
+    # 新优先级 (替换 9001cd0/770f20c 的"单团队豁免警告"分叉,改成永远走多团队
+    # 隔离路径 — 见 workspace/architect/multiteam_isolation_design_2026-04-30.md):
+    #   1. existing runtime_config.json.lark_profile  → 沿用 (老部署兼容,无强制迁移)
+    #   2. LARK_CLI_PROFILE env                       → 用 (显式 operator override)
+    #   3. generate_unique_profile_name               → 自动生成 {session}-{hash6}
+    #
+    # default_name = lark-cli 当前默认 profile (= appId), 仅供 _check_profile_conflict
+    # 把同机其他部署里 lark_profile=None 的旧字段归一化用; 不再参与新部署的
+    # profile 决策。
     default_name = _current_default_profile()
     env_profile = os.environ.get("LARK_CLI_PROFILE", "").strip()
-    lark_profile = env_profile or default_name
-    if not lark_profile:
-        print("❌ 无法确定 lark-cli profile。请先运行:")
-        print("     npx @larksuite/cli config init --new")
-        sys.exit(1)
-    print(f"🔑 lark-cli profile: {lark_profile}")
-
-    # profile 名 ≠ session 名警告：用户可能用了隐式继承的默认 profile，
-    # 未来多团队部署时会串台。显式确认后可跳过。
-    if not env_profile and lark_profile != TMUX_SESSION:
-        accept_default = os.environ.get("CLAUDE_TEAM_ACCEPT_DEFAULT_PROFILE", "").lower() in ("1", "yes", "true")
-        print("=" * 70)
-        print(f"⚠️  lark-cli profile 名 ({lark_profile}) 与 team.json session 名 ({TMUX_SESSION}) 不一致")
-        print("   当前 profile 是从 lark-cli 默认继承的，不是显式指定的。")
-        print("   如果将来在同一台机器部署第二个团队，共享 profile 会导致事件流串台。")
-        print()
-        print("   推荐做法 (为本团队创建独立 App):")
-        print(f"     1) npx @larksuite/cli config init --new --name {TMUX_SESSION}")
-        print(f"     2) LARK_CLI_PROFILE={TMUX_SESSION} python3 scripts/setup.py")
-        print()
-        print("   继续使用当前默认 profile:")
-        print("     CLAUDE_TEAM_ACCEPT_DEFAULT_PROFILE=1 python3 scripts/setup.py")
-        print("=" * 70)
-        if not accept_default:
+    if existing and existing.get("lark_profile"):
+        lark_profile = existing["lark_profile"]
+        print(f"🔑 沿用已配置 profile: {lark_profile}")
+    elif env_profile:
+        lark_profile = env_profile
+        print(f"🔑 lark-cli profile (来自 LARK_CLI_PROFILE env): {lark_profile}")
+    else:
+        lark_profile = generate_unique_profile_name(TMUX_SESSION, PROJECT_ROOT)
+        print(f"🔑 lark-cli profile (自动生成): {lark_profile}")
+        print(f"   该名基于 session={TMUX_SESSION} + 路径 hash, 确保跟同机其他部署隔离。")
+        if not _profile_exists(lark_profile):
+            print(f"⚠️  lark-cli 中尚未存在 profile {lark_profile}")
+            print(f"   请运行: npx @larksuite/cli config init --new --name {lark_profile}")
+            print( "   完成扫码绑定 App 后重新运行: python3 scripts/setup.py")
+            print( "   (如想用旧的默认 profile, 显式设 LARK_CLI_PROFILE=<name> 跑;")
+            print( "    如想自愿迁移旧部署, 用: python3 scripts/setup.py rotate-profile)")
             sys.exit(1)
-        print("✅ CLAUDE_TEAM_ACCEPT_DEFAULT_PROFILE=1 已设置,继续。")
 
     # 同机多团队部署时,若多个部署共用同一个 profile (= 同一个 Feishu App),
     # 它们会在 WebSocket 层共享事件流,router 必须按 chat_id 过滤才不会串台。
