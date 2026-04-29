@@ -6,24 +6,15 @@
 """
 import sys, os, json, time, subprocess, shutil
 
-# pyproject.toml 声明 requires-python = ">=3.10"，但 macOS 默认 Python 3.9 + 老
-# pip 在 editable install (`pip install -e .`) 上会失败而无明确版本提示，用户被
-# 推到 PYTHONPATH=src 的兜底路径上当成"装好了"，后面 walrus / | 类型注解 / match
-# 等 3.10+ 语法一旦命中就崩在远端守护里很难调。在 setup 入口提前拦下，给出明确
-# 的升级路径 —— PYTHONPATH=src 仅是开发期 fallback，不是版本兼容靠山。
-if sys.version_info < (3, 10):
-    sys.stderr.write(
-        "❌ ClaudeTeam 需要 Python 3.10+，当前: "
-        f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} "
-        f"({sys.executable})\n"
-        "   pyproject.toml 声明 requires-python>=3.10，请升级后再跑 setup。\n"
-        "   推荐升级路径:\n"
-        "     • macOS:   brew install python@3.11   # 然后用 python3.11 scripts/setup.py\n"
-        "     • Linux:   apt/yum 装 python3.11，或用 pyenv install 3.11 / uv python install 3.11\n"
-        "     • 通用:    pyenv install 3.11.* && pyenv local 3.11.*\n"
-        "   注: PYTHONPATH=src 只是开发期 fallback，不能用作 3.9 的版本兼容补丁。\n"
-    )
-    sys.exit(1)
+# 入口版本拦截 —— 单事实源在 src/claudeteam/runtime/python_version_check.py。
+# 必须在任何其他 claudeteam.* 导入之前调用：runtime/config 之类模块在 3.10+
+# 语法上一旦失败,栈回报会指向 ModuleNotFoundError / SyntaxError 而非真正的"
+# 版本太旧",诊断成本很高。先把 src/ 接进 sys.path 再 import,这条路径也是
+# 项目运行期通用的 fallback (PYTHONPATH=src / pip install -e . 二选一,这里
+# 兜住没设的场景)。
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from claudeteam.runtime.python_version_check import require_py310
+require_py310()
 
 from claudeteam.runtime.config import (
     AGENTS,

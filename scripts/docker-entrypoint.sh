@@ -22,6 +22,12 @@ cd "$ROOT"
 # PYTHONPATH 三道注入的最后一道兜底 (Dockerfile ENV / compose env / 这里)。
 # 即使外层全漏配,容器内任何 python3 -m claudeteam.* 都能直接 import。
 export PYTHONPATH="${PYTHONPATH:-/app/src}"
+
+# Python ≥3.10 入口拦截 (单事实源: claudeteam.runtime.python_version_check)。
+# 同 start-team.sh 与 setup.py 调用同一函数。失败时 require_py310() 写 stderr
+# 并 sys.exit(1),被 set -e 兜住整体退出。容器镜像默认应该已是 3.11+,这条主
+# 要兜底"用错 base image / host run 模式 mount 进来的 python"等漂移场景。
+python3 -c "from claudeteam.runtime.python_version_check import require_py310; require_py310()"
 if [ -z "${CLAUDETEAM_STATE_DIR:-}" ]; then
   if [ "$ROOT" = "/app" ]; then
     export CLAUDETEAM_STATE_DIR="/app/state"

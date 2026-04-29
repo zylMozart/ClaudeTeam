@@ -15,6 +15,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$ROOT/src"
 
+# Python ≥3.10 入口拦截 (单事实源: claudeteam.runtime.python_version_check)。
+# 同 docker-entrypoint.sh 与 setup.py 调用同一函数,避免三处版本检查漂移。
+# 失败时 require_py310() 会写 stderr 并 sys.exit(1),被 set -e 兜住整体退出。
+python3 -c "from claudeteam.runtime.python_version_check import require_py310; require_py310()"
+
 # ── lazy-mode CLI / env 解析 ─────────────────────────────────
 # lazy-mode: 只启动白名单 (manager/supervisor/router/kanban/watchdog),
 # 业务 agent (coder/writer/...) 只建 tmux 窗口,不跑 claude —— 由 supervisor
