@@ -106,25 +106,50 @@ class _RouterRuntime:
 
         if result.action == EventAction.DROP:
             if result.reason == "empty_text" and event.get("image_key"):
+                # 图片：保留 pre-mark；下载是异步线程，重复触发要避免。
                 self.state.mark_seen(result.msg_id)
                 self._handle_image(event, "", agents)
                 self._advance_cursor()
             return
 
-        self.state.mark_seen(result.msg_id)
         self._handle_image(event, result.text, agents)
 
         if result.action == EventAction.SLASH:
             _, reply = _slash_dispatch(result.text)
             self._handle_slash_reply(result, reply, _lark_im_send, get_chat_id, build_system_card)
+            # SLASH 回显完成后再 mark_seen；否则 _handle_slash_reply 抛异常时
+            # catchup 还能重新处理。
+            self.state.mark_seen(result.msg_id)
             self._advance_cursor()
             return
 
-        # ROUTE
+        # ROUTE — mark_seen 必须在 _deliver 真正完成后再调，否则 ws 闪断 +
+        # 投递异常时 message 会被 is_seen 去重逻辑吞掉，catchup_from_history
+        # 也无法恢复（manager 的「拉取 N 条 / replay 0」吞消息现象）。
         print(f"[{time.strftime('%H:%M:%S')}] 新消息: {result.text[:500]}")
+        delivered = 0
         for target in result.targets:
             print(f"  路由: {target} ← {result.sender or '用户'}")
-            self._deliver(target, result.text, result.sender, result.msg_id, result.parent_id, result.root_id)
+            try:
+                self._deliver(target, result.text, result.sender, result.msg_id,
+                              result.parent_id, result.root_id)
+                delivered += 1
+            except Exception as exc:
+                # 单 target 异常不阻塞其他 target；msg_id 暂不进 seen 集，下轮
+                # ws 重传 / catchup 可重试整条事件。_enqueue 内部按 msg_id 幂等，
+                # 不会对成功 target 双投；inject 不幂等，下文有保护。
+                print(f"  ⚠️ 投递 {target} 异常 (msg_id={result.msg_id[:16]}…): {exc}")
+
+        if delivered == 0:
+            # 全军覆没 → 不 mark_seen / 不 advance cursor，留给下次重试。
+            print(f"  ⚠️ msg_id={result.msg_id[:16]}… 全部 {len(result.targets)} 个 target 投递失败，"
+                  f"留待 ws 重传或 catchup 重试")
+            return
+
+        # 至少一个 target 成功（inject 或入队 _enqueue 完成）→ mark_seen，避免
+        # 已成功 target 在重传时被 inject 重复触发（_enqueue 幂等没问题，inject
+        # 不是；这里宁可放弃对失败 target 的重试也保护成功 target 不被双投）。
+        self.state.mark_seen(result.msg_id)
         self._advance_cursor()
 
         is_boss_msg = result.sender is None and "manager" in result.targets
@@ -503,6 +528,25 @@ def main() -> None:
 
     threading.Thread(target=runtime.queue_delivery_loop, daemon=True).start()
     threading.Thread(target=lambda: runtime.catchup_from_history(chat_id), daemon=True).start()
+
+    # 独立心跳线程 — 跟事件流 / catchup poll / Bitable 调用完全解耦。
+    # 旧路径只在事件成功路由 (L73/L77) 或 catchup poll (L541) 时刷 cursor mtime,
+    # 任何一处卡 (Bitable 限流 / 网络 / WebSocket 沉默) 都会让 mtime 停滞 → watchdog
+    # 错过故障窗口最长 5 分钟。新心跳线程 30s/拍 touch mtime, watchdog 端配阈值
+    # 90s = 3 拍漏判即视为不健康,触发重启。
+    # daemon=True: 主进程退出时线程随之结束,不留 zombie。
+    # 设计文档: workspace/architect/router_autoheal_design_2026-04-30.md §2.1
+    HEARTBEAT_INTERVAL = int(os.environ.get("ROUTER_HEARTBEAT_INTERVAL", 30))
+
+    def _heartbeat_loop():
+        while True:
+            try:
+                runtime._refresh_heartbeat()
+            except Exception as e:
+                print(f"  ⚠️ heartbeat 异常: {e}")
+            time.sleep(HEARTBEAT_INTERVAL)
+
+    threading.Thread(target=_heartbeat_loop, daemon=True).start()
 
     def _poll_loop():
         last_replay_time = time.time()

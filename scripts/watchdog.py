@@ -385,25 +385,59 @@ def _pgrep_alive(match_str):
 
 
 def is_healthy(proc):
-    """进程存在 + 健康检查通过"""
+    """进程存在 + 心跳文件新鲜。
+
+    Two-gate structure (refactor — fix watchdog pgrep fallback skipping
+    health_file check):
+      Gate 1 — Liveness:
+        * If pid_file configured: kill -0 + cmdline match (PID-recycle defense
+          from Bug 14). Falls back to pgrep -f match when the PID file is
+          stale; both branches converge on the same alive=True flag.
+        * If no pid_file: pgrep -f match.
+        Dead → return False immediately (don't peek at the health file).
+      Gate 2 — Heartbeat freshness:
+        * Process specs without a health_file (e.g. kanban_sync) pass on
+          liveness alone.
+        * Specs with a health_file (router) always go through
+          decide_health_file_state — restart_grace_secs covers cold start,
+          missing file is treated as indeterminate (returns healthy), stale
+          mtime → unhealthy with a log line.
+
+    Architect doc: workspace/architect/router_autoheal_design_2026-04-30.md §2.2.
+    Old structure happened to fall through to gate 2 on the pgrep branch, but
+    the intent was unclear ("视为存活" comment suggested an early exit) — the
+    explicit ``alive`` flag here makes the pgrep → heartbeat path
+    refactor-proof.
+    """
     pid_file = proc.get("pid_file")
+    alive = False
     if pid_file:
         # 传 match 防 PID 复用误判 (Bug 14)
-        if not is_running_by_pid_file(pid_file, proc.get("match")):
-            # pgrep 兜底: PID 文件可能落后于实际进程状态
-            if not _pgrep_alive(proc.get("match")):
-                return False
-            log(f"ℹ️ {proc['name']} PID 文件异常但 pgrep 找到进程, 视为存活")
-    elif not is_running(proc["match"]):
+        if is_running_by_pid_file(pid_file, proc.get("match")):
+            alive = True
+        elif _pgrep_alive(proc.get("match")):
+            log(f"ℹ️ {proc['name']} PID 文件异常但 pgrep 找到进程, 继续走心跳检查")
+            alive = True
+    elif is_running(proc["match"]):
+        alive = True
+    if not alive:
         return False
+
+    # —— Gate 2: 心跳新鲜度 ——
+    health_file = proc.get("health_file")
+    if not health_file:
+        # 进程规格里没配心跳文件 (kanban_sync) → 进程活着即视为健康
+        return True
+
     now = time.time()
     restart_grace_secs = float(proc.get("restart_grace_secs", 0) or 0)
     last_restart_ts = float(proc.get("last_restart_ts", 0) or 0)
     health_stale_secs = float(proc.get("health_stale_secs", 300) or 300)
-    health_file = proc.get("health_file")
-    health_file_age_secs = None
-    if health_file and os.path.exists(health_file):
-        health_file_age_secs = now - os.path.getmtime(health_file)
+    health_file_age_secs = (
+        now - os.path.getmtime(health_file)
+        if os.path.exists(health_file)
+        else None
+    )
     decision = _watchdog_health.decide_health_file_state(
         now=now,
         last_restart_ts=last_restart_ts,
@@ -414,7 +448,7 @@ def is_healthy(proc):
     if decision.skip_health_file_check:
         return True
     if decision.health_file_stale:
-        log(f"⚠️ {proc['name']} 健康检查失败：输出文件 {health_file_age_secs:.0f}s 未更新")
+        log(f"⚠️ {proc['name']} 心跳超时: {health_file} {health_file_age_secs:.0f}s 未更新")
         return False
     return True
 

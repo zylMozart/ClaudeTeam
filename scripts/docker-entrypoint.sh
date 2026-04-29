@@ -768,9 +768,30 @@ else
   echo ""
 fi
 
-# ── 保持容器前台运行 ──────────────────────────────────────────
+# ── 保持容器前台运行 + watchdog 自愈兜底 ──────────────────────
+# watchdog 自身挂了之后,router/kanban 死了没人救; entrypoint 主循环兼任
+# watchdog 的守护者。每轮 (30s) 看 pid 文件: 不存在 / 进程不在了 → nohup setsid
+# 重新拉起 watchdog。watchdog 自己的 _acquire_pid_lock 保证不会双开。日志追加
+# 到 $CLAUDETEAM_STATE_DIR/watchdog.log,不刷 docker logs。
+# 设计文档: workspace/architect/router_autoheal_design_2026-04-30.md §2.3
+_respawn_watchdog_if_dead() {
+  local pid_file="$CLAUDETEAM_STATE_DIR/watchdog.pid"
+  if [ ! -f "$pid_file" ] || ! kill -0 "$(cat "$pid_file" 2>/dev/null)" 2>/dev/null; then
+    echo "[$(date '+%F %T')] [respawn] watchdog 不在,重新拉起"
+    if command -v setsid >/dev/null 2>&1; then
+      nohup setsid python3 scripts/watchdog.py \
+        >> "$CLAUDETEAM_STATE_DIR/watchdog.log" 2>&1 &
+    else
+      nohup python3 scripts/watchdog.py \
+        >> "$CLAUDETEAM_STATE_DIR/watchdog.log" 2>&1 &
+      disown 2>/dev/null || true
+    fi
+  fi
+}
+
 # 监听 tmux session，session 结束则容器退出
 while tmux has-session -t "$SESSION" 2>/dev/null; do
+  _respawn_watchdog_if_dead
   sleep 30
 done
 

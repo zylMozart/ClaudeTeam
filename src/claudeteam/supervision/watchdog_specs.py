@@ -33,9 +33,14 @@ def build_process_specs(
             "cmd": ["bash", "-c", f"{lark_event_cmd} | python3 scripts/feishu_router.py --stdin"],
             "pid_file": router_pid_file,
             "health_file": router_cursor_file,
-            # 180s = 3 min; 配合 restart_grace_secs=120 不会误判冷启动 (F-ROUTER-1)。
-            "health_stale_secs": 180,
-            "restart_grace_secs": 120,
+            # router daemon 自带 30s/拍 独立心跳线程 (router_autoheal_design §2.1),
+            # 90s = 3 拍漏判即视为不健康. 旧 180s 上限对配合 events-only 心跳的旧
+            # 路径合理, 加上心跳线程后冗余太多, 故障窗口缩到原来的一半.
+            # 60s grace 给冷启动: heartbeat thread 第一次 touch 之前 router 自己
+            # 在 main() 启动末尾会 _refresh_heartbeat() 一次, 之后心跳线程接班,
+            # 60s 留充足余量给冷 npm / Python import.
+            "health_stale_secs": 90,
+            "restart_grace_secs": 60,
             "max_retries": 3,
             "cooldown_secs": 600,
             "retry_count": 0,
