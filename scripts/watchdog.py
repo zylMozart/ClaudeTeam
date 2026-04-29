@@ -64,9 +64,10 @@ STARTUP_GRACE_SECS = int(os.environ.get("WATCHDOG_STARTUP_GRACE_SECS", "60"))
 TESTING = os.environ.get("WATCHDOG_TESTING") == "1"
 
 # tmux_target 让 restart_process 走 send-keys 复活到 pane (F-ROUTER-1)。
-# entrypoint 启动时 export CLAUDETEAM_TMUX_SESSION; 不设则 fallback 到旧 Popen。
-_TMUX_SESSION_ENV = os.environ.get("CLAUDETEAM_TMUX_SESSION", "").strip()
-_ROUTER_TMUX_TARGET = f"{_TMUX_SESSION_ENV}:router" if _TMUX_SESSION_ENV else ""
+# 步骤 D：daemon 全部转 nohup 后端，router 不再有 tmux pane 可送 keys。默认走
+# Popen fallback；如需保留旧 tmux send-keys 行为（rollback 场景），显式设置
+# CLAUDETEAM_ROUTER_TMUX_TARGET=<session>:router 即可重新启用。
+_ROUTER_TMUX_TARGET = os.environ.get("CLAUDETEAM_ROUTER_TMUX_TARGET", "").strip()
 
 _PROC_SPECS = _watchdog_specs.build_process_specs(
     lark_cli=LARK_CLI,
@@ -562,7 +563,15 @@ def _cleanup_pid():
     except Exception:
         pass
 
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+def _shutdown_handler(signum, frame):
+    # 收到 stop.sh / kill 的 SIGTERM、Ctrl-C 的 SIGINT 时, 先在日志里留一条
+    # '[shutting down]', 让 stop.sh 的调用者能在 watchdog.log 末尾看到优雅退出
+    # 证据。sys.exit(0) 触发 atexit 注册的 _cleanup_pid 删 pid 文件。
+    log(f"[shutting down] received signal {signum}")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _shutdown_handler)
+signal.signal(signal.SIGINT, _shutdown_handler)
 
 def main():
     _acquire_pid_lock()

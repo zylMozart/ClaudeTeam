@@ -8,7 +8,8 @@
 #   [1] 运行时状态 (默认会动, 只要 --yes):
 #         - docker compose down -v (容器 + 未命名 volume)
 #         - scripts/runtime_config.json
-#         - scripts/.router.pid / .kanban_sync.pid / .watchdog.pid / .router.cursor
+#         - scripts/stop.sh 真正停止 router/kanban_sync/watchdog 守护
+#         - workspace/shared/state/{router,kanban_sync,watchdog}.pid + router.cursor
 #   [2] 飞书云端资源 (默认会动, 只要 --yes):
 #         - Bitable app    → drive +delete --type bitable
 #         - 群聊          → lark-cli 不支持 dismiss, 打印 chat_id + 手动解散指引
@@ -159,8 +160,25 @@ fi
 
 # ── [2/5] 运行时状态文件 ─────────────────────────────────────
 echo ""
-cyan "[2/5] 清理运行时状态文件"
+cyan "[2/5] 停止守护 + 清理运行时状态文件"
+# 守护进程现在是 nohup 后台,不在 tmux session 里 —— docker compose down -v
+# 杀不掉它们; 单删 pid 文件也只会留下野进程继续吃 CPU/订阅事件。所以先调
+# scripts/stop.sh 真正杀进程 (TERM→5s→KILL + pkill 兜底), 再删状态文件。
+# stop.sh 自己也会删 workspace/shared/state/*.pid, 这里只兜底删它没覆盖到的
+# router.cursor / runtime_config.json / 历史 stale 路径。
+STATE_DIR="${CLAUDETEAM_STATE_DIR:-$ROOT/workspace/shared/state}"
+if [ $DRY_RUN -eq 1 ]; then
+  cyan "   [dry-run] bash scripts/stop.sh --dry-run"
+  bash scripts/stop.sh --dry-run | sed 's/^/   /'
+else
+  echo "   $ bash scripts/stop.sh"
+  bash scripts/stop.sh | sed 's/^/   /' || yellow "   ⚠️ stop.sh 返回非 0,继续往下清理"
+fi
 for f in \
+    "$STATE_DIR/router.pid" \
+    "$STATE_DIR/kanban_sync.pid" \
+    "$STATE_DIR/watchdog.pid" \
+    "$STATE_DIR/router.cursor" \
     scripts/.router.pid \
     scripts/.kanban_sync.pid \
     scripts/.watchdog.pid \

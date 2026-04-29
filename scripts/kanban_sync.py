@@ -133,7 +133,14 @@ def _cleanup_pid():
     except Exception:
         pass
 
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+def _shutdown_handler(signum, frame):
+    # SIGTERM (stop.sh / kill) 或 SIGINT (Ctrl-C) 时打一条 '[shutting down]'
+    # 到 stdout (被 nohup 重定向到 kanban.log), atexit 会负责删 pid 文件。
+    print(f"[shutting down] received signal {signum}", flush=True)
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _shutdown_handler)
+signal.signal(signal.SIGINT, _shutdown_handler)
 
 def cmd_daemon(interval=60):
     if os.environ.get("CLAUDETEAM_KANBAN_SYNC", "0") not in ("1", "true", "yes"):
