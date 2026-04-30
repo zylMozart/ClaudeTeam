@@ -249,12 +249,16 @@ class _RouterRuntime:
             has_live_cli=lambda a: agent_has_live_cli(
                 a, self.tmux_session,
                 get_process_name=lambda n: self._adapter(n).process_name(),
+                # Stage 2: pass the wrapper-tolerant set (claude+node etc.).
+                get_process_names=lambda n: self._adapter(n).process_names(),
             ),
             wait_ready=lambda a, timeout_s=30: wait_cli_ui_ready(
                 a,
                 capture_pane_fn=lambda n: _capture_pane(self.tmux_session, n),
                 get_ready_markers=lambda n: self._adapter(n).ready_markers(),
                 get_process_name=lambda n: self._adapter(n).process_name(),
+                get_process_names=lambda n: self._adapter(n).process_names(),
+                tmux_session=self.tmux_session,
                 timeout_s=timeout_s,
             ),
         )

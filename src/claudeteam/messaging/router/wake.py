@@ -19,6 +19,10 @@ import threading
 import time
 from typing import List, Optional
 
+from claudeteam.runtime.agent_detector import (
+    AgentDetector,
+    legacy_mode_enabled as _detector_legacy_mode_enabled,
+)
 from claudeteam.runtime.tmux_utils import wait_cli_ui_ready as _wait_cli_ui_ready
 
 
@@ -36,9 +40,37 @@ def agent_has_live_cli(
     tmux_session: str,
     *,
     get_process_name: callable,
+    get_process_names: Optional[callable] = None,
 ) -> bool:
-    """Return True if agent's tmux pane has a live CLI child process."""
-    return len(cli_pids_in_pane(agent_name, tmux_session, get_process_name=get_process_name)) > 0
+    """Return True if agent's tmux pane has a live CLI child process.
+
+    Stage 2 path (default): consult ``AgentDetector`` which uses tmux
+    ``pane_current_command`` against the adapter's ``process_names`` set —
+    no /proc walk, no comm-name truncation, works on Darwin.
+
+    Legacy path (``CLAUDETEAM_DETECTOR_LEGACY=1``): the original
+    ``cli_pids_in_pane`` /proc walk. Kept for the 3-day grayscale window so
+    we can flip back instantly if the detector misbehaves.
+
+    ``get_process_names`` is the new callback returning a set of acceptable
+    pane front-process names (``adapter.process_names()``). Old callers that
+    still pass only ``get_process_name`` keep working — the legacy path
+    doesn't need the set, and the detector path falls back to
+    ``{get_process_name(agent_name)}`` when the set callback is missing.
+    """
+    if _detector_legacy_mode_enabled():
+        return len(
+            cli_pids_in_pane(
+                agent_name,
+                tmux_session,
+                get_process_name=get_process_name,
+            )
+        ) > 0
+    if get_process_names is not None:
+        names = get_process_names(agent_name) or set()
+    else:
+        names = {get_process_name(agent_name)}
+    return AgentDetector(tmux_session, agent_name, process_names=names).is_alive()
 
 
 def cli_pids_in_pane(
@@ -115,9 +147,38 @@ def wait_cli_ui_ready(
     capture_pane_fn: callable,
     get_ready_markers: callable,
     get_process_name: callable,
+    get_process_names: Optional[callable] = None,
+    tmux_session: Optional[str] = None,
     timeout_s: float = WAKE_READY_TIMEOUT_S,
 ):
-    """Poll tmux pane until CLI UI ready markers appear, returning WakeReadyResult."""
+    """Poll tmux pane until CLI UI is ready.
+
+    Stage 2 path: ``AgentDetector.wait_until_ready`` uses CLI-agnostic ready
+    placeholders + the ``process_names`` set. ``tmux_session`` is required
+    for the detector; if ``None`` (legacy callers haven't been updated) we
+    fall through to the original markers-based path. Detector returns a
+    :class:`ReadyProbe`; we adapt it to the legacy ``WakeReadyResult`` shape
+    for caller compatibility.
+
+    Legacy path (``CLAUDETEAM_DETECTOR_LEGACY=1`` *or* no ``tmux_session``):
+    the original ``tmux_utils.wait_cli_ui_ready`` consulting per-adapter
+    ``ready_markers`` + ``_READY_PLACEHOLDERS``.
+    """
+    use_detector = (not _detector_legacy_mode_enabled()) and tmux_session
+    if use_detector:
+        if get_process_names is not None:
+            names = get_process_names(agent_name) or set()
+        else:
+            names = {get_process_name(agent_name)}
+        det = AgentDetector(tmux_session, agent_name, process_names=names)
+        probe = det.wait_until_ready(timeout_s=timeout_s)
+        # Adapt ReadyProbe → WakeReadyResult for caller compatibility.
+        from claudeteam.runtime.tmux_utils import WakeReadyResult
+        return WakeReadyResult(
+            ok=probe.is_ready,
+            reason=probe.reason,
+            tail_summary="",
+        )
     return _wait_cli_ui_ready(
         lambda: capture_pane_fn(agent_name),
         get_ready_markers(agent_name),
