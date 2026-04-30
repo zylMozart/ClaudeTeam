@@ -32,6 +32,12 @@ class ClaudeCodeAdapter(CliAdapter):
     def process_name(self):
         return "claude"
 
+    def process_names(self):
+        # `node` shows up as pane_current_command when claude is launched via
+        # the npm shim or in environments where the wrapper executes longer
+        # than the binary rename. Detector treats either as LIVE.
+        return {"claude", "node"}
+
     def resume_cmd(self, agent, model, sid):
         prefix = self._proxy_prefix(agent, model)
         return (f"{prefix}IS_SANDBOX=1 claude --dangerously-skip-permissions"

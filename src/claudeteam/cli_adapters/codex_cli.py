@@ -61,4 +61,8 @@ class CodexCliAdapter(CliAdapter):
     def process_name(self):
         return "codex"
 
+    def process_names(self):
+        # codex-cli is a Node app; pane front cmd can be either name.
+        return {"codex", "node"}
+
     # resume_cmd: Codex CLI session 持久化待查, 暂返回 None (冷启动 fallback)

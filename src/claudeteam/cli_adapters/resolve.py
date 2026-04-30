@@ -7,6 +7,7 @@
   python3 -m claudeteam.cli_adapters.resolve <agent> ready_markers
   python3 -m claudeteam.cli_adapters.resolve <agent> busy_markers
   python3 -m claudeteam.cli_adapters.resolve <agent> process_name
+  python3 -m claudeteam.cli_adapters.resolve <agent> process_names    # space-separated set
 """
 import sys
 
@@ -38,6 +39,9 @@ def main():
         print(r"\|".join(adapter.busy_markers()))
     elif attr == "process_name":
         print(adapter.process_name())
+    elif attr == "process_names":
+        # Stage 2 detector consumes the set; bash callers split on whitespace.
+        print(" ".join(sorted(adapter.process_names())))
     elif attr == "thinking_init_hint":
         thinking = sys.argv[3] if len(sys.argv) > 3 else "default"
         hint = adapter.thinking_init_hint(thinking)

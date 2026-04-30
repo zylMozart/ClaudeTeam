@@ -19,7 +19,25 @@ class CliAdapter(ABC):
 
     @abstractmethod
     def process_name(self) -> str:
-        """/proc/<pid>/comm 里期望的进程名。"""
+        """/proc/<pid>/comm 里期望的进程名。
+
+        Legacy single-name interface. Detector callers should prefer
+        :meth:`process_names` so wrapper processes (``node`` etc.) match too.
+        Removed once the stage 2 grayscale window
+        (``CLAUDETEAM_DETECTOR_LEGACY``) closes.
+        """
+
+    def process_names(self) -> set:
+        """Set of acceptable ``pane_current_command`` values for this CLI.
+
+        Stage 2 detector (``claudeteam.runtime.agent_detector``) treats any of
+        these as evidence the CLI is running. Default = ``{process_name()}``;
+        subclasses override to add wrapper names like ``node``, ``python3``
+        etc. Wrappers are common — Node-based CLIs (claude / codex / gemini /
+        qwen) often present ``node`` as ``pane_current_command`` instead of
+        their own binary name.
+        """
+        return {self.process_name()}
 
     def resume_cmd(self, agent: str, model: str, sid: str):
         """session 恢复命令。返回 None 表示不支持 resume。"""

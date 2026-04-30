@@ -28,4 +28,7 @@ class QwenCodeAdapter(CliAdapter):
     def process_name(self):
         return "qwen"
 
+    def process_names(self):
+        return {"qwen", "node"}
+
     # resume_cmd: Qwen Code 无公开 --resume, 返回 None (冷启动 fallback)

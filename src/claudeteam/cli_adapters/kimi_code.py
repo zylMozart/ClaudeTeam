@@ -31,4 +31,9 @@ class KimiCodeAdapter(CliAdapter):
     def process_name(self):
         return "kimi"
 
+    def process_names(self):
+        # Kimi is installed via `uv tool install`, which may show python3
+        # as the front process for short windows during boot.
+        return {"kimi", "python", "python3"}
+
     # resume_cmd: Kimi CLI 无公开 --resume 机制, 返回 None (冷启动 fallback)

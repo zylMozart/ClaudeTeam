@@ -27,5 +27,8 @@ class GeminiCliAdapter(CliAdapter):
     def process_name(self):
         return "gemini"
 
+    def process_names(self):
+        return {"gemini", "node"}
+
     # resume_cmd: Gemini CLI 有 "checkpointing" 机制但 CLI 旗标待核,
     # 暂返回 None (冷启动 fallback)
