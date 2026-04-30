@@ -389,10 +389,16 @@ def _lark_im_send(
 ):
     """通过 lark-cli 向群组发送消息。
 
-    默认 --as user：以老板身份发言（无 bot 标识）。若 user OAuth 未配置,
-    可通过环境变量 CLAUDETEAM_LARK_SEND_AS=bot 降级为机器人身份。
+    默认 --as bot：以机器人身份发言。boss 拍板 (2026-04-30) 把默认从 user 改
+    成 bot,因为 user OAuth 在多团队 / 离线 sandbox / 远端守护场景下经常没配,
+    一旦发不出去回退路径很乱。bot 身份在 setup.py 创建群聊时就已加好,稳。
+    显式设 ``CLAUDETEAM_LARK_SEND_AS=user`` 可切回老板身份发言 (向后兼容)。
+
+    与 src/claudeteam/integrations/feishu/client.py:lark_send 保持一致 —
+    两份实现 (compat 入口 + 模块化入口) 的默认必须同步,否则 say 走哪条路径
+    身份漂移就难查。
     """
-    send_as = os.environ.get("CLAUDETEAM_LARK_SEND_AS", "user")
+    send_as = os.environ.get("CLAUDETEAM_LARK_SEND_AS", "bot")
     if reply_to:
         args = ["im", "+messages-reply", "--message-id", reply_to, "--as", send_as]
         if reply_in_thread:
