@@ -5,7 +5,6 @@ that can be tailed for audit / replay.
 """
 from __future__ import annotations
 
-import sys
 
 from claudeteam.store import local_facts
 from claudeteam.util import usage_error

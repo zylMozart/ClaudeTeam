@@ -4,7 +4,6 @@ Append a message to the local inbox.  Pure local — no Feishu, no tmux.
 """
 from __future__ import annotations
 
-import sys
 
 from claudeteam.store import local_facts
 from claudeteam.util import usage_error

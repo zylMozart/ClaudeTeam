@@ -16,7 +16,6 @@ Idempotent — overwrites existing files. Codex and Kimi panes ignore
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from claudeteam.util import help_requested, usage_error
