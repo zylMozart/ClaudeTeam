@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import time
 from pathlib import Path
 
@@ -42,6 +43,19 @@ def flock(lock_path: Path):
             yield
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def read_json(path: Path, default):
+    """Read `path` as JSON, or return `default` if the file is missing.
+
+    Lets the JSONDecodeError propagate on corrupt files — callers that
+    want fault-tolerance wrap explicitly. Used by config / store /
+    catchup / etc. so each can express \"missing-is-the-default-value\"
+    in one line.
+    """
+    if not path.exists():
+        return default
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:

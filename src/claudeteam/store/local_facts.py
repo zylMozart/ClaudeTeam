@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 
 from claudeteam.runtime.paths import facts_dir as _facts_dir
-from claudeteam.util import atomic_write_text, flock
+from claudeteam.util import atomic_write_text, flock, read_json
 
 
 def _inbox_file() -> Path:
@@ -51,12 +51,6 @@ def _locked():
     return flock(_facts_dir() / ".facts.lock")
 
 
-def _read_json(path: Path, default):
-    if not path.exists():
-        return default
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def _write_json(path: Path, data) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
@@ -69,7 +63,7 @@ def append_message(to: str, frm: str, content: str, *,
     """Append a message to the inbox; return its local id."""
     with _locked():
         path = _inbox_file()
-        data = _read_json(path, {"messages": []})
+        data = read_json(path, {"messages": []})
         local_id = _new_id("msg")
         data.setdefault("messages", []).append({
             "local_id": local_id,
@@ -87,7 +81,7 @@ def append_message(to: str, frm: str, content: str, *,
 
 
 def list_messages(agent: str, *, unread_only: bool = False) -> list[dict]:
-    data = _read_json(_inbox_file(), {"messages": []})
+    data = read_json(_inbox_file(), {"messages": []})
     rows = [m for m in data.get("messages", []) if m.get("to") == agent]
     if unread_only:
         rows = [m for m in rows if not m.get("read")]
@@ -97,7 +91,7 @@ def list_messages(agent: str, *, unread_only: bool = False) -> list[dict]:
 def mark_read(local_id: str) -> bool:
     with _locked():
         path = _inbox_file()
-        data = _read_json(path, {"messages": []})
+        data = read_json(path, {"messages": []})
         for msg in data.get("messages", []):
             if msg.get("local_id") == local_id:
                 msg["read"] = True
@@ -113,7 +107,7 @@ def mark_read(local_id: str) -> bool:
 def upsert_status(agent: str, status: str, task: str, *, blocker: str = "") -> None:
     with _locked():
         path = _status_file()
-        data = _read_json(path, {"agents": {}})
+        data = read_json(path, {"agents": {}})
         data.setdefault("agents", {})[agent] = {
             "agent": agent,
             "status": status,
@@ -125,12 +119,12 @@ def upsert_status(agent: str, status: str, task: str, *, blocker: str = "") -> N
 
 
 def get_status(agent: str) -> dict | None:
-    return _read_json(_status_file(), {"agents": {}}).get("agents", {}).get(agent)
+    return read_json(_status_file(), {"agents": {}}).get("agents", {}).get(agent)
 
 
 def list_all_statuses() -> list[dict]:
     """Latest status row for every agent that ever upserted, sorted by name."""
-    data = _read_json(_status_file(), {"agents": {}})
+    data = read_json(_status_file(), {"agents": {}})
     return [data["agents"][a] for a in sorted(data.get("agents", {}))]
 
 
@@ -147,17 +141,17 @@ def touch_heartbeat(agent: str) -> None:
         return
     with _locked():
         path = _heartbeat_file()
-        data = _read_json(path, {})
+        data = read_json(path, {})
         data[agent] = _now_ms()
         _write_json(path, data)
 
 
 def get_heartbeat(agent: str) -> int | None:
-    return _read_json(_heartbeat_file(), {}).get(agent)
+    return read_json(_heartbeat_file(), {}).get(agent)
 
 
 def all_heartbeats() -> dict[str, int]:
-    return dict(_read_json(_heartbeat_file(), {}))
+    return dict(read_json(_heartbeat_file(), {}))
 
 
 # ── log ───────────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from claudeteam.runtime import paths
-from claudeteam.util import atomic_write_text, flock
+from claudeteam.util import atomic_write_text, flock, read_json
 
 
 VALID_STATUSES = {"待处理", "进行中", "已完成", "已取消"}
@@ -40,10 +40,7 @@ def _locked():
 
 
 def _load() -> dict:
-    p = _file()
-    if not p.exists():
-        return {"tasks": [], "_meta": {"last_id": 0}}
-    return json.loads(p.read_text(encoding="utf-8"))
+    return read_json(_file(), {"tasks": [], "_meta": {"last_id": 0}})
 
 
 def _save(data: dict) -> None:

@@ -28,7 +28,7 @@ import json
 import os
 from pathlib import Path
 
-from claudeteam.util import atomic_write_text
+from claudeteam.util import atomic_write_text, read_json
 
 
 # ── path resolution ───────────────────────────────────────────────
@@ -55,10 +55,7 @@ _DEFAULT_TEAM: dict = {"session": "ClaudeTeam", "agents": {}, "default_model": "
 
 
 def load_team() -> dict:
-    path = team_file()
-    if not path.exists():
-        return dict(_DEFAULT_TEAM)
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(team_file(), dict(_DEFAULT_TEAM))
 
 
 def session_name() -> str:
@@ -97,10 +94,7 @@ def agent_model(agent: str) -> str:
 
 
 def load_runtime_config() -> dict:
-    path = runtime_config_file()
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(runtime_config_file(), {})
 
 
 def save_runtime_config(cfg: dict) -> None:

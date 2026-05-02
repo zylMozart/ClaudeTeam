@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from claudeteam.util import ago_ms, atomic_write_text, flock, pop_flag
+from claudeteam.util import ago_ms, atomic_write_text, flock, pop_flag, read_json
 
 
 # ── ago_ms ──────────────────────────────────────────────────────
@@ -112,6 +112,38 @@ def test_pop_flag_handles_repeated_flag_takes_first():
     rest = ["--by", "alice", "--by", "bob"]
     assert pop_flag(rest, "--by") == "alice"
     assert rest == ["--by", "bob"]
+
+
+# ── read_json ───────────────────────────────────────────────────
+
+
+def test_read_json_returns_default_when_file_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "missing.json"
+        assert read_json(path, {}) == {}
+        assert read_json(path, {"a": 1}) == {"a": 1}
+        assert read_json(path, []) == []
+
+
+def test_read_json_parses_existing_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "data.json"
+        atomic_write_text(path, '{"k": "v"}')
+        assert read_json(path, {}) == {"k": "v"}
+
+
+def test_read_json_propagates_decode_error():
+    """Caller should get the JSONDecodeError on corrupt files; read_json
+    doesn't try to be clever."""
+    import json as _json
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "bad.json"
+        path.write_text("not json", encoding="utf-8")
+        try:
+            read_json(path, {})
+        except _json.JSONDecodeError:
+            return
+        raise AssertionError("expected JSONDecodeError")
 
 
 # ── flock ───────────────────────────────────────────────────────
