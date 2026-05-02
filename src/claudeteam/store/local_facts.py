@@ -1,20 +1,20 @@
 """Local file-backed fact store for ClaudeTeam.
 
 One source of truth on a host for:
-- inbox  (per-agent message queue, JSON)
-- status (latest per-agent status snapshot, JSON)
-- log    (append-only event log, JSONL)
+- inbox       (per-agent message queue, JSON)
+- status      (latest per-agent status snapshot, JSON)
+- heartbeats  (last-seen-active timestamp per agent, JSON)
+- log         (append-only event log, JSONL)
 
 All paths derive from `$CLAUDETEAM_STATE_DIR` re-read on every call so tests
-get isolation by setting the env, no monkey-patching required.
+get isolation by setting the env, no monkey-patching required. All JSON
+writes go through `util.write_json` (atomic tmp+rename via flock).
 
-Pulled from the old `claudeteam.storage.local_facts` (~187 LOC) and
-simplified to ~110 LOC for the rebuild branch:
-
-  - dropped Bitable mirror fields and `attach_bitable_record`
-  - dropped the legacy "match by bitable_record_id" branch in mark_read
-  - module-level FACTS_DIR / INBOX_FILE constants → small _facts_dir()
-    accessor so callers don't need monkey-patching to redirect for tests
+Originally pulled from the old `claudeteam.storage.local_facts` (~187 LOC).
+Each public function corresponds to one CLI surface: `claudeteam send` →
+`append_message`, `inbox` → `list_messages`, `read` → `mark_read`,
+`status` → `upsert_status` / `get_status`, `team` → `list_all_statuses`
++ `all_heartbeats`, `log`/`workspace` → `append_log` / `list_logs`.
 """
 from __future__ import annotations
 
