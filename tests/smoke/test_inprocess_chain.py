@@ -186,16 +186,3 @@ def test_mixed_traffic_classifies_each_event_correctly():
         assert len(local_facts.list_messages("worker_codex")) == 1
 
 
-def main() -> int:
-    """Allow the smoke runner to discover this module."""
-    test_human_message_lands_in_manager_inbox_and_pane()
-    test_mention_routes_to_codex_with_m_enter_first()
-    test_repeated_message_id_only_delivered_once()
-    test_message_from_other_chat_is_ignored()
-    test_mixed_traffic_classifies_each_event_correctly()
-    print("OK: in_process_chain smoke passed")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
