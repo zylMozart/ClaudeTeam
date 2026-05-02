@@ -40,14 +40,15 @@ def isolated_env(*, team: dict | None = None, runtime_config: dict | None = None
         tmp_path = Path(tmp)
         old = {k: os.environ.get(k) for k in _ENV_KEYS}
         os.environ["CLAUDETEAM_STATE_DIR"] = str(tmp_path / "state")
+        # Always isolate team/runtime paths so files in $PWD don't leak in.
+        team_path = tmp_path / "team.json"
+        rt_path = tmp_path / "runtime_config.json"
+        os.environ["CLAUDETEAM_TEAM_FILE"] = str(team_path)
+        os.environ["CLAUDETEAM_RUNTIME_CONFIG"] = str(rt_path)
         if team is not None:
-            team_path = tmp_path / "team.json"
             team_path.write_text(json.dumps(team, ensure_ascii=False), encoding="utf-8")
-            os.environ["CLAUDETEAM_TEAM_FILE"] = str(team_path)
         if runtime_config is not None:
-            rt_path = tmp_path / "runtime_config.json"
             rt_path.write_text(json.dumps(runtime_config, ensure_ascii=False), encoding="utf-8")
-            os.environ["CLAUDETEAM_RUNTIME_CONFIG"] = str(rt_path)
         try:
             yield tmp_path
         finally:
