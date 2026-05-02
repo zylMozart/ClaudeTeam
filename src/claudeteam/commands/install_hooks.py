@@ -32,24 +32,26 @@ your name comes from the tmux window you're running in.
 """
 
 
+# Commands whose body uses <your-name> need _HEAD prepended at write
+# time. `health` is name-agnostic (it inspects the team, not self).
 _COMMANDS: dict[str, str] = {
-    "inbox": _HEAD + (
+    "inbox": (
         "Run `claudeteam inbox <your-name>` to list unread messages. "
         "Acknowledge each with `claudeteam read <local_id>` once you start work on it.\n"
     ),
-    "team": _HEAD + (
+    "team": (
         "Run `claudeteam team` to see every agent's status + heartbeat. "
         "Use this before delegating to confirm targets are alive.\n"
     ),
-    "status": _HEAD + (
+    "status": (
         "Run `claudeteam status <your-name> <state> <task>` where state is one of "
         "`进行中 / 已完成 / 阻塞 / 待命`. Update at every meaningful transition.\n"
     ),
-    "say": _HEAD + (
+    "say": (
         "Take the user's argument as the message to post in the Feishu chat as you. "
         "Run `claudeteam say <your-name> \"<message>\"`.\n"
     ),
-    "task": _HEAD + (
+    "task": (
         "Manage the task tracker:\n"
         "- `claudeteam task list` to see open work\n"
         "- `claudeteam task create <assignee> <title>` to add\n"
@@ -61,19 +63,27 @@ _COMMANDS: dict[str, str] = {
     ),
 }
 
+# Commands whose body refers to <your-name>/the agent's identity.
+_NEEDS_IDENTITY = {"inbox", "team", "status", "say", "task"}
+
+
+def _full_body(name: str) -> str:
+    body = _COMMANDS[name]
+    return _HEAD + body if name in _NEEDS_IDENTITY else body
+
 
 def _write_command_files(target_dir: Path) -> tuple[int, int]:
     """Write each slash-command .md. Returns (created, overwritten)."""
     target_dir.mkdir(parents=True, exist_ok=True)
     created = 0
     overwritten = 0
-    for name, body in _COMMANDS.items():
+    for name in _COMMANDS:
         path = target_dir / f"{name}.md"
         if path.exists():
             overwritten += 1
         else:
             created += 1
-        path.write_text(body, encoding="utf-8")
+        path.write_text(_full_body(name), encoding="utf-8")
     return created, overwritten
 
 
