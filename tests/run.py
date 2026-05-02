@@ -62,7 +62,8 @@ def main() -> int:
     for name, sub in _discover():
         p, f, fails = _run_module(name, sub)
         marker = "OK " if f == 0 else "FAIL"
-        print(f"{marker} {sub}/{name}: {p} passed{', ' + str(f) + ' failed' if f else ''}")
+        suffix = f", {f} failed" if f else ""
+        print(f"{marker} {sub}/{name}: {p} passed{suffix}")
         total_pass += p
         total_fail += f
         all_failures.extend(fails)
