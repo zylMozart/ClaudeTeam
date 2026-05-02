@@ -10,6 +10,7 @@ Exits non-zero if `chat_id` is unset (run setup or set runtime_config.json).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 
 from claudeteam.feishu import chat as feishu_chat
 from claudeteam.runtime import config
@@ -23,7 +24,16 @@ USAGE = (
 )
 
 
-def _parse(argv: list[str]) -> tuple[str, str, dict] | None:
+@dataclass(frozen=True)
+class _Args:
+    agent: str
+    message: str
+    reply_to: str = ""
+    as_user: bool = False
+    local: bool = True
+
+
+def _parse(argv: list[str]) -> _Args | None:
     if len(argv) < 2:
         return None
     agent = argv[0]
@@ -45,14 +55,13 @@ def _parse(argv: list[str]) -> tuple[str, str, dict] | None:
         rest.remove("--no-local")
     if not rest:
         return None
-    return agent, " ".join(rest), opts
+    return _Args(agent=agent, message=" ".join(rest), **opts)
 
 
 def main(argv: list[str]) -> int:
-    parsed = _parse(argv)
-    if parsed is None:
+    args = _parse(argv)
+    if args is None:
         return usage_error(USAGE)
-    agent, message, opts = parsed
 
     chat = config.chat_id()
     if not chat:
@@ -60,19 +69,19 @@ def main(argv: list[str]) -> int:
 
     profile = config.lark_profile()
 
-    local_facts.touch_heartbeat(agent)
-    if opts["local"]:
-        local_facts.append_log(agent, "say", message)
+    local_facts.touch_heartbeat(args.agent)
+    if args.local:
+        local_facts.append_log(args.agent, "say", args.message)
 
     result = feishu_chat.send_text(
-        chat, f"[{agent}] {message}",
+        chat, f"[{args.agent}] {args.message}",
         profile=profile,
-        as_user=opts["as_user"],
-        reply_to=opts["reply_to"],
+        as_user=args.as_user,
+        reply_to=args.reply_to,
     )
     if result is None:
-        return error_exit(f"❌ Feishu send failed for {agent}")
+        return error_exit(f"❌ Feishu send failed for {args.agent}")
 
     msg_id = result.get("message_id", "")
-    print(f"✅ {agent} → chat ({msg_id})")
+    print(f"✅ {args.agent} → chat ({msg_id})")
     return 0
