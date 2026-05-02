@@ -1,7 +1,11 @@
 """Tests for src/claudeteam/util.py — small shared helpers."""
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import tempfile
+import time
 from pathlib import Path
 
 from helpers import env_patch, tmux_patch
@@ -53,10 +57,9 @@ def test_env_path_returns_none_when_blank():
 
 
 def test_now_ms_returns_milliseconds():
-    import time as _t
-    before = int(_t.time() * 1000)
+    before = int(time.time() * 1000)
     n = now_ms()
-    after = int(_t.time() * 1000)
+    after = int(time.time() * 1000)
     assert before <= n <= after
 
 
@@ -69,16 +72,14 @@ def test_fmt_time_ms_returns_question_for_zero():
 
 def test_fmt_time_ms_default_format_is_minute_precision():
     # 2026-01-15 14:30:00 local time → ms epoch
-    import time as _t
-    epoch = int(_t.mktime((2026, 1, 15, 14, 30, 0, 0, 0, -1))) * 1000
+    epoch = int(time.mktime((2026, 1, 15, 14, 30, 0, 0, 0, -1))) * 1000
     out = fmt_time_ms(epoch)
     assert "01-15" in out and "14:30" in out
     assert ":00" not in out  # no seconds in default fmt
 
 
 def test_fmt_time_ms_custom_format_includes_seconds():
-    import time as _t
-    epoch = int(_t.mktime((2026, 1, 15, 14, 30, 45, 0, 0, -1))) * 1000
+    epoch = int(time.mktime((2026, 1, 15, 14, 30, 45, 0, 0, -1))) * 1000
     out = fmt_time_ms(epoch, fmt="%m-%d %H:%M:%S")
     assert "14:30:45" in out
 
@@ -166,7 +167,6 @@ def test_atomic_write_clobbers_stale_tmp_from_previous_crash():
 
 
 def test_warn_writes_to_stderr_returns_none():
-    import contextlib, io
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rv = warn("just a warning")
@@ -178,7 +178,6 @@ def test_warn_writes_to_stderr_returns_none():
 
 
 def test_error_exit_default_rc_is_one():
-    import contextlib, io
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = error_exit("❌ something broke")
@@ -187,7 +186,6 @@ def test_error_exit_default_rc_is_one():
 
 
 def test_error_exit_respects_custom_rc():
-    import contextlib, io
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = error_exit("oops", rc=2)
@@ -198,7 +196,6 @@ def test_error_exit_respects_custom_rc():
 
 
 def test_usage_error_prints_to_stderr_and_returns_one():
-    import contextlib, io
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
         rc = usage_error("usage: foo bar")
@@ -270,13 +267,12 @@ def test_read_json_parses_existing_file():
 def test_read_json_propagates_decode_error():
     """Caller should get the JSONDecodeError on corrupt files; read_json
     doesn't try to be clever."""
-    import json as _json
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "bad.json"
         path.write_text("not json", encoding="utf-8")
         try:
             read_json(path, {})
-        except _json.JSONDecodeError:
+        except json.JSONDecodeError:
             return
         raise AssertionError("expected JSONDecodeError")
 

@@ -4,6 +4,8 @@ Each test runs inside `isolated_env()` so the state dir is fresh per test.
 """
 from __future__ import annotations
 
+import time
+
 from claudeteam.store import local_facts
 from helpers import isolated_env
 
@@ -99,11 +101,10 @@ def test_touch_heartbeat_records_now_for_agent():
 
 
 def test_touch_heartbeat_overwrites_previous_timestamp():
-    import time as _t
     with isolated_env():
         local_facts.touch_heartbeat("w")
         first = local_facts.get_heartbeat("w")
-        _t.sleep(0.01)
+        time.sleep(0.01)
         local_facts.touch_heartbeat("w")
         second = local_facts.get_heartbeat("w")
         assert second >= first
