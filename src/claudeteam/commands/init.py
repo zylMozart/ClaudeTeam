@@ -49,10 +49,10 @@ def main(argv: list[str]) -> int:
     team_path = config.team_file()
     rt_path = config.runtime_config_file()
 
-    if team_path.exists() and not force:
-        return error_exit(f"❌ {team_path} already exists; pass --force to overwrite")
-    if rt_path.exists() and not force:
-        return error_exit(f"❌ {rt_path} already exists; pass --force to overwrite")
+    if not force:
+        for path in (team_path, rt_path):
+            if path.exists():
+                return error_exit(f"❌ {path} already exists; pass --force to overwrite")
 
     team = dict(_DEFAULT_TEAM)
     team["session"] = session
