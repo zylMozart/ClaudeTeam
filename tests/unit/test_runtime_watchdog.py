@@ -1,7 +1,6 @@
 """Tests for runtime/watchdog.py — process supervision state machine."""
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 from claudeteam.runtime.watchdog import (
@@ -204,11 +203,11 @@ def test_supervise_walks_every_spec_independently():
 
 
 def test_default_specs_includes_router_pointing_at_state_dir():
-    from helpers import env_patch
-    with tempfile.TemporaryDirectory() as tmp, env_patch(CLAUDETEAM_STATE_DIR=tmp):
-        from claudeteam.runtime.watchdog import default_specs
+    from helpers import isolated_env
+    from claudeteam.runtime.watchdog import default_specs
+    with isolated_env() as tmp:
         specs = default_specs()
         assert any(s.name == "router" for s in specs)
         router = next(s for s in specs if s.name == "router")
-        assert str(router.pid_file).startswith(tmp)
+        assert str(router.pid_file).startswith(str(tmp))
         assert router.spawn_cmd == ["claudeteam", "router"]
