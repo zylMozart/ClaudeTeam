@@ -50,8 +50,10 @@ def test_every_adapter_implements_required_methods():
         assert isinstance(adapter, CliAdapter)
         cmd = adapter.spawn_cmd("worker_x", "sonnet")
         assert isinstance(cmd, str) and cmd.strip()
-        assert adapter.ready_markers() and isinstance(adapter.ready_markers(), list)
-        assert adapter.busy_markers() and isinstance(adapter.busy_markers(), list)
+        ready = adapter.ready_markers()
+        assert ready and isinstance(ready, list)
+        busy = adapter.busy_markers()
+        assert busy and isinstance(busy, list)
         assert adapter.process_name()
         assert adapter.submit_keys()
 
