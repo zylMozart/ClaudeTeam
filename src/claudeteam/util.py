@@ -5,6 +5,8 @@ belongs in its own module under runtime/, store/, or feishu/.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import time
 from pathlib import Path
 
@@ -22,6 +24,24 @@ def pop_flag(rest: list[str], flag: str) -> str | None:
     val = rest[i + 1]
     del rest[i:i + 2]
     return val
+
+
+@contextlib.contextmanager
+def flock(lock_path: Path):
+    """Hold an exclusive fcntl lock on `lock_path` for the body's lifetime.
+
+    Creates the lock file (and parent dirs) on demand. Used by
+    `store/local_facts.py` and `store/tasks.py` to serialize mutations
+    to their JSON files. Single-host only — fcntl semantics are
+    process-local, not network-mounted.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:

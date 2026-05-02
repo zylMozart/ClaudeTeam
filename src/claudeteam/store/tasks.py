@@ -14,14 +14,12 @@ Status vocabulary: 待处理 / 进行中 / 已完成 / 已取消
 """
 from __future__ import annotations
 
-import contextlib
-import fcntl
 import json
 import time
 from pathlib import Path
 
 from claudeteam.runtime import paths
-from claudeteam.util import atomic_write_text
+from claudeteam.util import atomic_write_text, flock
 
 
 VALID_STATUSES = {"待处理", "进行中", "已完成", "已取消"}
@@ -37,17 +35,8 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-@contextlib.contextmanager
 def _locked():
-    p = _file()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    lock = p.with_suffix(".lock")
-    with lock.open("a+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    return flock(_file().with_suffix(".lock"))
 
 
 def _load() -> dict:

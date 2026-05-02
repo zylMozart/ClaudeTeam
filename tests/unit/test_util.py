@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from claudeteam.util import ago_ms, atomic_write_text, pop_flag
+from claudeteam.util import ago_ms, atomic_write_text, flock, pop_flag
 
 
 # ── ago_ms ──────────────────────────────────────────────────────
@@ -112,6 +112,43 @@ def test_pop_flag_handles_repeated_flag_takes_first():
     rest = ["--by", "alice", "--by", "bob"]
     assert pop_flag(rest, "--by") == "alice"
     assert rest == ["--by", "bob"]
+
+
+# ── flock ───────────────────────────────────────────────────────
+
+
+def test_flock_creates_parent_and_yields():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "deep" / "lock"
+        with flock(target):
+            assert target.exists()  # lock file got created
+
+
+def test_flock_releases_on_normal_exit():
+    """After the contextmanager exits, the lock file is unlocked but
+    still present on disk (lock files persist; only the kernel lock
+    state goes away)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "lock"
+        with flock(target):
+            pass
+        assert target.exists()
+        # we can re-acquire immediately
+        with flock(target):
+            pass
+
+
+def test_flock_releases_on_exception():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "lock"
+        try:
+            with flock(target):
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        # next acquire must succeed without hanging
+        with flock(target):
+            pass
 
 
 # ── tmux_patch (helpers) ────────────────────────────────────────

@@ -18,14 +18,13 @@ simplified to ~110 LOC for the rebuild branch:
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import time
 import uuid
 from pathlib import Path
 
 from claudeteam.runtime.paths import facts_dir as _facts_dir
-from claudeteam.util import atomic_write_text
+from claudeteam.util import atomic_write_text, flock
 
 
 def _inbox_file() -> Path:
@@ -48,18 +47,8 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{_now_ms()}_{uuid.uuid4().hex[:10]}"
 
 
-@contextlib.contextmanager
 def _locked():
-    d = _facts_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    lock_path = d / ".facts.lock"
-    with lock_path.open("a+") as fh:
-        import fcntl
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    return flock(_facts_dir() / ".facts.lock")
 
 
 def _read_json(path: Path, default):
