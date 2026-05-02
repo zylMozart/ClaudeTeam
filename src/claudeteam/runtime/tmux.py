@@ -106,12 +106,3 @@ def spawn_agent(target: Target, spawn_cmd: str, *,
     if not send_text(target, spawn_cmd, run=run):
         return False
     return send_keys(target, "Enter", run=run)
-
-
-def pane_has_marker(target: Target, markers: list[str], *,
-                    lines: int = 80, run: Callable = _default_run) -> bool:
-    """True if any of `markers` appears in the pane's last `lines` rows."""
-    if not markers:
-        return False
-    text = capture_pane(target, lines=lines, run=run)
-    return any(m in text for m in markers)

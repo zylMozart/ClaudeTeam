@@ -10,7 +10,6 @@ from claudeteam.runtime.tmux import (
     inject,
     new_session,
     new_window,
-    pane_has_marker,
     send_keys,
     send_text,
     spawn_agent,
@@ -134,23 +133,6 @@ def test_spawn_agent_sends_command_then_enter():
         ["tmux", "send-keys", "-l", "-t", "S:w", "claude --model sonnet"],
         ["tmux", "send-keys", "-t", "S:w", "Enter"],
     ]
-
-
-def test_pane_has_marker_finds_substring():
-    rec = _Recorder([_FakeResult(stdout="...\n? for shortcuts\n...\n")])
-    assert pane_has_marker(Target("S", "m"), ["? for shortcuts"], run=rec) is True
-
-
-def test_pane_has_marker_negative():
-    rec = _Recorder([_FakeResult(stdout="completely unrelated content")])
-    assert pane_has_marker(Target("S", "m"), ["READY"], run=rec) is False
-
-
-def test_pane_has_marker_empty_list_short_circuits():
-    rec = _Recorder()
-    assert pane_has_marker(Target("S", "m"), [], run=rec) is False
-    # never even called subprocess
-    assert rec.calls == []
 
 
 def test_has_window_uses_session_colon_window():
