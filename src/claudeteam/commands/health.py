@@ -152,7 +152,7 @@ def main(argv: list[str]) -> int:
         session = team.get("session", "ClaudeTeam")
         agents = sorted(team.get("agents", {}))
     except Exception:
-        team, session, agents = {}, "ClaudeTeam", []
+        session, agents = "ClaudeTeam", []
 
     out.append("tmux:")
     session_alive = _check_session(out, session)
