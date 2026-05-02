@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 
 from helpers import attr_patch, isolated_env, run_cli, tmux_patch
-from claudeteam.runtime import paths
+from claudeteam.runtime import paths, watchdog
 
 
 @contextlib.contextmanager
@@ -52,7 +53,6 @@ def _fake_popen():
 
 def _fake_alive(answers):
     """Make watchdog.is_alive return successive scripted booleans."""
-    from claudeteam.runtime import watchdog as _wd
     iterator = iter(answers)
 
     def fake(spec, **kwargs):
@@ -61,7 +61,7 @@ def _fake_alive(answers):
         except StopIteration:
             return False
 
-    return attr_patch(_wd, is_alive=fake)
+    return attr_patch(watchdog, is_alive=fake)
 
 
 # ── up ──────────────────────────────────────────────────────────
@@ -126,8 +126,6 @@ def test_down_skips_when_no_pid_files_and_no_session():
 
 def test_down_kills_alive_pid_then_tmux():
     """When pid files point to a fake process, down should SIGTERM and clean up."""
-    import os
-
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team) as tmp, _fake_tmux(session_alive=True) as tx:
         # Use *our* pid as the pid in the file — we know we're alive,
@@ -162,8 +160,6 @@ def test_down_kills_alive_pid_then_tmux():
 
 
 def test_down_handles_already_dead_pid():
-    import os
-
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team), _fake_tmux(session_alive=False):
         paths.ensure_state_dir()

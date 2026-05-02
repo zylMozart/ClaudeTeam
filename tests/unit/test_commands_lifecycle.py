@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 
 from helpers import isolated_env, run_cli, tmux_patch
+from claudeteam.agents import identity
 from claudeteam.store import local_facts
 
 
@@ -104,7 +105,6 @@ def test_start_creates_session_and_one_window_per_agent():
             assert snap["status"] == "进行中"
 
         # each agent gets an identity.md
-        from claudeteam.agents import identity
         for agent in ("manager", "worker_codex", "worker_kimi"):
             assert identity.identity_path(agent).exists()
 
@@ -172,7 +172,6 @@ def test_hire_creates_window_spawns_and_writes_status():
         assert "S:new" in fake["windows"]
         assert local_facts.get_status("new")["status"] == "进行中"
         # identity.md should now exist for the hired agent
-        from claudeteam.agents import identity
         assert identity.identity_path("new").exists()
 
 

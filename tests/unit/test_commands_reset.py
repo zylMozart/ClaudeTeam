@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from helpers import isolated_env, run_cli, tmux_patch
-from claudeteam.runtime import paths
+from claudeteam.runtime import config, paths
 from claudeteam.store import local_facts
 
 
@@ -32,10 +32,9 @@ def test_reset_with_yes_wipes_state_dir():
 def test_reset_preserves_config_files():
     team = {"agents": {"manager": {}}}
     rc_cfg = {"chat_id": "oc_x"}
-    from claudeteam.runtime import config as _cfg
     with isolated_env(team=team, runtime_config=rc_cfg), _fake_tmux_no_session():
-        team_path = _cfg.team_file()
-        rt_path = _cfg.runtime_config_file()
+        team_path = config.team_file()
+        rt_path = config.runtime_config_file()
         assert team_path.exists() and rt_path.exists()
 
         run_cli(["reset", "--yes"])

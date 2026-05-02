@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from helpers import env_patch, isolated_env
 
+from claudeteam.agents import adapter_for_agent
+from claudeteam.agents.codex_cli import CodexCliAdapter
+from claudeteam.agents.kimi_code import KimiCodeAdapter
 from claudeteam.runtime import config
 
 
@@ -146,9 +149,6 @@ def test_save_runtime_config_roundtrip():
 
 
 def test_adapter_for_agent_uses_team_json_cli_field():
-    from claudeteam.agents import adapter_for_agent
-    from claudeteam.agents.codex_cli import CodexCliAdapter
-    from claudeteam.agents.kimi_code import KimiCodeAdapter
     team = {"agents": {"w_codex": {"cli": "codex-cli"}, "w_kimi": {"cli": "kimi-code"}}}
     with _team_env(team):
         assert isinstance(adapter_for_agent("w_codex"), CodexCliAdapter)
@@ -156,7 +156,6 @@ def test_adapter_for_agent_uses_team_json_cli_field():
 
 
 def test_adapter_for_agent_unknown_agent_raises():
-    from claudeteam.agents import adapter_for_agent
     with _team_env({"agents": {}}):
         try:
             adapter_for_agent("ghost")

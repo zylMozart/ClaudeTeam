@@ -6,6 +6,7 @@ import json
 from helpers import isolated_env
 from claudeteam.feishu import catchup
 from claudeteam.feishu.router import Action, Decision
+from claudeteam.feishu.subscribe import process_lines
 from claudeteam.runtime import paths
 
 
@@ -149,8 +150,6 @@ def test_pending_lines_skips_messages_with_bad_create_time():
 
 def test_pending_lines_round_trip_through_process_lines():
     """Ensure the lines we emit can be eaten by subscribe.process_lines."""
-    from claudeteam.feishu.subscribe import process_lines
-
     history = [_msg("om_replay", "5000", text="catch this")]
     with isolated_env():
         lines = catchup.pending_lines("oc_x", list_fn=lambda: history)

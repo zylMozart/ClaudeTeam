@@ -1,6 +1,7 @@
 """Tests for `claudeteam install-hooks` — Claude Code slash-command markdowns."""
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -37,7 +38,6 @@ def test_install_hooks_idempotent_overwrites_existing_files():
 
 
 def test_install_hooks_default_target_is_cwd():
-    import os
     with tempfile.TemporaryDirectory() as tmp:
         cwd = os.getcwd()
         os.chdir(tmp)
