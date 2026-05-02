@@ -1,15 +1,13 @@
 """Tests for `claudeteam usage` — token-spend snapshot."""
 from __future__ import annotations
 
-import contextlib
 import shutil
 import subprocess
 
-from helpers import isolated_env, run_cli
+from helpers import attr_patch, isolated_env, run_cli
 from claudeteam.commands import usage as _usage_mod
 
 
-@contextlib.contextmanager
 def _stub_runner(*, rc: int, output: str):
     """Replace subprocess.run only for ccusage invocations."""
     saved = subprocess.run
@@ -25,14 +23,9 @@ def _stub_runner(*, rc: int, output: str):
             return FakeResult(rc, output)
         return saved(argv, *args, **kwargs)
 
-    subprocess.run = fake
-    try:
-        yield
-    finally:
-        subprocess.run = saved
+    return attr_patch(subprocess, run=fake)
 
 
-@contextlib.contextmanager
 def _stub_npx_present(present: bool):
     saved = shutil.which
 
@@ -41,11 +34,7 @@ def _stub_npx_present(present: bool):
             return "/usr/bin/npx" if present else None
         return saved(name, *args, **kwargs)
 
-    shutil.which = fake
-    try:
-        yield
-    finally:
-        shutil.which = saved
+    return attr_patch(shutil, which=fake)
 
 
 # ── happy path ──────────────────────────────────────────────────

@@ -4,7 +4,7 @@ from __future__ import annotations
 import contextlib
 import subprocess
 
-from helpers import isolated_env, run_cli, tmux_patch
+from helpers import attr_patch, isolated_env, run_cli, tmux_patch
 from claudeteam.commands import up as _up, down as _down
 from claudeteam.runtime import paths
 
@@ -47,12 +47,8 @@ def _fake_popen():
             paths.watchdog_pid_file().write_text("12346", encoding="utf-8")
         return _FakeProc(argv)
 
-    saved = subprocess.Popen
-    subprocess.Popen = fake_popen
-    try:
+    with attr_patch(subprocess, Popen=fake_popen):
         yield calls
-    finally:
-        subprocess.Popen = saved
 
 
 @contextlib.contextmanager
