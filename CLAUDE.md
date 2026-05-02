@@ -33,10 +33,10 @@ to-end in-process plus natural-language scenarios in `scenarios/*.md`).
    Given/When/Then template.
 
 3. **Simplify before pulling from the old tree.**  The old branch
-   accumulated 33 K LOC; the rebuild is currently 5.7 K.  Don't bring
-   over `CliCapabilities` dataclasses or 11-file decomposed `supervision/`
-   trees.  If a function looks too short to need its own file, it
-   probably is.
+   accumulated 33 K LOC; the rebuild is currently ~7 K (src + tests).
+   Don't bring over `CliCapabilities` dataclasses or 11-file decomposed
+   `supervision/` trees.  If a function looks too short to need its
+   own file, it probably is.
 
 4. **No compatibility wrappers.**  If an old `scripts/feishu_msg.py`
    call site would break under the new layout, that's fine — we are
@@ -113,7 +113,13 @@ fixture instead of a real subprocess.
 1. (done) Local store + 7 commands
 2. (done) CLI adapters + lifecycle + tmux wrappers
 3. (done) Feishu lark + chat + router pipeline + watchdog + tasks
-4. (next) Setup bootstrap (`claudeteam init`)
-5. (next) Lazy wake (placeholder pane → CLI on first message)
-6. (later) Slash command hooks for Claude Code (`.claude/hooks/`)
-7. (later) Docker deployment + multi-team isolation
+4. (done) `claudeteam init` bootstrap
+5. (done) Identity rendering (`agents/<name>/identity.md` per pane)
+6. (done) Lazy wake (placeholder pane → CLI on first message)
+7. (done) Router catchup-on-restart (`feishu/catchup.py` + cursor)
+8. (done) `claudeteam health`, `up`, `down`, agent heartbeats
+9. (next) Slash command hooks for Claude Code (`.claude/hooks/`)
+10. (next) `claudeteam usage` — token / quota visibility
+11. (next) Rate-limit detection + boss notification
+12. (later) Docker deployment + multi-team isolation
+13. (later) Image / file Feishu messages

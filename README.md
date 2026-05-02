@@ -9,7 +9,7 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~5 700 LOC, 235 tests green.
+capability requires them.  Currently ~7 000 LOC (src + tests), 305 tests green.
 
 ## Quick start
 
@@ -17,59 +17,59 @@ capability requires them.  Currently ~5 700 LOC, 235 tests green.
 # 1. Install (editable from the repo)
 pip install -e .
 
-# 2. Tell ClaudeTeam where to keep its state and which team to run
+# 2. Bootstrap config files in the current directory
+claudeteam init                  # writes team.json + runtime_config.json
+$EDITOR runtime_config.json      # set chat_id + lark_profile when ready
+
+# 3. Tell ClaudeTeam where to keep state (otherwise: ~/.claudeteam)
 export CLAUDETEAM_STATE_DIR="$PWD/state"
-cat > team.json <<'JSON'
-{
-  "session": "MyTeam",
-  "agents": {
-    "manager":      {"cli": "claude-code", "model": "opus"},
-    "worker_codex": {"cli": "codex-cli",   "model": "gpt-5.5"},
-    "worker_kimi":  {"cli": "kimi-code"}
-  }
-}
-JSON
 
-# 3. Bring up the team (one tmux session, one window per agent)
-claudeteam start
+# 4. Bring up the whole team in one shot (tmux + agents + router + watchdog)
+claudeteam up
+claudeteam health                # green/red snapshot — no surprises
 
-# 4. Use the local message bus right away — no Feishu needed
+# 5. Use the local message bus
 claudeteam send worker_codex manager "review the auth module"
 claudeteam inbox worker_codex
 claudeteam status worker_codex 进行中 "auditing auth"
-claudeteam team
+claudeteam team                  # shows ♥ heartbeat per agent
 
-# 5. (Optional) wire to Feishu — the boss can chat with the team in a Lark group
-cat > runtime_config.json <<'JSON'
-{ "chat_id": "oc_xxx", "lark_profile": "" }
-JSON
-claudeteam router &        # daemon: chat → manager pane
+# 6. Talk in the Feishu chat (router routes inbound, `say` posts outbound)
 claudeteam say manager "标题党：smoke test #$(date +%s)"
+
+# 7. Tear it all down
+claudeteam down
 ```
 
 ## Commands
 
 ```
+bootstrap & ops
+  claudeteam init [--session NAME] [--force]    write team.json + runtime_config.json
+  claudeteam up                                 start + router + watchdog (idempotent)
+  claudeteam down                               graceful inverse of up
+  claudeteam health                             one-shot deployment-state check
+
 local store / inbox
   claudeteam send <to> <from> <message> [priority]
   claudeteam inbox <agent>
   claudeteam read <local_id>
   claudeteam status <agent> [<state> <task> [blocker]]
   claudeteam log <agent> <kind> <content> [ref]
-  claudeteam team
+  claudeteam team                               status + ♥ heartbeat per agent
   claudeteam workspace <agent> [--limit N]
 
 team lifecycle
-  claudeteam start
-  claudeteam hire <agent>
+  claudeteam start                              tmux session + per-agent panes
+  claudeteam hire <agent>                       add a new pane (lazy-aware)
   claudeteam fire <agent>
 
 feishu transport
   claudeteam say <agent> <message> [--reply <message_id>] [--as user|bot] [--no-local]
-  claudeteam router
+  claudeteam router                             daemon: chat events → inbox + pane
 
 supervision
-  claudeteam watchdog
+  claudeteam watchdog                           respawns dead daemons
 
 task tracking
   claudeteam task create <assignee> <title> [--by <agent>] [--desc <text>]
@@ -84,22 +84,27 @@ task tracking
 ```
 src/claudeteam/
 ├── cli.py             single console-scripts entry; dispatch only
-├── commands/          one module per subcommand (~30 LOC each)
+├── commands/          one module per subcommand (~30-100 LOC each)
 ├── store/
-│   ├── local_facts.py inbox / status / log (JSON + JSONL, file-locked)
+│   ├── local_facts.py inbox / status / log / heartbeats (JSON + JSONL, file-locked)
 │   └── tasks.py       coordination cards
-├── agents/            CliAdapter + ClaudeCode / Codex / Kimi
+├── agents/
+│   ├── base.py        CliAdapter abstract base
+│   ├── claude_code.py / codex_cli.py / kimi_code.py — concrete adapters
+│   └── identity.py    per-agent identity.md template renderer
 ├── runtime/
 │   ├── config.py      team.json + runtime_config.json
 │   ├── paths.py       env-driven $CLAUDETEAM_STATE_DIR layout
 │   ├── tmux.py        pane / window / inject wrappers
+│   ├── wake.py        lazy-pane wake (capture + spawn + poll-for-ready)
 │   └── watchdog.py    process supervisor (ProcessSpec + supervise sweep)
 └── feishu/
     ├── lark.py        npx @larksuite/cli wrapper
     ├── chat.py        send_text / send_card / list_recent
     ├── router.py      pure event → Decision classifier
-    ├── deliver.py     Decision → write inbox + inject pane
-    └── subscribe.py   NDJSON event loop (drives `claudeteam router`)
+    ├── deliver.py     Decision → write inbox + inject pane (with lazy wake)
+    ├── subscribe.py   NDJSON event loop (drives `claudeteam router`)
+    └── catchup.py     replay missed messages on router restart (cursor-based)
 
 tests/
 ├── unit/              pure-module tests (mocked I/O)
@@ -129,19 +134,20 @@ and `tests/smoke/test_*.py`, runs every `test_*` function, prints a
 summary; non-zero exit on any failure.
 
 ```
-tests: 235 passed, 0 failed
+tests: 305 passed, 0 failed
 ```
 
 ## What's missing
 
 Documented honestly because some of it is needed for production use:
 
-- **Setup bootstrap**: no `claudeteam init` yet; you write `team.json`
-  and `runtime_config.json` by hand
-- **Lazy wake**: worker panes always start with their CLI running; the
-  old branch supported placeholder panes that woke on first message
 - **Slash command interceptors**: no `.claude/hooks/` yet; agents in
   Claude Code invoke `claudeteam X` via Bash directly
+- **Usage / quota visibility**: no `claudeteam usage` summarising
+  Claude Max / Codex / Kimi token consumption
+- **Rate-limit detection**: when a pane shows a rate-limit banner the
+  router still injects; no automatic backoff or boss notification
+- **Image / file Feishu messages**: text-only on the wire today
 - **Bitable / kanban projection**: skipped by design — local facts only
 - **Docker deployment**: no Dockerfile / compose files yet
 - **Multi-team isolation**: env-var-based; depends on the operator
