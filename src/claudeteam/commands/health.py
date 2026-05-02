@@ -18,13 +18,12 @@ from __future__ import annotations
 import json
 import sys
 
-import time
-
 from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux
 from claudeteam.runtime.watchdog import is_alive, ProcessSpec
 from claudeteam.store import local_facts
+from claudeteam.util import ago_ms
 
 
 _OK = "✅"
@@ -86,19 +85,6 @@ def _check_session(out: list[str], session: str) -> bool:
     return False
 
 
-def _ago(ms: int) -> str:
-    if not ms:
-        return "?"
-    secs = max(0, int(time.time() - ms / 1000))
-    if secs < 60:
-        return f"{secs}s ago"
-    if secs < 3600:
-        return f"{secs // 60}m ago"
-    if secs < 86400:
-        return f"{secs // 3600}h ago"
-    return f"{secs // 86400}d ago"
-
-
 def _check_agents(out: list[str], session: str, agents: list[str], session_alive: bool) -> int:
     bad = 0
     heartbeats = local_facts.all_heartbeats()
@@ -106,7 +92,7 @@ def _check_agents(out: list[str], session: str, agents: list[str], session_alive
         target = tmux.Target(session, agent)
         line = f"    {agent}"
         hb = heartbeats.get(agent)
-        hb_suffix = f"  ♥ {_ago(hb)}" if hb else "  ♥ never"
+        hb_suffix = f"  ♥ {ago_ms(hb)}" if hb else "  ♥ never"
         if not session_alive:
             out.append(f"  {_WARN} {line}: session down, skip{hb_suffix}")
             continue

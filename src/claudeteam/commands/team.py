@@ -5,22 +5,8 @@ per agent: `name  status  task  [⛔ blocker]  (Nm ago)`.
 """
 from __future__ import annotations
 
-import time
-
 from claudeteam.store import local_facts
-
-
-def _ago(ms: int) -> str:
-    if not ms:
-        return "?"
-    delta_secs = max(0, int((time.time() * 1000 - ms) / 1000))
-    if delta_secs < 60:
-        return f"{delta_secs}s ago"
-    if delta_secs < 3600:
-        return f"{delta_secs // 60}m ago"
-    if delta_secs < 86400:
-        return f"{delta_secs // 3600}h ago"
-    return f"{delta_secs // 86400}d ago"
+from claudeteam.util import ago_ms
 
 
 def main(argv: list[str]) -> int:
@@ -37,9 +23,9 @@ def main(argv: list[str]) -> int:
         )
         if r.get("blocker"):
             line += f"  ⛔ {r['blocker']}"
-        line += f"  ({_ago(r.get('updated_at', 0))})"
+        line += f"  ({ago_ms(r.get('updated_at', 0))})"
         hb = heartbeats.get(r["agent"])
         if hb:
-            line += f"  ♥ {_ago(hb)}"
+            line += f"  ♥ {ago_ms(hb)}"
         print(line)
     return 0
