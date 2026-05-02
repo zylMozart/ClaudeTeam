@@ -42,10 +42,9 @@ def _resolve_deps(adapter_lookup, tmux_inject, append_message, session) -> _Deps
         adapter_lookup = adapter_for_agent
     return _Deps(
         adapter_for_agent=adapter_lookup,
-        tmux_inject=tmux_inject if tmux_inject is not None else tmux.inject,
-        append_message=(append_message if append_message is not None
-                        else local_facts.append_message),
-        session=session if session is not None else config.session_name(),
+        tmux_inject=tmux_inject or tmux.inject,
+        append_message=append_message or local_facts.append_message,
+        session=session or config.session_name(),
     )
 
 
