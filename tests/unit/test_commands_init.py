@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 from helpers import env_patch, isolated_env, run_cli
 
@@ -103,8 +101,8 @@ def test_init_session_flag_combines_with_force():
 
 
 def test_init_writes_files_in_subdirs_when_envs_point_there():
-    with tempfile.TemporaryDirectory() as tmp:
-        nested = Path(tmp) / "configs" / "team-alpha"
+    with isolated_env() as tmp:
+        nested = tmp / "configs" / "team-alpha"
         with env_patch(
             CLAUDETEAM_TEAM_FILE=str(nested / "team.json"),
             CLAUDETEAM_RUNTIME_CONFIG=str(nested / "rc.json"),
