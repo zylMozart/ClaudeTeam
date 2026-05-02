@@ -16,13 +16,12 @@ not fail the check.
 from __future__ import annotations
 
 import json
-import os
 
 from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
-from claudeteam.util import ago_ms, error_exit, help_requested
+from claudeteam.util import ago_ms, env_str, error_exit, help_requested
 
 
 _OK = "✅"
@@ -32,7 +31,7 @@ _WARN = "⚠️ "
 
 def _check_state_dir(out: list[str]) -> None:
     sd = paths.state_dir()
-    src = "env" if os.environ.get("CLAUDETEAM_STATE_DIR") else "default (~/.claudeteam)"
+    src = "env" if env_str("CLAUDETEAM_STATE_DIR") else "default (~/.claudeteam)"
     out.append(f"  state_dir: {sd}  ({src})")
 
 
