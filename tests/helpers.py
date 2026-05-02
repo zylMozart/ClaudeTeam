@@ -27,6 +27,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from claudeteam import cli
 from claudeteam.runtime import tmux as _tmux
 
 
@@ -83,7 +84,6 @@ def isolated_env(*, team: dict | None = None, runtime_config: dict | None = None
 
 def run_cli(argv: list[str]) -> tuple[int, str, str]:
     """Invoke `cli.main(argv)`, capture stdout/stderr, return (rc, out, err)."""
-    from claudeteam import cli
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = cli.main(argv)
