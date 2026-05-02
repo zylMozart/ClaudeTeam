@@ -84,5 +84,6 @@ def main(argv: list[str]) -> int:
     print()
     print("Next:")
     print(f"  - edit {rt_path.name} to set chat_id + lark_profile (when wiring Feishu)")
-    print(f"  - claudeteam start                # bring up tmux session '{session}'")
+    print(f"  - claudeteam up                   # tmux session '{session}' + router + watchdog")
+    print(f"  - claudeteam health               # verify everything came up green")
     return 0

@@ -35,6 +35,7 @@ from claudeteam.commands import (
     health as _health,
     up as _up,
     down as _down,
+    usage as _usage_cmd,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
@@ -63,6 +64,7 @@ COMMANDS: dict[str, CommandHandler] = {
     "task": _task.main,
     # operational
     "health": _health.main,
+    "usage": _usage_cmd.main,
 }
 
 
