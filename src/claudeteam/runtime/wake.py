@@ -22,13 +22,23 @@ from claudeteam.agents.base import CliAdapter
 from claudeteam.runtime import tmux
 
 
-def is_ready(target: tmux.Target, adapter: CliAdapter, *,
-             capture: Callable | None = None) -> bool:
-    """True if the pane already shows one of the adapter's ready markers."""
+def _has_marker(target: tmux.Target, markers: list[str],
+                capture: Callable | None) -> bool:
+    """Capture the pane (default tmux.capture_pane) and return True iff any
+    string in `markers` appears. Empty marker list → always False (saves a
+    capture call when the adapter declines to publish that marker class)."""
+    if not markers:
+        return False
     if capture is None:
         capture = tmux.capture_pane
     text = capture(target, lines=80)
-    return any(m in text for m in adapter.ready_markers())
+    return any(m in text for m in markers)
+
+
+def is_ready(target: tmux.Target, adapter: CliAdapter, *,
+             capture: Callable | None = None) -> bool:
+    """True if the pane already shows one of the adapter's ready markers."""
+    return _has_marker(target, adapter.ready_markers(), capture)
 
 
 def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
@@ -37,13 +47,7 @@ def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
 
     Empty marker list (default for codex/kimi historically) → always False.
     """
-    markers = adapter.rate_limit_markers()
-    if not markers:
-        return False
-    if capture is None:
-        capture = tmux.capture_pane
-    text = capture(target, lines=80)
-    return any(m in text for m in markers)
+    return _has_marker(target, adapter.rate_limit_markers(), capture)
 
 
 def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
