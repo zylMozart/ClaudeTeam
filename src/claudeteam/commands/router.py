@@ -8,7 +8,6 @@ state_dir/router.pid so the watchdog can supervise.
 """
 from __future__ import annotations
 
-import os
 import signal
 import subprocess
 import sys
@@ -16,7 +15,7 @@ import sys
 from claudeteam.feishu import catchup
 from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
-from claudeteam.runtime import config, paths, wake
+from claudeteam.runtime import config, paths, pidlock, wake
 
 
 def _build_subscribe_cmd(profile: str) -> list[str]:
@@ -32,21 +31,6 @@ def _build_subscribe_cmd(profile: str) -> list[str]:
         "--as", "bot",
     ]
     return cmd
-
-
-def _write_pid_file() -> None:
-    paths.ensure_state_dir()
-    pf = paths.router_pid_file()
-    pf.write_text(str(os.getpid()), encoding="utf-8")
-
-
-def _cleanup_pid_file() -> None:
-    try:
-        pf = paths.router_pid_file()
-        if pf.exists() and pf.read_text(encoding="utf-8").strip() == str(os.getpid()):
-            pf.unlink()
-    except Exception:
-        pass
 
 
 def main(argv: list[str]) -> int:
@@ -65,7 +49,9 @@ def main(argv: list[str]) -> int:
         print("❌ team.json has no agents", file=sys.stderr)
         return 1
 
-    _write_pid_file()
+    pid_file = paths.router_pid_file()
+    if not pidlock.acquire(pid_file, name="router"):
+        return 1
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     profile = config.lark_profile()
@@ -82,7 +68,7 @@ def main(argv: list[str]) -> int:
         )
     except FileNotFoundError:
         print("❌ npx / lark-cli not found in PATH", file=sys.stderr)
-        _cleanup_pid_file()
+        pidlock.release(pid_file)
         return 1
 
     try:
@@ -128,4 +114,4 @@ def main(argv: list[str]) -> int:
         proc.terminate()
         return 0
     finally:
-        _cleanup_pid_file()
+        pidlock.release(pid_file)
