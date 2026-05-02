@@ -10,6 +10,12 @@ from __future__ import annotations
 import sys
 from typing import Callable
 
+from claudeteam.commands import (
+    init, send, inbox, read, status, log, team, workspace,
+    start, hire, fire, up, down, reset,
+    say, router, watchdog, task,
+    health, usage, install_hooks,
+)
 from claudeteam.util import error_exit
 
 
@@ -18,13 +24,6 @@ CommandHandler = Callable[[list[str]], int | None]
 
 # Subcommand registry. Adding a new command means: write a module under
 # claudeteam.commands, expose a `main(argv)` callable, register it here.
-from claudeteam.commands import (
-    init, send, inbox, read, status, log, team, workspace,
-    start, hire, fire, up, down, reset,
-    say, router, watchdog, task,
-    health, usage, install_hooks,
-)
-
 COMMANDS: dict[str, CommandHandler] = {
     # bootstrap
     "init": init.main,
