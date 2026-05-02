@@ -7,8 +7,7 @@ from __future__ import annotations
 
 import contextlib
 
-from helpers import isolated_env, run_cli
-from claudeteam.runtime import tmux
+from helpers import isolated_env, run_cli, tmux_patch
 from claudeteam.store import local_facts
 
 
@@ -18,18 +17,14 @@ def _isolated_team(team_data):
 
 @contextlib.contextmanager
 def _fake_tmux():
-    """Replace every tmux function with a recording fake.
+    """Recording fake for every tmux function used by start/hire/fire.
 
-    Returns a dict of:
-      session_exists: set of session names where has_session() returns True
-      windows: set of "session:window" strings where has_window returns True
-      calls: list of (op, *args) recorded across all functions
+    Returns a state dict tracking:
+      session_exists: set of session names has_session() reports True for
+      windows:        set of "session:window" strings has_window() reports
+      calls:          ordered (op, *args) trace for assertions
     """
-    state = {
-        "session_exists": set(),
-        "windows": set(),
-        "calls": [],
-    }
+    state = {"session_exists": set(), "windows": set(), "calls": []}
 
     def has_session(s):
         state["calls"].append(("has_session", s))
@@ -63,27 +58,11 @@ def _fake_tmux():
         state["calls"].append(("send_keys", str(t), *keys))
         return True
 
-    originals = {
-        "has_session": tmux.has_session,
-        "has_window": tmux.has_window,
-        "new_session": tmux.new_session,
-        "new_window": tmux.new_window,
-        "kill_window": tmux.kill_window,
-        "spawn_agent": tmux.spawn_agent,
-        "send_keys": tmux.send_keys,
-    }
-    tmux.has_session = has_session
-    tmux.has_window = has_window
-    tmux.new_session = new_session
-    tmux.new_window = new_window
-    tmux.kill_window = kill_window
-    tmux.spawn_agent = spawn_agent
-    tmux.send_keys = send_keys
-    try:
+    with tmux_patch(has_session=has_session, has_window=has_window,
+                    new_session=new_session, new_window=new_window,
+                    kill_window=kill_window, spawn_agent=spawn_agent,
+                    send_keys=send_keys):
         yield state
-    finally:
-        for name, fn in originals.items():
-            setattr(tmux, name, fn)
 
 
 
