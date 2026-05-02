@@ -9,6 +9,21 @@ import time
 from pathlib import Path
 
 
+def pop_flag(rest: list[str], flag: str) -> str | None:
+    """Pop `flag <value>` out of `rest` and return value; or None if absent
+    or value is missing. Mutates `rest`. Used by every command that does its
+    own argv parsing (init, task, usage, workspace, ...).
+    """
+    if flag not in rest:
+        return None
+    i = rest.index(flag)
+    if i + 1 >= len(rest):
+        return None
+    val = rest[i + 1]
+    del rest[i:i + 2]
+    return val
+
+
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Write `content` to `path` via tmp + rename so a crash mid-write
     can't leave the destination half-written.

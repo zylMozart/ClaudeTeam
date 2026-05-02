@@ -9,6 +9,7 @@ import sys
 import time
 
 from claudeteam.store import local_facts
+from claudeteam.util import pop_flag
 
 
 USAGE = "usage: claudeteam workspace <agent> [--limit N]"
@@ -24,18 +25,17 @@ def main(argv: list[str]) -> int:
     if len(argv) < 1:
         print(USAGE, file=sys.stderr)
         return 1
-    agent = argv[0]
-    limit = 20
-    if "--limit" in argv:
-        idx = argv.index("--limit")
-        if idx + 1 >= len(argv):
-            print(USAGE, file=sys.stderr)
-            return 1
-        try:
-            limit = int(argv[idx + 1])
-        except ValueError:
-            print(USAGE, file=sys.stderr)
-            return 1
+    rest = list(argv)
+    agent = rest.pop(0)
+    raw_limit = pop_flag(rest, "--limit")
+    if rest:
+        print(USAGE, file=sys.stderr)
+        return 1
+    try:
+        limit = int(raw_limit) if raw_limit is not None else 20
+    except ValueError:
+        print(USAGE, file=sys.stderr)
+        return 1
 
     rows = local_facts.list_logs(agent, limit=limit)
     if not rows:

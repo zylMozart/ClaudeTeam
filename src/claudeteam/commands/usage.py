@@ -19,6 +19,7 @@ import sys
 from typing import Callable
 
 from claudeteam.runtime import config
+from claudeteam.util import pop_flag
 
 
 USAGE = "usage: claudeteam usage [--view daily|monthly|session|blocks] [--days N]"
@@ -53,22 +54,8 @@ def main(argv: list[str]) -> int:
         print(USAGE)
         return 0
 
-    view = "daily"
-    if "--view" in rest:
-        i = rest.index("--view")
-        if i + 1 >= len(rest):
-            print(USAGE, file=sys.stderr)
-            return 1
-        view = rest[i + 1]
-        del rest[i:i + 2]
-    days = ""
-    if "--days" in rest:
-        i = rest.index("--days")
-        if i + 1 >= len(rest):
-            print(USAGE, file=sys.stderr)
-            return 1
-        days = rest[i + 1]
-        del rest[i:i + 2]
+    view = pop_flag(rest, "--view") or "daily"
+    days = pop_flag(rest, "--days") or ""
     if rest:
         print(f"❌ unexpected args: {rest}\n{USAGE}", file=sys.stderr)
         return 1

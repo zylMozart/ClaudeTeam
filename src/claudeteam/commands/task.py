@@ -12,6 +12,7 @@ import sys
 import time
 
 from claudeteam.store import tasks
+from claudeteam.util import pop_flag
 
 
 USAGE = (
@@ -22,17 +23,6 @@ USAGE = (
     "  claudeteam task get <id>\n"
     "  claudeteam task done <id>"
 )
-
-
-def _pull_flag(rest: list[str], flag: str) -> str | None:
-    if flag not in rest:
-        return None
-    i = rest.index(flag)
-    if i + 1 >= len(rest):
-        return None
-    val = rest[i + 1]
-    del rest[i:i + 2]
-    return val
 
 
 def _fmt_task(t: dict) -> list[str]:
@@ -48,8 +38,8 @@ def _fmt_task(t: dict) -> list[str]:
 
 
 def _cmd_create(rest: list[str]) -> int:
-    by = _pull_flag(rest, "--by") or ""
-    desc = _pull_flag(rest, "--desc") or ""
+    by = pop_flag(rest, "--by") or ""
+    desc = pop_flag(rest, "--desc") or ""
     if len(rest) < 2:
         print(USAGE, file=sys.stderr)
         return 1
@@ -65,10 +55,10 @@ def _cmd_create(rest: list[str]) -> int:
 
 
 def _cmd_update(rest: list[str]) -> int:
-    status = _pull_flag(rest, "--status")
-    assignee = _pull_flag(rest, "--assignee")
-    title = _pull_flag(rest, "--title")
-    desc = _pull_flag(rest, "--desc")
+    status = pop_flag(rest, "--status")
+    assignee = pop_flag(rest, "--assignee")
+    title = pop_flag(rest, "--title")
+    desc = pop_flag(rest, "--desc")
     if len(rest) < 1:
         print(USAGE, file=sys.stderr)
         return 1
@@ -94,8 +84,8 @@ def _cmd_done(rest: list[str]) -> int:
 
 
 def _cmd_list(rest: list[str]) -> int:
-    status = _pull_flag(rest, "--status")
-    assignee = _pull_flag(rest, "--assignee")
+    status = pop_flag(rest, "--status")
+    assignee = pop_flag(rest, "--assignee")
     rows = tasks.list_tasks(status=status, assignee=assignee)
     if not rows:
         print("📋 no matching tasks")

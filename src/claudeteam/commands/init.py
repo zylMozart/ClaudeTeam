@@ -12,7 +12,7 @@ import json
 import sys
 
 from claudeteam.runtime import config
-from claudeteam.util import atomic_write_text
+from claudeteam.util import atomic_write_text, pop_flag
 
 
 USAGE = "usage: claudeteam init [--session NAME] [--force]"
@@ -36,17 +36,6 @@ _DEFAULT_RUNTIME = {
 }
 
 
-def _pull_flag(rest: list[str], flag: str) -> str | None:
-    if flag not in rest:
-        return None
-    i = rest.index(flag)
-    if i + 1 >= len(rest):
-        return None
-    val = rest[i + 1]
-    del rest[i:i + 2]
-    return val
-
-
 def _write_json(path, data: dict) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
@@ -59,7 +48,7 @@ def main(argv: list[str]) -> int:
     force = "--force" in rest
     if force:
         rest.remove("--force")
-    session = _pull_flag(rest, "--session") or _DEFAULT_TEAM["session"]
+    session = pop_flag(rest, "--session") or _DEFAULT_TEAM["session"]
     if rest:
         print(f"❌ unexpected args: {rest}\n{USAGE}", file=sys.stderr)
         return 1

@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from claudeteam.util import ago_ms, atomic_write_text
+from claudeteam.util import ago_ms, atomic_write_text, pop_flag
 
 
 # ── ago_ms ──────────────────────────────────────────────────────
@@ -84,6 +84,34 @@ def test_atomic_write_clobbers_stale_tmp_from_previous_crash():
         (target.with_suffix(".txt.tmp")).write_text("stale", encoding="utf-8")
         atomic_write_text(target, "fresh")
         assert target.read_text(encoding="utf-8") == "fresh"
+
+
+# ── pop_flag ────────────────────────────────────────────────────
+
+
+def test_pop_flag_returns_value_and_removes_pair():
+    rest = ["foo", "--by", "manager", "bar"]
+    assert pop_flag(rest, "--by") == "manager"
+    assert rest == ["foo", "bar"]
+
+
+def test_pop_flag_returns_none_when_absent():
+    rest = ["a", "b"]
+    assert pop_flag(rest, "--by") is None
+    assert rest == ["a", "b"]
+
+
+def test_pop_flag_returns_none_when_value_missing_at_end():
+    rest = ["a", "--by"]
+    assert pop_flag(rest, "--by") is None
+    # rest is unchanged so caller can flag the user error
+    assert rest == ["a", "--by"]
+
+
+def test_pop_flag_handles_repeated_flag_takes_first():
+    rest = ["--by", "alice", "--by", "bob"]
+    assert pop_flag(rest, "--by") == "alice"
+    assert rest == ["--by", "bob"]
 
 
 def test_atomic_write_respects_encoding_arg():
