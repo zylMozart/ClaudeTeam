@@ -9,7 +9,7 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~7 000 LOC (src + tests), 305 tests green.
+capability requires them.  Currently ~8 200 LOC (src + tests), 375 tests green.
 
 ## Quick start
 
@@ -84,6 +84,10 @@ task tracking
 ```
 src/claudeteam/
 ├── cli.py             single console-scripts entry; dispatch only
+├── util.py            shared helpers: ago_ms, fmt_time_ms, now_ms,
+│                      pop_flag, read_json, write_json, atomic_write_text,
+│                      flock, env_path, help_requested, usage_error,
+│                      error_exit, warn
 ├── commands/          one module per subcommand (~30-100 LOC each)
 ├── store/
 │   ├── local_facts.py inbox / status / log / heartbeats (JSON + JSONL, file-locked)
@@ -97,19 +101,20 @@ src/claudeteam/
 │   ├── paths.py       env-driven $CLAUDETEAM_STATE_DIR layout
 │   ├── tmux.py        pane / window / inject wrappers
 │   ├── wake.py        lazy-pane wake (capture + spawn + poll-for-ready)
-│   └── watchdog.py    process supervisor (ProcessSpec + supervise sweep)
+│   ├── pidlock.py     single-instance daemon lock (acquire / release)
+│   └── watchdog.py    process supervisor (ProcessSpec, all_known_specs, supervise)
 └── feishu/
-    ├── lark.py        npx @larksuite/cli wrapper
+    ├── lark.py        npx @larksuite/cli wrapper (call())
     ├── chat.py        send_text / send_card / list_recent
     ├── router.py      pure event → Decision classifier
-    ├── deliver.py     Decision → write inbox + inject pane (with lazy wake)
+    ├── deliver.py     Decision → write inbox + inject pane (rate-limit aware)
     ├── subscribe.py   NDJSON event loop (drives `claudeteam router`)
     └── catchup.py     replay missed messages on router restart (cursor-based)
 
 tests/
-├── unit/              pure-module tests (mocked I/O)
+├── unit/              pure-module tests (mocked I/O via attr_patch)
 ├── smoke/             end-to-end in-process tests + scenarios/*.md
-├── helpers.py         isolated_env() + run_cli() shared fixtures
+├── helpers.py         isolated_env() + run_cli() + attr_patch / tmux_patch
 └── run.py             stdlib-only runner (no pytest dep)
 ```
 
@@ -134,24 +139,27 @@ and `tests/smoke/test_*.py`, runs every `test_*` function, prints a
 summary; non-zero exit on any failure.
 
 ```
-tests: 305 passed, 0 failed
+tests: 375 passed, 0 failed
 ```
 
 ## What's missing
 
 Documented honestly because some of it is needed for production use:
 
-- **Slash command interceptors**: no `.claude/hooks/` yet; agents in
-  Claude Code invoke `claudeteam X` via Bash directly
-- **Usage / quota visibility**: no `claudeteam usage` summarising
-  Claude Max / Codex / Kimi token consumption
-- **Rate-limit detection**: when a pane shows a rate-limit banner the
-  router still injects; no automatic backoff or boss notification
-- **Image / file Feishu messages**: text-only on the wire today
-- **Bitable / kanban projection**: skipped by design — local facts only
+- **Image / file Feishu messages**: text-only on the wire today; the
+  router drops `msg_type=image` events as `empty`
+- **Post-compact reread**: when a Claude Code agent's context gets
+  compacted, identity.md isn't re-injected automatically
 - **Docker deployment**: no Dockerfile / compose files yet
-- **Multi-team isolation**: env-var-based; depends on the operator
-  setting `CLAUDETEAM_STATE_DIR` and unique tmux session names per team
+- **Multi-team isolation polish**: env-var-based today; depends on the
+  operator setting `CLAUDETEAM_STATE_DIR` and unique tmux session names
+  per team. Works, but no `claudeteam switch <team>` UX
+- **Bitable / kanban projection**: skipped by design — local facts only
+
+What's done that the previous "what's missing" listed:
+slash-command interceptors (`claudeteam install-hooks`),
+`claudeteam usage` (ccusage wrapper), rate-limit detection
+(adapter `rate_limit_markers()` + deliver-skips-when-rate-limited).
 
 The rebuild is on `rebuild/minimal`; it does not share history with
 `main`.  See `tests/smoke/scenarios/*.md` for natural-language scenarios
