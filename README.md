@@ -20,9 +20,21 @@ capability requires them.  Currently ~8 100 LOC (src + tests), 381 tests green.
   declare via the `cli` field. The team.json `cli` identifiers map as:
   `claude-code` → `claude`, `codex-cli` → `codex`, `kimi-code` → `kimi`.
 
+`team.json` per-agent fields — only `cli` is meaningful for spawning;
+`role` shows up in the rendered `identity.md`; `model` falls back to the
+top-level `default_model` (then `CLAUDETEAM_DEFAULT_MODEL`, then `"opus"`)
+and is silently ignored by adapters that don't honor it (Kimi).
+
 ## Quick start
 
 ```bash
+# 0. Shell setup — set ONCE per terminal, before any claudeteam command.
+#    If you want these persistent, add to your shell rc (~/.zshrc / ~/.bashrc).
+export CLAUDETEAM_STATE_DIR="$PWD/state"   # else state goes to ~/.claudeteam
+export LARK_CLI_NO_PROXY=1                 # required if you have HTTPS_PROXY set
+# Optional: lock the bot identity for `claudeteam say` so you never need --as
+export CLAUDETEAM_LARK_SEND_AS=bot
+
 # 1. Install (editable from the repo, in a venv)
 #    Many hosts ship Python under uv / Homebrew / system manager that PEP 668
 #    blocks bare `pip install` against; a venv side-steps that.
@@ -34,28 +46,22 @@ pip install -e .
 claudeteam init                  # writes team.json + runtime_config.json
 $EDITOR runtime_config.json      # set chat_id + lark_profile when ready
 
-# 3. Tell ClaudeTeam where to keep state (otherwise: ~/.claudeteam)
-export CLAUDETEAM_STATE_DIR="$PWD/state"
-
-# 4. Bring up the whole team in one shot (tmux + agents + router + watchdog)
+# 3. Bring up the whole team in one shot (tmux + agents + router + watchdog)
 claudeteam up
-claudeteam health                # green/red snapshot — no surprises
+claudeteam health                # green/yellow/red snapshot — no surprises
 
-# 5. Inspect the local inbox / status (these are LOCAL ONLY — see "Two transports" below)
+# 4. Inspect the local inbox / status (these are LOCAL ONLY — see "Two transports" below)
 claudeteam send worker_codex manager "review the auth module"   # writes inbox.json
 claudeteam inbox worker_codex
 claudeteam status worker_codex 进行中 "auditing auth"
 claudeteam team                  # shows ♥ heartbeat per agent
 
-# 6. Talk in the Feishu chat (the only path that injects into a worker pane)
-#    Default identity is `--as bot`; pass `--as user` only if the lark-cli
-#    profile has user OAuth and the bot lacks the scope you need.
-#    On hosts with HTTPS_PROXY set, also export LARK_CLI_NO_PROXY=1 — the
-#    lark-cli wrapper warns about the proxy but won't strip it for you.
-export LARK_CLI_NO_PROXY=1       # only if HTTPS_PROXY/HTTP_PROXY is set
+# 5. Talk in the Feishu chat (the only path that injects into a worker pane)
+#    `say` returns the Feishu message_id — capture it for `--reply` or audit.
 claudeteam say manager "标题党：smoke test #$(date +%s)"
+# → ✅ manager → chat (message_id=om_xxxxxxxx)
 
-# 7. Tear it all down
+# 6. Tear it all down
 claudeteam down
 ```
 

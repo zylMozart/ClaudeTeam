@@ -83,5 +83,5 @@ def main(argv: list[str]) -> int:
         return error_exit(f"❌ Feishu send failed for {args.agent}")
 
     msg_id = result.get("message_id", "")
-    print(f"✅ {args.agent} → chat ({msg_id})")
+    print(f"✅ {args.agent} → chat (message_id={msg_id})")
     return 0

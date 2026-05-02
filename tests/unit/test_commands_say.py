@@ -37,7 +37,7 @@ def test_say_sends_to_chat_and_logs_locally():
     with _isolated(), _fake_send() as send:
         rc, out, _ = run_cli(["say", "manager", "hello", "world"])
         assert rc == 0
-        assert "manager → chat (om_fake)" in out
+        assert "manager → chat (message_id=om_fake)" in out
         assert send["calls"]
         call = send["calls"][0]
         assert call["chat_id"] == "oc_test"

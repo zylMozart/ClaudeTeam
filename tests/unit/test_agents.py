@@ -123,3 +123,48 @@ def test_process_names_match_expected_binaries():
     assert ClaudeCodeAdapter().process_name() == "claude"
     assert CodexCliAdapter().process_name() == "codex"
     assert KimiCodeAdapter().process_name() == "kimi"
+
+
+# ── codex_cli.ensure_workdir_trusted ─────────────────────────────
+
+
+def test_ensure_workdir_trusted_writes_entry_when_config_missing(tmp_path=None):
+    import tempfile
+    from pathlib import Path
+    from claudeteam.agents.codex_cli import ensure_workdir_trusted
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "codex" / "config.toml"
+        workdir = Path("/some/work/dir")
+        ensure_workdir_trusted(workdir, config_path=cfg)
+        text = cfg.read_text(encoding="utf-8")
+        assert '[projects."/some/work/dir"]' in text
+        assert 'trust_level = "trusted"' in text
+
+
+def test_ensure_workdir_trusted_appends_when_other_entries_present():
+    import tempfile
+    from pathlib import Path
+    from claudeteam.agents.codex_cli import ensure_workdir_trusted
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        cfg.write_text('[projects."/other/dir"]\ntrust_level = "trusted"\n', encoding="utf-8")
+        ensure_workdir_trusted(Path("/new/dir"), config_path=cfg)
+        text = cfg.read_text(encoding="utf-8")
+        assert '[projects."/other/dir"]' in text
+        assert '[projects."/new/dir"]' in text
+
+
+def test_ensure_workdir_trusted_idempotent_when_entry_exists():
+    import tempfile
+    from pathlib import Path
+    from claudeteam.agents.codex_cli import ensure_workdir_trusted
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "config.toml"
+        original = '[projects."/already/here"]\ntrust_level = "trusted"\n'
+        cfg.write_text(original, encoding="utf-8")
+        ensure_workdir_trusted(Path("/already/here"), config_path=cfg)
+        # File unchanged
+        assert cfg.read_text(encoding="utf-8") == original

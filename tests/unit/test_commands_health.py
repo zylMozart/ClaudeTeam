@@ -27,18 +27,23 @@ def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
 
 
 def test_health_all_green_returns_zero():
+    """No reds AND no warnings → green footer."""
     team = {"session": "S", "agents": {"manager": {"cli": "claude-code"}}}
     rc_cfg = {"chat_id": "oc_x", "lark_profile": "prod"}
     with isolated_env(team=team, runtime_config=rc_cfg), _stub_tmux(
-            session_alive=True, panes_with_cli=["manager"]):
+            session_alive=True, panes_with_cli=["manager"]), \
+            env_patch(HTTPS_PROXY=None, HTTP_PROXY=None):
         rc, out, _ = run_cli(["health"])
         assert rc == 0
-        assert "✅ all green" in out
         assert "team.json" in out
         assert "chat_id: oc_x" in out
         assert "lark_profile: prod" in out
         assert "tmux session: S" in out
         assert "manager: pane ready" in out
+        # Daemons / cursor lines are ⚠️ / ℹ️ in this isolated test rig
+        # (no pid files); footer should report warnings, not "all green"
+        assert "no errors" in out
+        assert "warning" in out
 
 
 # ── red checks ──────────────────────────────────────────────────
@@ -122,13 +127,18 @@ def test_health_warns_when_router_pid_missing():
         assert "router: no pid file" in out
 
 
-def test_health_warns_when_cursor_empty():
+def test_health_info_when_cursor_empty():
+    """Empty cursor on first run is informational, not a warning — it only
+    advances on inbound events, not self-originated say calls."""
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]):
         rc, out, _ = run_cli(["health"])
         assert rc == 0
         assert "router cursor: empty" in out
+        assert "ℹ️" in out  # info marker, not warn marker
+        # ensure "advances on first inbound event" is in the cursor line
+        assert "first inbound event" in out
 
 
 # ── binaries / env ──────────────────────────────────────────────

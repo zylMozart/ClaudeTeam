@@ -7,8 +7,29 @@ to its configured default.
 from __future__ import annotations
 
 import shlex
+from pathlib import Path
 
 from .base import CliAdapter, MULTILINE_SUBMIT_KEYS, SPINNER_CHARS
+
+
+def ensure_workdir_trusted(workdir: Path,
+                           config_path: Path | None = None) -> None:
+    """Pre-trust `workdir` in ~/.codex/config.toml so the first-run
+    "Do you trust this directory?" prompt doesn't block a freshly-spawned
+    pane. Idempotent: a no-op if the entry already exists.
+
+    `config_path` is injectable for tests.
+    """
+    cfg = config_path or (Path.home() / ".codex" / "config.toml")
+    entry = f'[projects."{workdir}"]\ntrust_level = "trusted"\n'
+    if cfg.exists():
+        existing = cfg.read_text(encoding="utf-8")
+        if f'[projects."{workdir}"]' in existing:
+            return
+        cfg.write_text(existing.rstrip() + "\n\n" + entry, encoding="utf-8")
+    else:
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(entry, encoding="utf-8")
 
 
 _OPENAI_PREFIXES = ("gpt-", "o1", "o3", "o4", "codex")

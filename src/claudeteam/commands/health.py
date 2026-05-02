@@ -28,6 +28,7 @@ from claudeteam.util import ago_ms, env_str, error_exit, help_requested
 _OK = "✅"
 _BAD = "❌"
 _WARN = "⚠️ "
+_INFO = "ℹ️ "
 
 
 def _check_state_dir(out: list[str]) -> None:
@@ -166,7 +167,10 @@ def _check_cursor(out: list[str]) -> None:
         ct = cur.get("create_time", "?")
         out.append(f"  {_OK} router cursor: {mid} (create_time={ct})")
     else:
-        out.append(f"  {_WARN} router cursor: empty (first run, or never advanced)")
+        # No cursor is normal until the first inbound event lands; advancement
+        # only happens for events coming OFF the wire, not for self-originated
+        # `say` calls. Mark informational, not a warning.
+        out.append(f"  {_INFO} router cursor: empty (advances on first inbound event)")
 
 
 def main(argv: list[str]) -> int:
@@ -220,5 +224,9 @@ def main(argv: list[str]) -> int:
     print("\n".join(out))
     if bad:
         return error_exit(f"\n{_BAD} {bad} red check(s) — see above")
-    print(f"\n{_OK} all green")
+    warns = sum(1 for line in out if _WARN.strip() in line)
+    if warns:
+        print(f"\n{_WARN} no errors, {warns} warning(s) — see above")
+    else:
+        print(f"\n{_OK} all green")
     return 0
