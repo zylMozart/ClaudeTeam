@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import contextlib
 
-from helpers import attr_patch, isolated_env, run_cli
+from helpers import attr_patch, env_patch, isolated_env, run_cli
 from claudeteam.feishu import chat as feishu_chat
 from claudeteam.store import local_facts
 
@@ -59,6 +59,20 @@ def test_say_as_user_flag():
     with _isolated(), _fake_send() as send:
         run_cli(["say", "manager", "hi", "--as", "user"])
         assert send["calls"][0]["as_user"] is True
+
+
+def test_say_env_var_picks_user_when_no_flag():
+    with _isolated(), _fake_send() as send, \
+            env_patch(CLAUDETEAM_LARK_SEND_AS="user"):
+        run_cli(["say", "manager", "hi"])
+        assert send["calls"][0]["as_user"] is True
+
+
+def test_say_explicit_flag_overrides_env_var():
+    with _isolated(), _fake_send() as send, \
+            env_patch(CLAUDETEAM_LARK_SEND_AS="user"):
+        run_cli(["say", "manager", "hi", "--as", "bot"])
+        assert send["calls"][0]["as_user"] is False
 
 
 def test_say_reply_flag_threads_through():
