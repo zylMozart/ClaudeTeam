@@ -88,15 +88,11 @@ def test_usage_view_flag_threads_through():
         captured["view"] = view
         return 0, "ok"
 
-    saved = _usage_mod._run_ccusage
-    _usage_mod._run_ccusage = fake_run
-    try:
-        with isolated_env(team=team), _stub_npx_present(True):
-            rc, _, _ = run_cli(["usage", "--view", "monthly"])
-            assert rc == 0
-            assert captured["view"] == "monthly"
-    finally:
-        _usage_mod._run_ccusage = saved
+    with attr_patch(_usage_mod, _run_ccusage=fake_run), \
+            isolated_env(team=team), _stub_npx_present(True):
+        rc, _, _ = run_cli(["usage", "--view", "monthly"])
+        assert rc == 0
+        assert captured["view"] == "monthly"
 
 
 def test_usage_rejects_unknown_view():

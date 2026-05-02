@@ -240,19 +240,16 @@ def test_rate_limited_pane_keeps_inbox_skips_inject():
             return ["Approaching usage limit"]
 
     # patch tmux.capture_pane to feign a rate-limited pane
-    from claudeteam.runtime import tmux as _tmux
-    saved = _tmux.capture_pane
-    _tmux.capture_pane = lambda t, lines=80: "...Approaching usage limit\n"
-    try:
-        with isolated_env(team=_WAKE_TEAM):
-            report = apply(
-                decision,
-                adapter_for_agent=lambda _: RateLimitedAdapter(),
-                tmux_inject=lambda *a, **kw: inject_calls.append(a) or True,
-                session="S",
-            )
-    finally:
-        _tmux.capture_pane = saved
+    from helpers import tmux_patch
+    rate_text = "...Approaching usage limit\n"
+    with tmux_patch(capture_pane=lambda t, lines=80: rate_text), \
+            isolated_env(team=_WAKE_TEAM):
+        report = apply(
+            decision,
+            adapter_for_agent=lambda _: RateLimitedAdapter(),
+            tmux_inject=lambda *a, **kw: inject_calls.append(a) or True,
+            session="S",
+        )
     assert report.written == ["worker_a"]
     assert report.injected == []
     assert report.rate_limited == ["worker_a"]
