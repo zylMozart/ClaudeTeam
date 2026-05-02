@@ -21,7 +21,6 @@ import os
 from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux, watchdog
-from claudeteam.runtime.watchdog import is_alive, ProcessSpec
 from claudeteam.store import local_facts
 from claudeteam.util import ago_ms, error_exit, help_requested
 
@@ -111,11 +110,11 @@ def _check_agents(out: list[str], session: str, agents: list[str], session_alive
     return bad
 
 
-def _check_daemon(out: list[str], spec: ProcessSpec) -> int:
+def _check_daemon(out: list[str], spec: watchdog.ProcessSpec) -> int:
     if not spec.pid_file.exists():
         out.append(f"  {_WARN} {spec.name}: no pid file (not running?)")
         return 0
-    if is_alive(spec):
+    if watchdog.is_alive(spec):
         out.append(f"  {_OK} {spec.name}: alive ({spec.pid_file.read_text().strip()})")
         return 0
     out.append(f"  {_BAD} {spec.name}: pid file present but process dead")
