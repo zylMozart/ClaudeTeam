@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from claudeteam.agents import adapter_for_agent as _default_adapter_for_agent
 from claudeteam.feishu.router import Decision
 from claudeteam.runtime import config, tmux, wake
 from claudeteam.store import local_facts
@@ -35,13 +36,9 @@ class _Deps:
 
 
 def _resolve_deps(adapter_lookup, tmux_inject, append_message, session) -> _Deps:
-    """Late-bind production defaults so test fakes installed after import
-    still take effect."""
-    if adapter_lookup is None:
-        from claudeteam.agents import adapter_for_agent
-        adapter_lookup = adapter_for_agent
+    """Fill in production defaults for any None collaborator."""
     return _Deps(
-        adapter_for_agent=adapter_lookup,
+        adapter_for_agent=adapter_lookup or _default_adapter_for_agent,
         tmux_inject=tmux_inject or tmux.inject,
         append_message=append_message or local_facts.append_message,
         session=session or config.session_name(),
