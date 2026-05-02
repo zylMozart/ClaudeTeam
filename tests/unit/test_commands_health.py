@@ -10,14 +10,13 @@ def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
     all_panes = list(panes_with_cli) + list(panes_without_cli)
 
     def capture_pane(target, lines=80):
-        agent = str(target).split(":")[1]
-        if agent in panes_with_cli:
+        if target.window in panes_with_cli:
             return "bypass permissions on\n? for shortcuts\n>"
         return "$ "
 
     return tmux_patch(
         has_session=lambda s: session_alive,
-        has_window=lambda target: str(target).split(":")[1] in all_panes,
+        has_window=lambda target: target.window in all_panes,
         capture_pane=capture_pane,
     )
 
