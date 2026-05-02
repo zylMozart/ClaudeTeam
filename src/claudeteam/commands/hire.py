@@ -21,7 +21,7 @@ def main(argv: list[str]) -> int:
     agent = argv[0]
 
     try:
-        config.agent_config(agent)
+        cfg = config.agent_config(agent)
     except KeyError:
         return error_exit(f"❌ unknown agent: {agent} (not in team.json)")
 
@@ -39,7 +39,6 @@ def main(argv: list[str]) -> int:
         return error_exit(f"❌ failed to create window for {agent}")
 
     identity.write(agent)
-    cfg = config.agent_config(agent)
     if cfg.get("lazy"):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
         print(f"✅ hired (lazy): {agent} ({config.agent_cli(agent)}) → {target}")
