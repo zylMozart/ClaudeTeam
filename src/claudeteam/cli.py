@@ -17,58 +17,41 @@ CommandHandler = Callable[[list[str]], int | None]
 # Subcommand registry. Adding a new command means: write a module under
 # claudeteam.commands, expose a `main(argv)` callable, register it here.
 from claudeteam.commands import (
-    init as _init,
-    send as _send,
-    inbox as _inbox,
-    read as _read,
-    status as _status,
-    log as _log,
-    team as _team,
-    workspace as _workspace,
-    start as _start,
-    hire as _hire,
-    fire as _fire,
-    say as _say,
-    router as _router,
-    watchdog as _watchdog,
-    task as _task,
-    health as _health,
-    up as _up,
-    down as _down,
-    usage as _usage_cmd,
-    reset as _reset,
-    install_hooks as _install_hooks,
+    init, send, inbox, read, status, log, team, workspace,
+    start, hire, fire, up, down, reset,
+    say, router, watchdog, task,
+    health, usage, install_hooks,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
     # bootstrap
-    "init": _init.main,
+    "init": init.main,
     # local store I/O
-    "send": _send.main,
-    "inbox": _inbox.main,
-    "read": _read.main,
-    "status": _status.main,
-    "log": _log.main,
-    "team": _team.main,
-    "workspace": _workspace.main,
+    "send": send.main,
+    "inbox": inbox.main,
+    "read": read.main,
+    "status": status.main,
+    "log": log.main,
+    "team": team.main,
+    "workspace": workspace.main,
     # team lifecycle
-    "start": _start.main,
-    "hire": _hire.main,
-    "fire": _fire.main,
-    "up": _up.main,
-    "down": _down.main,
-    "reset": _reset.main,
+    "start": start.main,
+    "hire": hire.main,
+    "fire": fire.main,
+    "up": up.main,
+    "down": down.main,
+    "reset": reset.main,
     # feishu transport
-    "say": _say.main,
-    "router": _router.main,
+    "say": say.main,
+    "router": router.main,
     # supervision
-    "watchdog": _watchdog.main,
+    "watchdog": watchdog.main,
     # task tracking
-    "task": _task.main,
+    "task": task.main,
     # operational
-    "health": _health.main,
-    "usage": _usage_cmd.main,
-    "install-hooks": _install_hooks.main,
+    "health": health.main,
+    "usage": usage.main,
+    "install-hooks": install_hooks.main,
 }
 
 
