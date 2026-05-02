@@ -16,7 +16,6 @@ import time
 
 from claudeteam.commands import start as _start
 from claudeteam.runtime import config, tmux, watchdog
-from claudeteam.runtime.watchdog import is_alive, ProcessSpec
 from claudeteam.util import error_exit, help_requested
 
 
@@ -28,8 +27,8 @@ def _ensure_started() -> int:
     return _start.main([])
 
 
-def _ensure_daemon(spec: ProcessSpec) -> int:
-    if is_alive(spec):
+def _ensure_daemon(spec: watchdog.ProcessSpec) -> int:
+    if watchdog.is_alive(spec):
         print(f"⏭  {spec.name} already alive, skipping")
         return 0
     try:

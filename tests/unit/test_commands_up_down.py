@@ -51,13 +51,9 @@ def _fake_popen():
         yield calls
 
 
-@contextlib.contextmanager
 def _fake_alive(answers):
     """Make watchdog.is_alive return successive scripted booleans."""
-    from claudeteam.commands import up as _up_mod
-    from claudeteam.commands import down as _down_mod
     from claudeteam.runtime import watchdog as _wd
-    from claudeteam.commands import health as _health_mod
     iterator = iter(answers)
 
     def fake(spec, **kwargs):
@@ -66,12 +62,7 @@ def _fake_alive(answers):
         except StopIteration:
             return False
 
-    saved = _up_mod.is_alive
-    _up_mod.is_alive = fake
-    try:
-        yield
-    finally:
-        _up_mod.is_alive = saved
+    return attr_patch(_wd, is_alive=fake)
 
 
 # ── up ──────────────────────────────────────────────────────────
