@@ -14,16 +14,14 @@ Layout:
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+from claudeteam.util import env_path
 
 
 def state_dir() -> Path:
     """Top-level directory for all runtime state."""
-    env = os.environ.get("CLAUDETEAM_STATE_DIR", "").strip()
-    if env:
-        return Path(env)
-    return Path.home() / ".claudeteam"
+    return env_path("CLAUDETEAM_STATE_DIR") or Path.home() / ".claudeteam"
 
 
 def facts_dir() -> Path:

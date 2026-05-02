@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -113,6 +114,18 @@ def write_json(path: Path, data) -> None:
     leave the prompt on the same line.
     """
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def env_path(name: str) -> Path | None:
+    """Return `Path(os.environ[name].strip())` if the variable is set to a
+    non-empty value, else None. Designed for the env-or-default-path
+    pattern used by `paths.state_dir`, `config.team_file`, and
+    `config.runtime_config_file`:
+
+        return env_path(\"FOO_DIR\") or Path.cwd() / \"foo\"
+    """
+    val = os.environ.get(name, "").strip()
+    return Path(val) if val else None
 
 
 def now_ms() -> int:

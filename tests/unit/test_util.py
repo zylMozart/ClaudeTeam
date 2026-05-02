@@ -5,9 +5,41 @@ import tempfile
 from pathlib import Path
 
 from claudeteam.util import (
-    ago_ms, atomic_write_text, error_exit, flock, fmt_time_ms,
+    ago_ms, atomic_write_text, env_path, error_exit, flock, fmt_time_ms,
     help_requested, now_ms, pop_flag, read_json, usage_error, warn,
 )
+
+
+# ── env_path ────────────────────────────────────────────────────
+
+
+def test_env_path_returns_path_when_env_set():
+    import os as _os
+    saved = _os.environ.get("X_TEST_ENV_PATH")
+    _os.environ["X_TEST_ENV_PATH"] = "/tmp/foo"
+    try:
+        p = env_path("X_TEST_ENV_PATH")
+    finally:
+        if saved is None:
+            _os.environ.pop("X_TEST_ENV_PATH", None)
+        else:
+            _os.environ["X_TEST_ENV_PATH"] = saved
+    assert p == Path("/tmp/foo")
+
+
+def test_env_path_returns_none_when_unset():
+    import os as _os
+    _os.environ.pop("X_TEST_ENV_PATH_UNSET", None)
+    assert env_path("X_TEST_ENV_PATH_UNSET") is None
+
+
+def test_env_path_returns_none_when_blank():
+    import os as _os
+    _os.environ["X_TEST_ENV_PATH_BLANK"] = "   "
+    try:
+        assert env_path("X_TEST_ENV_PATH_BLANK") is None
+    finally:
+        _os.environ.pop("X_TEST_ENV_PATH_BLANK", None)
 
 
 # ── now_ms ──────────────────────────────────────────────────────

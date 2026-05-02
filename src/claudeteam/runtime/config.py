@@ -27,24 +27,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from claudeteam.util import read_json, write_json
+from claudeteam.util import env_path, read_json, write_json
 
 
 # ── path resolution ───────────────────────────────────────────────
 
 
 def team_file() -> Path:
-    env = os.environ.get("CLAUDETEAM_TEAM_FILE", "").strip()
-    if env:
-        return Path(env)
-    return Path.cwd() / "team.json"
+    return env_path("CLAUDETEAM_TEAM_FILE") or Path.cwd() / "team.json"
 
 
 def runtime_config_file() -> Path:
-    env = os.environ.get("CLAUDETEAM_RUNTIME_CONFIG", "").strip()
-    if env:
-        return Path(env)
-    return Path.cwd() / "runtime_config.json"
+    return env_path("CLAUDETEAM_RUNTIME_CONFIG") or Path.cwd() / "runtime_config.json"
 
 
 # ── team.json ────────────────────────────────────────────────────
