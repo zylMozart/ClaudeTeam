@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 
-from claudeteam.agents import adapter_for_agent
+from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
 
@@ -50,5 +50,6 @@ def main(argv: list[str]) -> int:
         return 1
 
     local_facts.upsert_status(agent, "进行中", "initializing")
+    identity.write(agent)
     print(f"✅ hired: {agent} ({config.agent_cli(agent)}) → {target}")
     return 0
