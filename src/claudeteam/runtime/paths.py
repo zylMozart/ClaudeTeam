@@ -32,10 +32,9 @@ def facts_dir() -> Path:
 
 
 def state_file(name: str) -> Path:
-    """A file under state_dir; parent created on demand."""
-    p = state_dir() / name
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
+    """A file under state_dir. Caller is responsible for mkdir before writing
+    — pure path resolution, no I/O side effects."""
+    return state_dir() / name
 
 
 def router_pid_file() -> Path:
@@ -48,3 +47,10 @@ def router_cursor_file() -> Path:
 
 def watchdog_pid_file() -> Path:
     return state_file("watchdog.pid")
+
+
+def ensure_state_dir() -> Path:
+    """Create state_dir if missing and return it. Use when about to write."""
+    sd = state_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    return sd

@@ -29,6 +29,7 @@ def _self_pid_lock() -> bool:
             return False
         except (OSError, ValueError):
             pass  # stale; overwrite
+    paths.ensure_state_dir()
     pf.write_text(str(os.getpid()), encoding="utf-8")
     return True
 

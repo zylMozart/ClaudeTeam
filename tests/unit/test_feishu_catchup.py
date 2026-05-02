@@ -34,6 +34,7 @@ def test_write_cursor_skips_when_either_field_blank():
 
 def test_read_cursor_returns_empty_on_garbage_json():
     with isolated_env():
+        paths.ensure_state_dir()
         paths.router_cursor_file().write_text("not json", encoding="utf-8")
         assert catchup.read_cursor() == {}
 

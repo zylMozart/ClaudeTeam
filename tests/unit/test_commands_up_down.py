@@ -49,8 +49,10 @@ def _fake_popen():
         calls.append(list(argv))
         # Simulate the daemon writing its pid file
         if argv[:2] == ["claudeteam", "router"]:
+            paths.ensure_state_dir()
             paths.router_pid_file().write_text("12345", encoding="utf-8")
         elif argv[:2] == ["claudeteam", "watchdog"]:
+            paths.ensure_state_dir()
             paths.watchdog_pid_file().write_text("12346", encoding="utf-8")
         return _FakeProc(argv)
 
@@ -159,6 +161,7 @@ def test_down_kills_alive_pid_then_tmux():
         # Use *our* pid as the pid in the file — we know we're alive,
         # and we'll intercept os.kill so we don't actually die.
         my_pid = os.getpid()
+        paths.ensure_state_dir()
         paths.router_pid_file().write_text(str(my_pid), encoding="utf-8")
         paths.watchdog_pid_file().write_text(str(my_pid), encoding="utf-8")
 
@@ -195,6 +198,7 @@ def test_down_handles_already_dead_pid():
 
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team), _fake_tmux(session_alive=False):
+        paths.ensure_state_dir()
         paths.router_pid_file().write_text("99999", encoding="utf-8")
 
         def fake_kill(pid, sig):

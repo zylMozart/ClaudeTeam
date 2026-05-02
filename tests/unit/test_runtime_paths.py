@@ -42,12 +42,22 @@ def test_facts_dir_is_state_subdir():
             assert paths.facts_dir() == Path(tmp) / "facts"
 
 
-def test_state_file_creates_parent_directories():
+def test_state_file_returns_path_without_mkdir():
     with tempfile.TemporaryDirectory() as tmp:
         with _state_env(tmp):
             p = paths.state_file("nested/deep/file.txt")
             assert p == Path(tmp) / "nested" / "deep" / "file.txt"
-            assert p.parent.exists()
+            # pure path resolution — no I/O side effect
+            assert not p.parent.exists()
+
+
+def test_ensure_state_dir_creates_when_missing():
+    with tempfile.TemporaryDirectory() as tmp:
+        sd = Path(tmp) / "state"
+        with _state_env(sd):
+            assert not sd.exists()
+            paths.ensure_state_dir()
+            assert sd.exists()
 
 
 def test_named_pid_files_land_in_state_dir():

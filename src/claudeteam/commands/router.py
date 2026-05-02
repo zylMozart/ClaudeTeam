@@ -35,6 +35,7 @@ def _build_subscribe_cmd(profile: str) -> list[str]:
 
 
 def _write_pid_file() -> None:
+    paths.ensure_state_dir()
     pf = paths.router_pid_file()
     pf.write_text(str(os.getpid()), encoding="utf-8")
 

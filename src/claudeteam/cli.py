@@ -36,6 +36,7 @@ from claudeteam.commands import (
     up as _up,
     down as _down,
     usage as _usage_cmd,
+    reset as _reset,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
@@ -55,6 +56,7 @@ COMMANDS: dict[str, CommandHandler] = {
     "fire": _fire.main,
     "up": _up.main,
     "down": _down.main,
+    "reset": _reset.main,
     # feishu transport
     "say": _say.main,
     "router": _router.main,
