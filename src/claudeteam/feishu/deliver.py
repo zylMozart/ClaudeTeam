@@ -12,35 +12,29 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from claudeteam.feishu.router import Action, Decision
+from claudeteam.feishu.router import Decision
 from claudeteam.runtime import config, tmux, wake
 from claudeteam.store import local_facts
 
 
 @dataclass
 class DeliveryReport:
-    written: list[str] = field(default_factory=list)   # agents whose inbox got the row
-    injected: list[str] = field(default_factory=list)  # agents whose pane received the text
+    written: list[str] = field(default_factory=list)        # inbox row landed
+    injected: list[str] = field(default_factory=list)       # pane received text
     failed_inject: list[str] = field(default_factory=list)
-    rate_limited: list[str] = field(default_factory=list)  # inbox written, inject skipped
-    skipped: bool = False                               # True iff decision was DROP
+    rate_limited: list[str] = field(default_factory=list)   # inbox kept, inject skipped
+    skipped: bool = False                                    # True iff decision was DROP
 
 
-def apply(decision: Decision, *,
-          adapter_for_agent: Callable | None = None,
-          tmux_inject: Callable | None = None,
-          append_message: Callable | None = None,
-          wake_fn: Callable | None = None,
-          session: str | None = None) -> DeliveryReport:
-    """Apply `decision`. Side-effects: local_facts.append_message + tmux.inject.
+@dataclass(frozen=True)
+class _Deps:
+    adapter_for_agent: Callable
+    tmux_inject: Callable
+    append_message: Callable
+    session: str
 
-    All collaborators are injectable for tests; production defaults read
-    from the real modules.
-    """
-    if decision.is_drop():
-        return DeliveryReport(skipped=True)
 
-    # late binding so test fakes installed after import-time still take effect
+def _resolve_deps(adapter_for_agent, tmux_inject, append_message, session) -> _Deps:
     if adapter_for_agent is None:
         from claudeteam.agents import adapter_for_agent as adapter_for_agent
     if tmux_inject is None:
@@ -49,38 +43,65 @@ def apply(decision: Decision, *,
         append_message = local_facts.append_message
     if session is None:
         session = config.session_name()
+    return _Deps(adapter_for_agent, tmux_inject, append_message, session)
 
+
+def _write_inbox(agent: str, sender: str, decision: Decision,
+                 deps: _Deps, report: DeliveryReport) -> bool:
+    try:
+        deps.append_message(agent, sender, decision.text)
+    except Exception as e:
+        print(f"  ⚠️ inbox write failed for {agent}: {e}")
+        return False
+    report.written.append(agent)
+    return True
+
+
+def _inject_to_pane(agent: str, decision: Decision,
+                    deps: _Deps, wake_fn: Callable | None) -> str:
+    """Try to deliver `decision.text` to the agent's pane.
+
+    Returns a DeliveryReport field name: 'injected' / 'failed_inject' /
+    'rate_limited'.
+    """
+    target = tmux.Target(deps.session, agent)
+    try:
+        adapter = deps.adapter_for_agent(agent)
+        if wake.is_rate_limited(target, adapter):
+            print(f"  ⏸  {agent} rate-limited; inbox row kept, inject skipped")
+            return "rate_limited"
+        if wake_fn is not None:
+            spawn_cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
+            if not wake_fn(target, adapter, spawn_cmd=spawn_cmd):
+                print(f"  ⚠️ {agent} pane not ready; injecting anyway")
+        ok = deps.tmux_inject(target, decision.text, submit_keys=adapter.submit_keys())
+    except Exception as e:
+        print(f"  ⚠️ inject error for {agent}: {e}")
+        return "failed_inject"
+    return "injected" if ok else "failed_inject"
+
+
+def apply(decision: Decision, *,
+          adapter_for_agent: Callable | None = None,
+          tmux_inject: Callable | None = None,
+          append_message: Callable | None = None,
+          wake_fn: Callable | None = None,
+          session: str | None = None) -> DeliveryReport:
+    """Apply `decision`. Side-effects: append_message + (optional wake) +
+    tmux.inject. Skips inject when the pane is rate-limited.
+
+    All collaborators are injectable for tests; production defaults read
+    from the real modules.
+    """
+    if decision.is_drop():
+        return DeliveryReport(skipped=True)
+
+    deps = _resolve_deps(adapter_for_agent, tmux_inject, append_message, session)
     sender = decision.sender or "user"
     report = DeliveryReport()
     for agent in decision.targets:
-        # 1) durable inbox row — always
-        try:
-            append_message(agent, sender, decision.text)
-            report.written.append(agent)
-        except Exception as e:
-            print(f"  ⚠️ inbox write failed for {agent}: {e}")
+        if not _write_inbox(agent, sender, decision, deps, report):
             continue
-
-        # 2) best-effort pane injection — wake CLI if dormant, then inject
-        target = tmux.Target(session, agent)
-        try:
-            adapter = adapter_for_agent(agent)
-            if wake.is_rate_limited(target, adapter):
-                print(f"  ⏸  {agent} rate-limited; inbox row kept, inject skipped")
-                report.rate_limited.append(agent)
-                continue
-            if wake_fn is not None:
-                spawn_cmd = adapter.spawn_cmd(agent, config.agent_model(agent))
-                ready = wake_fn(target, adapter, spawn_cmd=spawn_cmd)
-                if not ready:
-                    print(f"  ⚠️ {agent} pane not ready; injecting anyway")
-            ok = tmux_inject(target, decision.text, submit_keys=adapter.submit_keys())
-        except Exception as e:
-            print(f"  ⚠️ inject error for {agent}: {e}")
-            ok = False
-        if ok:
-            report.injected.append(agent)
-        else:
-            report.failed_inject.append(agent)
-
+        outcome = _inject_to_pane(agent, decision, deps, wake_fn)
+        getattr(report, outcome).append(agent)
     return report
