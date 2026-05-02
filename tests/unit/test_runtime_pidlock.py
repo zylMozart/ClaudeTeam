@@ -2,9 +2,18 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from helpers import attr_patch, isolated_env
 from claudeteam.runtime import paths, pidlock
+
+
+def _seed_pid(value: str) -> Path:
+    """Pre-populate router.pid with `value`. Returns the path."""
+    pf = paths.router_pid_file()
+    paths.ensure_state_dir()
+    pf.write_text(value, encoding="utf-8")
+    return pf
 
 
 # ── acquire ─────────────────────────────────────────────────────
@@ -21,9 +30,7 @@ def test_acquire_writes_current_pid_when_file_missing():
 def test_acquire_overwrites_stale_pid_file():
     """A pid file pointing at a dead pid is treated as stale."""
     with isolated_env():
-        pf = paths.router_pid_file()
-        paths.ensure_state_dir()
-        pf.write_text("99999", encoding="utf-8")  # almost certainly dead
+        pf = _seed_pid("99999")  # almost certainly dead
 
         # patch os.kill to simulate "no such process"
         real_kill = os.kill
@@ -41,10 +48,8 @@ def test_acquire_overwrites_stale_pid_file():
 def test_acquire_refuses_when_live_process_holds_lock():
     """When the recorded pid IS alive, return False without overwriting."""
     with isolated_env():
-        pf = paths.router_pid_file()
-        paths.ensure_state_dir()
         # use *our* pid as the holder — guaranteed alive
-        pf.write_text(str(os.getpid()), encoding="utf-8")
+        pf = _seed_pid(str(os.getpid()))
         assert pidlock.acquire(pf, name="router") is False
         # didn't overwrite (still our pid; trivially equal)
         assert pf.read_text(encoding="utf-8").strip() == str(os.getpid())
@@ -60,9 +65,7 @@ def test_acquire_creates_state_dir_lazily():
 
 def test_acquire_handles_garbage_pid_file_as_stale():
     with isolated_env():
-        pf = paths.router_pid_file()
-        paths.ensure_state_dir()
-        pf.write_text("not-a-number", encoding="utf-8")
+        pf = _seed_pid("not-a-number")
         assert pidlock.acquire(pf) is True
         assert pf.read_text(encoding="utf-8").strip() == str(os.getpid())
 
@@ -81,9 +84,7 @@ def test_release_unlinks_when_we_own():
 
 def test_release_skips_when_pid_belongs_to_someone_else():
     with isolated_env():
-        pf = paths.router_pid_file()
-        paths.ensure_state_dir()
-        pf.write_text("12345", encoding="utf-8")  # not ours
+        pf = _seed_pid("12345")  # not ours
         pidlock.release(pf)
         # untouched
         assert pf.exists()
