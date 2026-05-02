@@ -150,7 +150,6 @@ def test_down_kills_alive_pid_then_tmux():
 
         kill_calls = []
         check_calls = []
-        saved_kill = os.kill
 
         def fake_kill(pid, sig):
             kill_calls.append((pid, sig))
@@ -163,11 +162,8 @@ def test_down_kills_alive_pid_then_tmux():
             # SIGTERM — pretend it was delivered
             return None
 
-        os.kill = fake_kill
-        try:
+        with attr_patch(os, kill=fake_kill):
             rc, out, _ = run_cli(["down"])
-        finally:
-            os.kill = saved_kill
         assert rc == 0
         assert "router: pid" in out and "stopped" in out
         assert "watchdog: pid" in out
@@ -187,12 +183,8 @@ def test_down_handles_already_dead_pid():
         def fake_kill(pid, sig):
             raise ProcessLookupError()
 
-        saved = os.kill
-        os.kill = fake_kill
-        try:
+        with attr_patch(os, kill=fake_kill):
             rc, out, _ = run_cli(["down"])
-        finally:
-            os.kill = saved
         assert rc == 0
         assert "already dead" in out
         assert not paths.router_pid_file().exists()

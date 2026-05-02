@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from helpers import isolated_env
+from helpers import attr_patch, isolated_env
 from claudeteam.runtime import paths, pidlock
 
 
@@ -26,18 +26,15 @@ def test_acquire_overwrites_stale_pid_file():
         pf.write_text("99999", encoding="utf-8")  # almost certainly dead
 
         # patch os.kill to simulate "no such process"
-        saved = os.kill
+        real_kill = os.kill
 
         def fake_kill(pid, sig):
             if pid == 99999:
                 raise ProcessLookupError()
-            return saved(pid, sig)
+            return real_kill(pid, sig)
 
-        os.kill = fake_kill
-        try:
+        with attr_patch(os, kill=fake_kill):
             assert pidlock.acquire(pf) is True
-        finally:
-            os.kill = saved
         assert pf.read_text(encoding="utf-8").strip() == str(os.getpid())
 
 
