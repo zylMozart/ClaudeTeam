@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -69,21 +70,20 @@ def env_patch(**kvs):
     Sister to `attr_patch` — same save/swap/restore pattern, applied to
     process env vars instead of module attributes.
     """
-    import os as _os
-    old = {k: _os.environ.get(k) for k in kvs}
+    old = {k: os.environ.get(k) for k in kvs}
     for k, v in kvs.items():
         if v is None:
-            _os.environ.pop(k, None)
+            os.environ.pop(k, None)
         else:
-            _os.environ[k] = str(v)
+            os.environ[k] = str(v)
     try:
         yield
     finally:
         for k, v in old.items():
             if v is None:
-                _os.environ.pop(k, None)
+                os.environ.pop(k, None)
             else:
-                _os.environ[k] = v
+                os.environ[k] = v
 
 
 @contextlib.contextmanager
