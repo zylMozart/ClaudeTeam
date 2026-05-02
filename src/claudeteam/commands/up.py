@@ -15,7 +15,7 @@ import subprocess
 import time
 
 from claudeteam.commands import start as _start
-from claudeteam.runtime import config, paths, tmux
+from claudeteam.runtime import config, tmux, watchdog
 from claudeteam.runtime.watchdog import is_alive, ProcessSpec
 from claudeteam.util import error_exit, help_requested
 
@@ -28,25 +28,23 @@ def _ensure_started() -> int:
     return _start.main([])
 
 
-def _ensure_daemon(name: str, pid_file_path, spawn_argv: list[str]) -> int:
-    spec = ProcessSpec(name=name, pid_file=pid_file_path,
-                       expected_cmdline="claudeteam", spawn_cmd=spawn_argv)
+def _ensure_daemon(spec: ProcessSpec) -> int:
     if is_alive(spec):
-        print(f"⏭  {name} already alive, skipping")
+        print(f"⏭  {spec.name} already alive, skipping")
         return 0
     try:
-        subprocess.Popen(spawn_argv, start_new_session=True,
+        subprocess.Popen(spec.spawn_cmd, start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          env=os.environ.copy())
     except OSError as e:
-        return error_exit(f"❌ failed to spawn {name}: {e}")
+        return error_exit(f"❌ failed to spawn {spec.name}: {e}")
     # Give the daemon a beat to write its pid file
     for _ in range(20):
-        if pid_file_path.exists():
-            print(f"🚀 {name} launched (pid {pid_file_path.read_text().strip()})")
+        if spec.pid_file.exists():
+            print(f"🚀 {spec.name} launched (pid {spec.pid_file.read_text().strip()})")
             return 0
         time.sleep(0.1)
-    print(f"⚠️  {name} launched but no pid file yet; check `claudeteam health`")
+    print(f"⚠️  {spec.name} launched but no pid file yet; check `claudeteam health`")
     return 0
 
 
@@ -59,12 +57,8 @@ def main(argv: list[str]) -> int:
     if rc != 0:
         return rc
 
-    rc |= _ensure_daemon("router",
-                         paths.router_pid_file(),
-                         ["claudeteam", "router"])
-    rc |= _ensure_daemon("watchdog",
-                         paths.watchdog_pid_file(),
-                         ["claudeteam", "watchdog"])
+    for spec in watchdog.all_known_specs():
+        rc |= _ensure_daemon(spec)
 
     print("✅ team up — run `claudeteam health` to verify")
     return 0 if rc == 0 else 1
