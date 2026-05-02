@@ -33,7 +33,7 @@ to-end in-process plus natural-language scenarios in `scenarios/*.md`).
    Given/When/Then template.
 
 3. **Simplify before pulling from the old tree.**  The old branch
-   accumulated 33 K LOC; the rebuild is currently ~7 K (src + tests).
+   accumulated 33 K LOC; the rebuild is currently ~8 K (src + tests).
    Don't bring over `CliCapabilities` dataclasses or 11-file decomposed
    `supervision/` trees.  If a function looks too short to need its
    own file, it probably is.
