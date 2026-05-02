@@ -87,12 +87,9 @@ def is_alive(spec: ProcessSpec, *,
              pid_alive: Callable = _pid_alive,
              read_cmdline: Callable = _read_cmdline) -> bool:
     pid = read_pid(spec.pid_file)
-    if pid is None:
+    if pid is None or not pid_alive(pid):
         return False
-    if not pid_alive(pid):
-        return False
-    cmdline = read_cmdline(pid)
-    return spec.expected_cmdline in cmdline
+    return spec.expected_cmdline in read_cmdline(pid)
 
 
 # ── respawn ────────────────────────────────────────────────────────
