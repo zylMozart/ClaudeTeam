@@ -26,7 +26,7 @@ def error_exit(msg: str, *, rc: int = 1) -> int:
     """Print `msg` to stderr and return `rc` (default 1).
 
     For \"something went wrong, exit non-zero\" sites that aren't a USAGE
-    print — e.g. \`return error_exit(f\"❌ unknown agent: {agent}\")\`.
+    print — e.g. `return error_exit(f\"❌ unknown agent: {agent}\")`.
     """
     print(msg, file=sys.stderr)
     return rc
@@ -34,15 +34,15 @@ def error_exit(msg: str, *, rc: int = 1) -> int:
 
 def warn(msg: str) -> None:
     """Print `msg` to stderr without exiting. For non-fatal issues where
-    the caller wants to continue (\`continue\` in a loop, \`rc |= 1\` to
+    the caller wants to continue (`continue` in a loop, `rc |= 1` to
     flag, etc.). Pair with `error_exit` when the same site needs to bail."""
     print(msg, file=sys.stderr)
 
 
 def help_requested(argv: list[str]) -> bool:
-    """True if argv contains \`-h\` or \`--help\`. Used by every subcommand
-    so they share one form (some used \`argv[0] in (...)\`, others
-    \`\"-h\" in argv or \"--help\" in argv\` — same intent)."""
+    """True if argv contains `-h` or `--help`. Used by every subcommand
+    so they share one form (some used `argv[0] in (...)`, others
+    `\"-h\" in argv or \"--help\" in argv` — same intent)."""
     return any(a in ("-h", "--help") for a in argv)
 
 
@@ -128,8 +128,8 @@ def write_json(path: Path, data) -> None:
 
 def env_str(name: str) -> str:
     """Return `os.environ[name].strip()` (empty str when unset). The strip
-    handles \`FOO=  bar  \` style sloppy quoting. Use \`env_str(...) or
-    \"<default>\"\` for the canonical env-or-default str chain."""
+    handles `FOO=  bar  ` style sloppy quoting. Use `env_str(...) or
+    \"<default>\"` for the canonical env-or-default str chain."""
     return os.environ.get(name, "").strip()
 
 
