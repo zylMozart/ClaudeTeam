@@ -47,9 +47,8 @@ def _kill_pid_file(name: str, pid_file) -> int:
             pid_file.unlink(missing_ok=True)
             return 0
         time.sleep(0.1)
-    print(f"⚠️  {name}: pid {pid} still alive after 3s — manual SIGKILL may be needed",
-          file=sys.stderr)
-    return 1
+    return error_exit(
+        f"⚠️  {name}: pid {pid} still alive after 3s — manual SIGKILL may be needed")
 
 
 def main(argv: list[str]) -> int:

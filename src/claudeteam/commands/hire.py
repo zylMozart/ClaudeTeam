@@ -6,8 +6,6 @@ CLI, mark status.  Errors out if the team isn't running yet (use
 """
 from __future__ import annotations
 
-import sys
-
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
@@ -29,9 +27,8 @@ def main(argv: list[str]) -> int:
 
     session = config.session_name()
     if not tmux.has_session(session):
-        print(f"❌ tmux session {session} not running; run `claudeteam start` first",
-              file=sys.stderr)
-        return 1
+        return error_exit(
+            f"❌ tmux session {session} not running; run `claudeteam start` first")
 
     target = tmux.Target(session, agent)
     if tmux.has_window(target):
