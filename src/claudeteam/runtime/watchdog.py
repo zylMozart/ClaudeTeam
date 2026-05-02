@@ -17,10 +17,9 @@ cmdline check defends against PID reuse (memory: ClaudeTeam Bug 14).
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from claudeteam.feishu.deliver import apply
-from claudeteam.feishu.router import Action, classify_event
+from claudeteam.feishu.router import classify_event
 
 
 @dataclass
