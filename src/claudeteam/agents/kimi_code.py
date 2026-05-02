@@ -1,7 +1,7 @@
 """Moonshot Kimi Code adapter."""
 from __future__ import annotations
 
-from .base import CliAdapter, SPINNER_CHARS
+from .base import CliAdapter, MULTILINE_SUBMIT_KEYS, SPINNER_CHARS
 
 
 class KimiCodeAdapter(CliAdapter):
@@ -24,8 +24,7 @@ class KimiCodeAdapter(CliAdapter):
         return "kimi"
 
     def submit_keys(self) -> list[str]:
-        # Same multi-line input contract as Codex: M-Enter to submit.
-        return ["M-Enter", "Enter", "C-m", "C-j"]
+        return list(MULTILINE_SUBMIT_KEYS)
 
     def rate_limit_markers(self) -> list[str]:
         return ["rate limit", "429", "quota exceeded"]

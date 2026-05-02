@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import shlex
 
-from .base import CliAdapter, SPINNER_CHARS
+from .base import CliAdapter, MULTILINE_SUBMIT_KEYS, SPINNER_CHARS
 
 
 _OPENAI_PREFIXES = ("gpt-", "o1", "o3", "o4", "codex")
@@ -34,9 +34,7 @@ class CodexCliAdapter(CliAdapter):
         return "codex"
 
     def submit_keys(self) -> list[str]:
-        # Ink/prompt_toolkit multi-line input: Enter inserts newline, M-Enter
-        # is the canonical submit.  Keep Enter as fallback for single-line.
-        return ["M-Enter", "Enter", "C-m", "C-j"]
+        return list(MULTILINE_SUBMIT_KEYS)
 
     def rate_limit_markers(self) -> list[str]:
         return ["rate limit", "429", "RateLimitError", "you exceeded your"]

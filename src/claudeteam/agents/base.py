@@ -21,6 +21,12 @@ from abc import ABC, abstractmethod
 SPINNER_CHARS = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
 
 
+# Submit-key sequence for multi-line CLIs (Codex / Kimi use Ink + prompt_toolkit
+# style multi-line input where Enter inserts a newline, M-Enter commits the
+# buffer). Plain `Enter` is kept as a fallback for single-line edge cases.
+MULTILINE_SUBMIT_KEYS = ("M-Enter", "Enter", "C-m", "C-j")
+
+
 class CliAdapter(ABC):
     @abstractmethod
     def spawn_cmd(self, agent: str, model: str) -> str:
