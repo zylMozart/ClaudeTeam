@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 from typing import Callable
 
 from claudeteam.runtime import config
@@ -23,6 +22,9 @@ from claudeteam.util import error_exit, help_requested, pop_flag
 
 
 USAGE = "usage: claudeteam usage [--view daily|monthly|session|blocks] [--days N]"
+
+# ccusage's documented views — validated against argv for clearer errors
+_VIEWS = ("daily", "monthly", "session", "blocks")
 
 
 def _run_ccusage(view: str, *, runner: Callable | None = None) -> tuple[int, str]:
@@ -58,8 +60,8 @@ def main(argv: list[str]) -> int:
     days = pop_flag(rest, "--days") or ""
     if rest:
         return error_exit(f"❌ unexpected args: {rest}\n{USAGE}")
-    if view not in {"daily", "monthly", "session", "blocks"}:
-        return error_exit(f"❌ unknown view: {view}")
+    if view not in _VIEWS:
+        return error_exit(f"❌ unknown view: {view} (valid: {' / '.join(_VIEWS)})")
 
     try:
         clis = {config.agent_cli(a) for a in config.agent_names()}
