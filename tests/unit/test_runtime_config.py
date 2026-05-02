@@ -1,9 +1,7 @@
 """Tests for runtime/config.py — team.json + runtime_config.json loading."""
 from __future__ import annotations
 
-import os
-
-from helpers import isolated_env
+from helpers import env_patch, isolated_env
 
 from claudeteam.runtime import config
 
@@ -91,25 +89,19 @@ def test_agent_model_uses_agent_specific_first():
 
 def test_agent_model_uses_env_default_when_no_agent_model():
     team = {"agents": {"a": {}}, "default_model": "opus"}
-    with _team_env(team):
-        os.environ["CLAUDETEAM_DEFAULT_MODEL"] = "sonnet"
-        try:
-            assert config.agent_model("a") == "sonnet"
-        finally:
-            os.environ.pop("CLAUDETEAM_DEFAULT_MODEL", None)
+    with _team_env(team), env_patch(CLAUDETEAM_DEFAULT_MODEL="sonnet"):
+        assert config.agent_model("a") == "sonnet"
 
 
 def test_agent_model_uses_team_default_when_no_env():
     team = {"agents": {"a": {}}, "default_model": "opus"}
-    with _team_env(team):
-        os.environ.pop("CLAUDETEAM_DEFAULT_MODEL", None)
+    with _team_env(team), env_patch(CLAUDETEAM_DEFAULT_MODEL=None):
         assert config.agent_model("a") == "opus"
 
 
 def test_agent_model_falls_back_to_opus_constant():
     team = {"agents": {"a": {}}}  # no default_model
-    with _team_env(team):
-        os.environ.pop("CLAUDETEAM_DEFAULT_MODEL", None)
+    with _team_env(team), env_patch(CLAUDETEAM_DEFAULT_MODEL=None):
         assert config.agent_model("a") == "opus"
 
 
@@ -132,17 +124,14 @@ def test_chat_id_empty_when_unset():
 
 
 def test_lark_profile_env_beats_file():
-    with _team_env({"agents": {}}, runtime_data={"lark_profile": "from-file"}):
-        os.environ["LARK_CLI_PROFILE"] = "from-env"
-        try:
-            assert config.lark_profile() == "from-env"
-        finally:
-            os.environ.pop("LARK_CLI_PROFILE", None)
+    with _team_env({"agents": {}}, runtime_data={"lark_profile": "from-file"}), \
+            env_patch(LARK_CLI_PROFILE="from-env"):
+        assert config.lark_profile() == "from-env"
 
 
 def test_lark_profile_falls_back_to_file_when_env_unset():
-    with _team_env({"agents": {}}, runtime_data={"lark_profile": "from-file"}):
-        os.environ.pop("LARK_CLI_PROFILE", None)
+    with _team_env({"agents": {}}, runtime_data={"lark_profile": "from-file"}), \
+            env_patch(LARK_CLI_PROFILE=None):
         assert config.lark_profile() == "from-file"
 
 
