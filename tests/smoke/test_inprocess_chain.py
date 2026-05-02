@@ -12,44 +12,27 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
-import tempfile
-from pathlib import Path
 
+from helpers import isolated_env
 from claudeteam.feishu import subscribe
 from claudeteam.feishu.deliver import apply
 from claudeteam.runtime import tmux
 from claudeteam.store import local_facts
 
 
-@contextlib.contextmanager
-def _isolated():
-    with tempfile.TemporaryDirectory() as tmp:
-        team = Path(tmp) / "team.json"
-        team.write_text(json.dumps({
-            "session": "SmokeTeam",
-            "agents": {
-                "manager":      {"cli": "claude-code"},
-                "worker_codex": {"cli": "codex-cli"},
-                "worker_kimi":  {"cli": "kimi-code"},
-            },
-        }), encoding="utf-8")
-        rt = Path(tmp) / "runtime_config.json"
-        rt.write_text(json.dumps({"chat_id": "oc_smoke", "lark_profile": ""}), encoding="utf-8")
+_TEAM = {
+    "session": "SmokeTeam",
+    "agents": {
+        "manager":      {"cli": "claude-code"},
+        "worker_codex": {"cli": "codex-cli"},
+        "worker_kimi":  {"cli": "kimi-code"},
+    },
+}
 
-        old = {k: os.environ.get(k) for k in
-               ("CLAUDETEAM_TEAM_FILE", "CLAUDETEAM_RUNTIME_CONFIG", "CLAUDETEAM_STATE_DIR")}
-        os.environ["CLAUDETEAM_TEAM_FILE"] = str(team)
-        os.environ["CLAUDETEAM_RUNTIME_CONFIG"] = str(rt)
-        os.environ["CLAUDETEAM_STATE_DIR"] = str(Path(tmp) / "state")
-        try:
-            yield
-        finally:
-            for k, v in old.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+
+def _isolated():
+    return isolated_env(team=_TEAM,
+                        runtime_config={"chat_id": "oc_smoke", "lark_profile": ""})
 
 
 @contextlib.contextmanager

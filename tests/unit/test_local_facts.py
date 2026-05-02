@@ -1,34 +1,15 @@
 """Tests for the local-facts store (inbox / status / log).
 
-Each test sets `CLAUDETEAM_STATE_DIR` to a fresh tempdir so the runs don't
-interfere with each other or with anything outside the test.
+Each test runs inside `isolated_env()` so the state dir is fresh per test.
 """
 from __future__ import annotations
 
-import contextlib
-import os
-import tempfile
-from pathlib import Path
-
 from claudeteam.store import local_facts
-
-
-@contextlib.contextmanager
-def _isolated_facts():
-    with tempfile.TemporaryDirectory() as tmp:
-        old = os.environ.get("CLAUDETEAM_STATE_DIR")
-        os.environ["CLAUDETEAM_STATE_DIR"] = tmp
-        try:
-            yield Path(tmp) / "facts"
-        finally:
-            if old is None:
-                os.environ.pop("CLAUDETEAM_STATE_DIR", None)
-            else:
-                os.environ["CLAUDETEAM_STATE_DIR"] = old
+from helpers import isolated_env
 
 
 def test_append_then_list_messages():
-    with _isolated_facts():
+    with isolated_env():
         mid = local_facts.append_message("worker", "manager", "hello", priority="高")
         rows = local_facts.list_messages("worker")
         assert len(rows) == 1
@@ -39,7 +20,7 @@ def test_append_then_list_messages():
 
 
 def test_list_filters_by_agent_and_unread_only():
-    with _isolated_facts():
+    with isolated_env():
         local_facts.append_message("a", "manager", "to a")
         local_facts.append_message("b", "manager", "to b")
         mid_unread = local_facts.append_message("a", "manager", "still unread")
@@ -57,7 +38,7 @@ def test_list_filters_by_agent_and_unread_only():
 
 
 def test_mark_read_sets_flag_and_returns_false_on_miss():
-    with _isolated_facts():
+    with isolated_env():
         mid = local_facts.append_message("a", "b", "x")
         assert local_facts.mark_read(mid) is True
         assert local_facts.list_messages("a", unread_only=True) == []
@@ -66,7 +47,7 @@ def test_mark_read_sets_flag_and_returns_false_on_miss():
 
 
 def test_status_upsert_then_get():
-    with _isolated_facts():
+    with isolated_env():
         assert local_facts.get_status("a") is None
         local_facts.upsert_status("a", "进行中", "do thing")
         snap = local_facts.get_status("a")
@@ -82,7 +63,7 @@ def test_status_upsert_then_get():
 
 
 def test_log_append_then_list():
-    with _isolated_facts():
+    with isolated_env():
         local_facts.append_log("a", "info", "first")
         local_facts.append_log("a", "info", "second", ref="REF-1")
         local_facts.append_log("b", "info", "other agent")
@@ -94,13 +75,14 @@ def test_log_append_then_list():
 
 
 def test_log_returns_empty_when_no_log_file():
-    with _isolated_facts():
+    with isolated_env():
         # never appended → no log file
         assert local_facts.list_logs("a") == []
 
 
 def test_facts_dir_uses_state_dir_env():
-    with _isolated_facts() as facts_dir:
+    with isolated_env() as tmp:
+        facts_dir = tmp / "state" / "facts"
         local_facts.append_message("a", "b", "x")
         assert facts_dir.exists()
         assert (facts_dir / "inbox.json").exists()

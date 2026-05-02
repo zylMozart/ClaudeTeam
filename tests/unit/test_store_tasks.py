@@ -1,32 +1,16 @@
 """Tests for store/tasks.py — local task store."""
 from __future__ import annotations
 
-import contextlib
-import os
-import tempfile
 
+from helpers import isolated_env
 from claudeteam.store import tasks
-
-
-@contextlib.contextmanager
-def _isolated():
-    with tempfile.TemporaryDirectory() as tmp:
-        old = os.environ.get("CLAUDETEAM_STATE_DIR")
-        os.environ["CLAUDETEAM_STATE_DIR"] = tmp
-        try:
-            yield
-        finally:
-            if old is None:
-                os.environ.pop("CLAUDETEAM_STATE_DIR", None)
-            else:
-                os.environ["CLAUDETEAM_STATE_DIR"] = old
 
 
 # ── create ────────────────────────────────────────────────────────
 
 
 def test_create_returns_task_id_and_persists():
-    with _isolated():
+    with isolated_env():
         tid = tasks.create("worker", "do thing")
         assert tid == "T-1"
         rows = tasks.list_tasks()
@@ -36,14 +20,14 @@ def test_create_returns_task_id_and_persists():
 
 
 def test_ids_increment_across_creates():
-    with _isolated():
+    with isolated_env():
         a = tasks.create("x", "first")
         b = tasks.create("y", "second")
         assert a == "T-1" and b == "T-2"
 
 
 def test_create_with_metadata_persists_creator_and_description():
-    with _isolated():
+    with isolated_env():
         tid = tasks.create("worker", "fix X",
                            description="root cause is Y",
                            creator="manager")
@@ -53,7 +37,7 @@ def test_create_with_metadata_persists_creator_and_description():
 
 
 def test_create_empty_title_rejects():
-    with _isolated():
+    with isolated_env():
         try:
             tasks.create("worker", "   ")
         except ValueError:
@@ -66,14 +50,14 @@ def test_create_empty_title_rejects():
 
 
 def test_update_status_advances_state():
-    with _isolated():
+    with isolated_env():
         tid = tasks.create("w", "task")
         assert tasks.update(tid, status="进行中") is True
         assert tasks.get(tid)["status"] == "进行中"
 
 
 def test_update_invalid_status_rejects():
-    with _isolated():
+    with isolated_env():
         tid = tasks.create("w", "task")
         try:
             tasks.update(tid, status="not-a-status")
@@ -84,12 +68,12 @@ def test_update_invalid_status_rejects():
 
 
 def test_update_missing_task_returns_false():
-    with _isolated():
+    with isolated_env():
         assert tasks.update("T-99", status="已完成") is False
 
 
 def test_update_terminal_status_sets_completed_at():
-    with _isolated():
+    with isolated_env():
         tid = tasks.create("w", "x")
         tasks.update(tid, status="已完成")
         t = tasks.get(tid)
@@ -97,7 +81,7 @@ def test_update_terminal_status_sets_completed_at():
 
 
 def test_update_back_from_terminal_clears_completed_at():
-    with _isolated():
+    with isolated_env():
         tid = tasks.create("w", "x")
         tasks.update(tid, status="已完成")
         tasks.update(tid, status="进行中")
@@ -105,7 +89,7 @@ def test_update_back_from_terminal_clears_completed_at():
 
 
 def test_update_only_changes_specified_fields():
-    with _isolated():
+    with isolated_env():
         tid = tasks.create("w1", "title-1", description="d-1", creator="c-1")
         tasks.update(tid, status="进行中")
         t = tasks.get(tid)
@@ -117,7 +101,7 @@ def test_update_only_changes_specified_fields():
 
 
 def test_update_can_reassign_and_retitle():
-    with _isolated():
+    with isolated_env():
         tid = tasks.create("w1", "old", description="old-d")
         tasks.update(tid, assignee="w2", title="new", description="new-d")
         t = tasks.get(tid)
@@ -128,7 +112,7 @@ def test_update_can_reassign_and_retitle():
 
 
 def test_list_filters_by_status():
-    with _isolated():
+    with isolated_env():
         a = tasks.create("w", "a")
         b = tasks.create("w", "b")
         tasks.update(a, status="已完成")
@@ -139,7 +123,7 @@ def test_list_filters_by_status():
 
 
 def test_list_filters_by_assignee():
-    with _isolated():
+    with isolated_env():
         tasks.create("alice", "task-a")
         tasks.create("bob", "task-b")
         tasks.create("alice", "task-a2")
@@ -148,17 +132,17 @@ def test_list_filters_by_assignee():
 
 
 def test_list_returns_empty_when_store_missing():
-    with _isolated():
+    with isolated_env():
         assert tasks.list_tasks() == []
 
 
 def test_get_returns_none_for_unknown_id():
-    with _isolated():
+    with isolated_env():
         assert tasks.get("T-doesnotexist") is None
 
 
 def test_list_sorted_by_id():
-    with _isolated():
+    with isolated_env():
         for i in range(5):
             tasks.create(f"w{i}", f"task {i}")
         rows = tasks.list_tasks()

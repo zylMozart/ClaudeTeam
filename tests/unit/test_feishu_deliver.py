@@ -1,28 +1,11 @@
 """Tests for feishu/deliver.py — Decision → side-effects."""
 from __future__ import annotations
 
-import contextlib
-import os
-import tempfile
-from pathlib import Path
 
+from helpers import isolated_env
 from claudeteam.feishu.deliver import apply
 from claudeteam.feishu.router import Action, Decision
 from claudeteam.store import local_facts
-
-
-@contextlib.contextmanager
-def _isolated_state():
-    with tempfile.TemporaryDirectory() as tmp:
-        old = os.environ.get("CLAUDETEAM_STATE_DIR")
-        os.environ["CLAUDETEAM_STATE_DIR"] = str(Path(tmp))
-        try:
-            yield
-        finally:
-            if old is None:
-                os.environ.pop("CLAUDETEAM_STATE_DIR", None)
-            else:
-                os.environ["CLAUDETEAM_STATE_DIR"] = old
 
 
 class _FakeAdapter:
@@ -65,7 +48,7 @@ def test_route_writes_inbox_and_injects_for_each_target():
         msg_id="om_1",
     )
     inject_calls = []
-    with _isolated_state():
+    with isolated_env():
         report = apply(
             decision,
             adapter_for_agent=_adapter_factory,
@@ -85,7 +68,7 @@ def test_route_writes_inbox_and_injects_for_each_target():
 def test_route_uses_user_as_sender_when_decision_sender_blank():
     """Human messages have sender="" — store should record `from=user`."""
     decision = Decision(action=Action.ROUTE, targets=["manager"], text="hi", msg_id="om_2")
-    with _isolated_state():
+    with isolated_env():
         apply(
             decision,
             adapter_for_agent=_adapter_factory,
@@ -99,7 +82,7 @@ def test_route_uses_user_as_sender_when_decision_sender_blank():
 
 def test_route_passes_decision_text_into_inbox():
     decision = Decision(action=Action.ROUTE, targets=["worker"], text="hello world", msg_id="om")
-    with _isolated_state():
+    with isolated_env():
         apply(decision, adapter_for_agent=_adapter_factory,
               tmux_inject=lambda *a, **kw: True, session="S")
         rows = local_facts.list_messages("worker")
@@ -111,7 +94,7 @@ def test_route_passes_decision_text_into_inbox():
 
 def test_inject_failure_keeps_inbox_write_and_records_failure():
     decision = Decision(action=Action.ROUTE, targets=["worker_a"], text="x", msg_id="om")
-    with _isolated_state():
+    with isolated_env():
         report = apply(
             decision,
             adapter_for_agent=_adapter_factory,
@@ -129,7 +112,7 @@ def test_inject_exception_caught_and_recorded():
     def boom(*a, **kw):
         raise RuntimeError("tmux dead")
 
-    with _isolated_state():
+    with isolated_env():
         report = apply(
             decision,
             adapter_for_agent=_adapter_factory,
@@ -152,7 +135,7 @@ def test_append_message_exception_skips_inject_for_that_agent():
         # fall through to real local_facts for worker_b
         return local_facts.append_message(agent, *a, **kw)
 
-    with _isolated_state():
+    with isolated_env():
         report = apply(
             decision,
             adapter_for_agent=_adapter_factory,
@@ -185,7 +168,7 @@ def test_each_agent_uses_its_own_submit_keys():
 
     decision = Decision(action=Action.ROUTE, targets=["codex_w", "claude_w"],
                         text="x", msg_id="om")
-    with _isolated_state():
+    with isolated_env():
         apply(
             decision,
             adapter_for_agent=factory,

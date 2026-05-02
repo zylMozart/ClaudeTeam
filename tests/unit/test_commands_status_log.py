@@ -1,42 +1,19 @@
 """Tests for `claudeteam status` (set+show) and `claudeteam log` (append)."""
 from __future__ import annotations
 
-import contextlib
 import io
-import os
-import tempfile
 
+from helpers import isolated_env, run_cli
 from claudeteam import cli
 from claudeteam.store import local_facts
-
-
-@contextlib.contextmanager
-def _isolated_state():
-    with tempfile.TemporaryDirectory() as tmp:
-        old = os.environ.get("CLAUDETEAM_STATE_DIR")
-        os.environ["CLAUDETEAM_STATE_DIR"] = tmp
-        try:
-            yield
-        finally:
-            if old is None:
-                os.environ.pop("CLAUDETEAM_STATE_DIR", None)
-            else:
-                os.environ["CLAUDETEAM_STATE_DIR"] = old
-
-
-def _run(argv):
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = cli.main(argv)
-    return rc, out.getvalue(), err.getvalue()
 
 
 # ── status ─────────────────────────────────────────────────────────
 
 
 def test_status_set_writes_store_and_prints_summary():
-    with _isolated_state():
-        rc, out, _ = _run(["status", "worker", "进行中", "do task X"])
+    with isolated_env():
+        rc, out, _ = run_cli(["status", "worker", "进行中", "do task X"])
         assert rc == 0
         assert "worker → 进行中: do task X" in out
         snap = local_facts.get_status("worker")
@@ -47,8 +24,8 @@ def test_status_set_writes_store_and_prints_summary():
 
 
 def test_status_set_with_blocker_appends_marker():
-    with _isolated_state():
-        rc, out, _ = _run(["status", "worker", "阻塞", "stuck", "missing API key"])
+    with isolated_env():
+        rc, out, _ = run_cli(["status", "worker", "阻塞", "stuck", "missing API key"])
         assert rc == 0
         assert "⛔ missing API key" in out
         snap = local_facts.get_status("worker")
@@ -56,38 +33,38 @@ def test_status_set_with_blocker_appends_marker():
 
 
 def test_status_show_when_unrecorded():
-    with _isolated_state():
-        rc, out, _ = _run(["status", "noone"])
+    with isolated_env():
+        rc, out, _ = run_cli(["status", "noone"])
         assert rc == 0
         assert "noone: no status recorded" in out
 
 
 def test_status_show_after_set():
-    with _isolated_state():
-        _run(["status", "a", "进行中", "task"])
-        rc, out, _ = _run(["status", "a"])
+    with isolated_env():
+        run_cli(["status", "a", "进行中", "task"])
+        rc, out, _ = run_cli(["status", "a"])
         assert rc == 0
         assert "a: 进行中 | task" in out
 
 
 def test_status_set_idempotent_overwrites_previous():
-    with _isolated_state():
-        _run(["status", "a", "进行中", "first"])
-        _run(["status", "a", "已完成", "second"])
+    with isolated_env():
+        run_cli(["status", "a", "进行中", "first"])
+        run_cli(["status", "a", "已完成", "second"])
         snap = local_facts.get_status("a")
         assert snap["status"] == "已完成"
         assert snap["task"] == "second"
 
 
 def test_status_zero_args_returns_one_with_usage():
-    rc, _, err = _run(["status"])
+    rc, _, err = run_cli(["status"])
     assert rc == 1
     assert "usage:" in err
 
 
 def test_status_set_missing_state_or_task_returns_one():
-    with _isolated_state():
-        rc, _, err = _run(["status", "agent", "进行中"])
+    with isolated_env():
+        rc, _, err = run_cli(["status", "agent", "进行中"])
         assert rc == 1
         assert "usage:" in err
 
@@ -96,8 +73,8 @@ def test_status_set_missing_state_or_task_returns_one():
 
 
 def test_log_appends_to_jsonl_and_prints_id():
-    with _isolated_state():
-        rc, out, _ = _run(["log", "worker", "info", "checkpoint reached"])
+    with isolated_env():
+        rc, out, _ = run_cli(["log", "worker", "info", "checkpoint reached"])
         assert rc == 0
         assert "logged: worker/info" in out
         rows = local_facts.list_logs("worker")
@@ -107,17 +84,17 @@ def test_log_appends_to_jsonl_and_prints_id():
 
 
 def test_log_with_ref():
-    with _isolated_state():
-        _run(["log", "worker", "task", "did the thing", "TASK-7"])
+    with isolated_env():
+        run_cli(["log", "worker", "task", "did the thing", "TASK-7"])
         rows = local_facts.list_logs("worker")
         assert rows[0]["ref"] == "TASK-7"
 
 
 def test_log_appends_multiple_in_order():
-    with _isolated_state():
-        _run(["log", "a", "info", "first"])
-        _run(["log", "a", "info", "second"])
-        _run(["log", "b", "info", "other"])
+    with isolated_env():
+        run_cli(["log", "a", "info", "first"])
+        run_cli(["log", "a", "info", "second"])
+        run_cli(["log", "b", "info", "other"])
         a_rows = local_facts.list_logs("a")
         b_rows = local_facts.list_logs("b")
         assert [r["content"] for r in a_rows] == ["first", "second"]
@@ -125,6 +102,6 @@ def test_log_appends_multiple_in_order():
 
 
 def test_log_missing_args_returns_one():
-    rc, _, err = _run(["log", "agent", "info"])
+    rc, _, err = run_cli(["log", "agent", "info"])
     assert rc == 1
     assert "usage: claudeteam log" in err

@@ -18,8 +18,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+TESTS = ROOT / "tests"
+for _p in (SRC, TESTS):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 
 def _discover() -> list[tuple[str, str]]:

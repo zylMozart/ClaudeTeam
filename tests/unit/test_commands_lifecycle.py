@@ -1,40 +1,19 @@
 """Tests for `claudeteam start / hire / fire` — team lifecycle commands.
 
 Mocks runtime.tmux entirely so tests don't need a real tmux server.  Uses
-the env-driven team.json + state-dir pattern for isolation.
+isolated_env(team=...) for the env / file fixture.
 """
 from __future__ import annotations
 
 import contextlib
-import io
-import json
-import os
-import tempfile
-from pathlib import Path
 
-from claudeteam import cli
+from helpers import isolated_env, run_cli
 from claudeteam.runtime import tmux
 from claudeteam.store import local_facts
 
 
-@contextlib.contextmanager
-def _isolated_team(team_data: dict):
-    """Set up a tempdir with team.json and CLAUDETEAM_STATE_DIR."""
-    with tempfile.TemporaryDirectory() as tmp:
-        team_path = Path(tmp) / "team.json"
-        team_path.write_text(json.dumps(team_data, ensure_ascii=False), encoding="utf-8")
-        old_team = os.environ.get("CLAUDETEAM_TEAM_FILE")
-        old_state = os.environ.get("CLAUDETEAM_STATE_DIR")
-        os.environ["CLAUDETEAM_TEAM_FILE"] = str(team_path)
-        os.environ["CLAUDETEAM_STATE_DIR"] = str(Path(tmp) / "state")
-        try:
-            yield Path(tmp)
-        finally:
-            for key, val in [("CLAUDETEAM_TEAM_FILE", old_team), ("CLAUDETEAM_STATE_DIR", old_state)]:
-                if val is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = val
+def _isolated_team(team_data):
+    return isolated_env(team=team_data)
 
 
 @contextlib.contextmanager
@@ -107,11 +86,6 @@ def _fake_tmux():
             setattr(tmux, name, fn)
 
 
-def _run(argv):
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = cli.main(argv)
-    return rc, out.getvalue(), err.getvalue()
 
 
 # ── start ──────────────────────────────────────────────────────────
@@ -127,7 +101,7 @@ def test_start_creates_session_and_one_window_per_agent():
         },
     }
     with _isolated_team(team), _fake_tmux() as fake:
-        rc, out, _ = _run(["start"])
+        rc, out, _ = run_cli(["start"])
         assert rc == 0, out
         assert "🚀 created tmux session MyTeam" in out
         assert "✅ team MyTeam started (3 agents)" in out
@@ -155,7 +129,7 @@ def test_start_refuses_when_session_already_running():
     team = {"session": "S", "agents": {"manager": {}}}
     with _isolated_team(team), _fake_tmux() as fake:
         fake["session_exists"].add("S")
-        rc, out, _ = _run(["start"])
+        rc, out, _ = run_cli(["start"])
         assert rc == 1
         assert "already running" in out
 
@@ -163,7 +137,7 @@ def test_start_refuses_when_session_already_running():
 def test_start_with_no_agents_returns_one():
     team = {"session": "S", "agents": {}}
     with _isolated_team(team), _fake_tmux():
-        rc, _, err = _run(["start"])
+        rc, _, err = run_cli(["start"])
         assert rc == 1
         assert "no agents" in err
 
@@ -177,7 +151,7 @@ def test_start_picks_correct_spawn_cmd_per_cli():
         },
     }
     with _isolated_team(team), _fake_tmux() as fake:
-        _run(["start"])
+        run_cli(["start"])
         spawn_cmds = {c[1]: c[2] for c in fake["calls"] if c[0] == "spawn_agent"}
         assert "claude --dangerously-skip-permissions" in spawn_cmds["T:w_cc"]
         assert "codex" in spawn_cmds["T:w_codex"]
@@ -191,7 +165,7 @@ def test_hire_unknown_agent_returns_one():
     team = {"session": "S", "agents": {"manager": {}}}
     with _isolated_team(team), _fake_tmux() as fake:
         fake["session_exists"].add("S")
-        rc, _, err = _run(["hire", "ghost"])
+        rc, _, err = run_cli(["hire", "ghost"])
         assert rc == 1
         assert "unknown agent" in err
 
@@ -199,7 +173,7 @@ def test_hire_unknown_agent_returns_one():
 def test_hire_when_session_not_running_returns_one():
     team = {"session": "S", "agents": {"new_worker": {"cli": "claude-code"}}}
     with _isolated_team(team), _fake_tmux():
-        rc, _, err = _run(["hire", "new_worker"])
+        rc, _, err = run_cli(["hire", "new_worker"])
         assert rc == 1
         assert "not running" in err
 
@@ -208,7 +182,7 @@ def test_hire_creates_window_spawns_and_writes_status():
     team = {"session": "S", "agents": {"manager": {}, "new": {"cli": "kimi-code"}}}
     with _isolated_team(team), _fake_tmux() as fake:
         fake["session_exists"].add("S")
-        rc, out, _ = _run(["hire", "new"])
+        rc, out, _ = run_cli(["hire", "new"])
         assert rc == 0, out
         assert "hired: new" in out
         assert "S:new" in fake["windows"]
@@ -220,7 +194,7 @@ def test_hire_when_window_already_exists_is_idempotent():
     with _isolated_team(team), _fake_tmux() as fake:
         fake["session_exists"].add("S")
         fake["windows"].add("S:x")
-        rc, out, _ = _run(["hire", "x"])
+        rc, out, _ = run_cli(["hire", "x"])
         assert rc == 0
         assert "already has a pane" in out
 
@@ -232,7 +206,7 @@ def test_fire_unknown_pane_marks_status_only():
     team = {"session": "S", "agents": {"manager": {}, "x": {}}}
     with _isolated_team(team), _fake_tmux() as fake:
         fake["session_exists"].add("S")
-        rc, out, _ = _run(["fire", "x"])
+        rc, out, _ = run_cli(["fire", "x"])
         assert rc == 0
         assert "no pane in session" in out
         assert local_facts.get_status("x")["status"] == "已停止"
@@ -243,7 +217,7 @@ def test_fire_existing_pane_sends_ctrl_c_and_kills_window():
     with _isolated_team(team), _fake_tmux() as fake:
         fake["session_exists"].add("S")
         fake["windows"].add("S:x")
-        rc, out, _ = _run(["fire", "x"])
+        rc, out, _ = run_cli(["fire", "x"])
         assert rc == 0
         assert "fired: x" in out
         # ctrl-c sent before kill
@@ -256,12 +230,12 @@ def test_fire_existing_pane_sends_ctrl_c_and_kills_window():
 
 def test_fire_refuses_to_fire_manager():
     with _fake_tmux():
-        rc, _, err = _run(["fire", "manager"])
+        rc, _, err = run_cli(["fire", "manager"])
         assert rc == 1
         assert "refusing to fire manager" in err
 
 
 def test_fire_zero_args_returns_one():
-    rc, _, err = _run(["fire"])
+    rc, _, err = run_cli(["fire"])
     assert rc == 1
     assert "usage:" in err
