@@ -38,6 +38,25 @@ class FakeProc:
     stderr: str = ""
 
 
+class CallRecorder:
+    """Stub callable that records each (args, kwargs) invocation and
+    returns a scripted result. Used to verify what arguments a wrapper
+    handed to a subprocess / lark / etc.
+
+        rec = CallRecorder({"message_id": "om_1"})
+        out = chat.send_text(..., lark_run=rec)
+        assert "--chat-id" in rec.calls[0]["args"]
+    """
+
+    def __init__(self, result=None):
+        self.calls: list[dict] = []
+        self.result = result
+
+    def __call__(self, args, **kwargs):
+        self.calls.append({"args": list(args), "kwargs": dict(kwargs)})
+        return self.result
+
+
 @contextlib.contextmanager
 def isolated_env(*, team: dict | None = None, runtime_config: dict | None = None):
     """Set CLAUDETEAM_STATE_DIR (always) + optionally TEAM_FILE / RUNTIME_CONFIG.

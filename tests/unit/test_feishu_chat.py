@@ -1,19 +1,8 @@
 """Tests for feishu/chat.py — chat operations using a fake lark_run."""
 from __future__ import annotations
 
+from helpers import CallRecorder as _Spy
 from claudeteam.feishu import chat
-
-
-class _Spy:
-    """Captures (args, kwargs) calls and returns a scripted result."""
-
-    def __init__(self, result=None):
-        self.calls = []
-        self.result = result
-
-    def __call__(self, args, **kwargs):
-        self.calls.append({"args": list(args), "kwargs": dict(kwargs)})
-        return self.result
 
 
 def test_send_text_passes_chat_id_text_and_bot_identity_by_default():

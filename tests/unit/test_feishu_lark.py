@@ -3,18 +3,14 @@ from __future__ import annotations
 
 import subprocess
 
-from helpers import FakeProc, env_patch
+from helpers import CallRecorder, FakeProc, env_patch
 from claudeteam.feishu import lark
 
 
-class _Recorder:
-    def __init__(self, result=None):
-        self.calls: list[dict] = []
-        self.result = result if result is not None else FakeProc()
-
-    def __call__(self, args, **kwargs):
-        self.calls.append({"args": list(args), "kwargs": dict(kwargs)})
-        return self.result
+def _Recorder(result=None) -> CallRecorder:
+    """Recorder pre-seeded with an empty FakeProc — lark.call needs the
+    .returncode / .stdout / .stderr trio to do its branching."""
+    return CallRecorder(result if result is not None else FakeProc())
 
 
 def _no_proxy_env():
