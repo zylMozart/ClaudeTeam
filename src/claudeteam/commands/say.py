@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from claudeteam.feishu import chat as feishu_chat
 from claudeteam.runtime import config
 from claudeteam.store import local_facts
-from claudeteam.util import error_exit, usage_error
+from claudeteam.util import error_exit, pop_flag, usage_error
 
 
 USAGE = (
@@ -38,24 +38,22 @@ def _parse(argv: list[str]) -> _Args | None:
         return None
     agent = argv[0]
     rest = list(argv[1:])
-    opts = {"reply_to": "", "as_user": False, "local": True}
-    for flag, key in [("--reply", "reply_to"), ("--as", "_as")]:
-        if flag in rest:
-            i = rest.index(flag)
-            if i + 1 >= len(rest):
-                return None
-            val = rest[i + 1]
-            if key == "_as":
-                opts["as_user"] = val == "user"
-            else:
-                opts[key] = val
-            del rest[i:i + 2]
-    if "--no-local" in rest:
-        opts["local"] = False
+    reply_to = pop_flag(rest, "--reply") or ""
+    as_value = pop_flag(rest, "--as") or ""
+    if "--reply" in rest or "--as" in rest:
+        return None  # flag present but value missing
+    local = "--no-local" not in rest
+    if not local:
         rest.remove("--no-local")
     if not rest:
         return None
-    return _Args(agent=agent, message=" ".join(rest), **opts)
+    return _Args(
+        agent=agent,
+        message=" ".join(rest),
+        reply_to=reply_to,
+        as_user=(as_value == "user"),
+        local=local,
+    )
 
 
 def main(argv: list[str]) -> int:
