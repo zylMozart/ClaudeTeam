@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.store import tasks
-from claudeteam.util import fmt_time_ms, pop_flag
+from claudeteam.util import fmt_time_ms, pop_flag, usage_error
 
 
 USAGE = (
@@ -40,8 +40,7 @@ def _cmd_create(rest: list[str]) -> int:
     by = pop_flag(rest, "--by") or ""
     desc = pop_flag(rest, "--desc") or ""
     if len(rest) < 2:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     assignee = rest[0]
     title = " ".join(rest[1:])
     try:
@@ -59,8 +58,7 @@ def _cmd_update(rest: list[str]) -> int:
     title = pop_flag(rest, "--title")
     desc = pop_flag(rest, "--desc")
     if len(rest) < 1:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     tid = rest[0]
     try:
         ok = tasks.update(tid, status=status, assignee=assignee,
@@ -77,8 +75,7 @@ def _cmd_update(rest: list[str]) -> int:
 
 def _cmd_done(rest: list[str]) -> int:
     if len(rest) < 1:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     return _cmd_update([rest[0], "--status", "已完成"])
 
 
@@ -99,8 +96,7 @@ def _cmd_list(rest: list[str]) -> int:
 
 def _cmd_get(rest: list[str]) -> int:
     if len(rest) < 1:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     t = tasks.get(rest[0])
     if t is None:
         print(f"❌ no such task: {rest[0]}", file=sys.stderr)

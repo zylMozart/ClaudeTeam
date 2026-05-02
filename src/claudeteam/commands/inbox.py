@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.store import local_facts
-from claudeteam.util import fmt_time_ms
+from claudeteam.util import fmt_time_ms, usage_error
 
 
 USAGE = "usage: claudeteam inbox <agent>"
@@ -15,8 +15,7 @@ USAGE = "usage: claudeteam inbox <agent>"
 
 def main(argv: list[str]) -> int:
     if len(argv) < 1:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     agent = argv[0]
     local_facts.touch_heartbeat(agent)
     msgs = local_facts.list_messages(agent, unread_only=True)

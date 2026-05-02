@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.store import local_facts
+from claudeteam.util import usage_error
 
 
 USAGE = "usage: claudeteam log <agent> <kind> <content> [ref]"
@@ -15,8 +16,7 @@ USAGE = "usage: claudeteam log <agent> <kind> <content> [ref]"
 
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     agent, kind, content = argv[0], argv[1], argv[2]
     ref = argv[3] if len(argv) > 3 else ""
     local_facts.touch_heartbeat(agent)

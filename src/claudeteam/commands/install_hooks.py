@@ -19,7 +19,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from claudeteam.util import help_requested
+from claudeteam.util import help_requested, usage_error
 
 
 USAGE = "usage: claudeteam install-hooks [path]   (default: $PWD)"
@@ -84,8 +84,7 @@ def main(argv: list[str]) -> int:
         print(USAGE)
         return 0
     if len(rest) > 1:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
 
     base = Path(rest[0]) if rest else Path.cwd()
     target = base / ".claude" / "commands"

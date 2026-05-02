@@ -6,7 +6,7 @@ from pathlib import Path
 
 from claudeteam.util import (
     ago_ms, atomic_write_text, flock, fmt_time_ms, help_requested,
-    now_ms, pop_flag, read_json,
+    now_ms, pop_flag, read_json, usage_error,
 )
 
 
@@ -121,6 +121,18 @@ def test_atomic_write_clobbers_stale_tmp_from_previous_crash():
         (target.with_suffix(".txt.tmp")).write_text("stale", encoding="utf-8")
         atomic_write_text(target, "fresh")
         assert target.read_text(encoding="utf-8") == "fresh"
+
+
+# ── usage_error ─────────────────────────────────────────────────
+
+
+def test_usage_error_prints_to_stderr_and_returns_one():
+    import contextlib, io
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = usage_error("usage: foo bar")
+    assert rc == 1
+    assert err.getvalue().strip() == "usage: foo bar"
 
 
 # ── help_requested ──────────────────────────────────────────────

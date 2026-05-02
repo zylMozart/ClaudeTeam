@@ -11,6 +11,7 @@ import sys
 from claudeteam.agents import adapter_for_agent, identity
 from claudeteam.runtime import config, tmux
 from claudeteam.store import local_facts
+from claudeteam.util import usage_error
 
 
 USAGE = "usage: claudeteam hire <agent>"
@@ -18,8 +19,7 @@ USAGE = "usage: claudeteam hire <agent>"
 
 def main(argv: list[str]) -> int:
     if len(argv) < 1:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     agent = argv[0]
 
     try:

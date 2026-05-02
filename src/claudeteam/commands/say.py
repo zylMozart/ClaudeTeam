@@ -15,6 +15,7 @@ import sys
 from claudeteam.feishu import chat as feishu_chat
 from claudeteam.runtime import config
 from claudeteam.store import local_facts
+from claudeteam.util import usage_error
 
 
 USAGE = (
@@ -51,8 +52,7 @@ def _parse(argv: list[str]) -> tuple[str, str, dict] | None:
 def main(argv: list[str]) -> int:
     parsed = _parse(argv)
     if parsed is None:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     agent, message, opts = parsed
 
     chat = config.chat_id()

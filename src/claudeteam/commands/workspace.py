@@ -8,7 +8,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.store import local_facts
-from claudeteam.util import fmt_time_ms, pop_flag
+from claudeteam.util import fmt_time_ms, pop_flag, usage_error
 
 
 USAGE = "usage: claudeteam workspace <agent> [--limit N]"
@@ -16,19 +16,16 @@ USAGE = "usage: claudeteam workspace <agent> [--limit N]"
 
 def main(argv: list[str]) -> int:
     if len(argv) < 1:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     rest = list(argv)
     agent = rest.pop(0)
     raw_limit = pop_flag(rest, "--limit")
     if rest:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     try:
         limit = int(raw_limit) if raw_limit is not None else 20
     except ValueError:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
 
     rows = local_facts.list_logs(agent, limit=limit)
     if not rows:

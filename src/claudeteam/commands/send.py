@@ -7,6 +7,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.store import local_facts
+from claudeteam.util import usage_error
 
 
 USAGE = "usage: claudeteam send <to> <from> <message> [priority]"
@@ -14,8 +15,7 @@ USAGE = "usage: claudeteam send <to> <from> <message> [priority]"
 
 def main(argv: list[str]) -> int:
     if len(argv) < 3:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     to, frm, message = argv[0], argv[1], argv[2]
     priority = argv[3] if len(argv) > 3 else "中"
     local_facts.touch_heartbeat(frm)

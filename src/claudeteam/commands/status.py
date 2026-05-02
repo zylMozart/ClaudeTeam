@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 
 from claudeteam.store import local_facts
+from claudeteam.util import usage_error
 
 
 USAGE = (
@@ -20,8 +21,7 @@ USAGE = (
 
 def main(argv: list[str]) -> int:
     if len(argv) < 1:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
 
     agent = argv[0]
     local_facts.touch_heartbeat(agent)
@@ -40,8 +40,7 @@ def main(argv: list[str]) -> int:
 
     # set mode
     if len(argv) < 3:
-        print(USAGE, file=sys.stderr)
-        return 1
+        return usage_error(USAGE)
     state = argv[1]
     task = argv[2]
     blocker = argv[3] if len(argv) > 3 else ""

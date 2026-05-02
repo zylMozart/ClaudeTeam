@@ -8,8 +8,17 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import sys
 import time
 from pathlib import Path
+
+
+def usage_error(usage: str) -> int:
+    """Print `usage` to stderr and return 1 — the standard \"bad args\"
+    exit code. Use as `return usage_error(USAGE)` so the call-site
+    reads as one statement instead of print-then-return."""
+    print(usage, file=sys.stderr)
+    return 1
 
 
 def help_requested(argv: list[str]) -> bool:
