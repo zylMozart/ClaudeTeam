@@ -33,6 +33,16 @@ def _build_subscribe_cmd(profile: str) -> list[str]:
     return cmd
 
 
+def _apply_with_wake(decision):
+    """Production deliver wrapper: lazy-wake panes before injecting."""
+    return _deliver_apply(decision, wake_fn=wake.wake_if_dormant)
+
+
+def _on_progress(decision, stats):
+    """After each handled event, advance the catchup cursor."""
+    catchup.record_decision(decision)
+
+
 def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         print("usage: claudeteam router")
@@ -75,12 +85,6 @@ def main(argv: list[str]) -> int:
         if proc.stdout is None:
             print("❌ lark-cli started without stdout pipe", file=sys.stderr)
             return 1
-
-        def _apply_with_wake(decision):
-            return _deliver_apply(decision, wake_fn=wake.wake_if_dormant)
-
-        def _on_progress(decision, stats):
-            catchup.record_decision(decision)
 
         # Catchup: replay anything newer than the cursor before going live
         try:
