@@ -1,8 +1,6 @@
 """Tests for `claudeteam team` and `claudeteam workspace` (read-side)."""
 from __future__ import annotations
 
-import io
-
 from helpers import isolated_env, run_cli
 from claudeteam import cli
 from claudeteam.store import local_facts

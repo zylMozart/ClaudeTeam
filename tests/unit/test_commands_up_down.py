@@ -128,7 +128,6 @@ def test_down_skips_when_no_pid_files_and_no_session():
 def test_down_kills_alive_pid_then_tmux():
     """When pid files point to a fake process, down should SIGTERM and clean up."""
     import os
-    import signal
 
     team = {"session": "S", "agents": {"manager": {}}}
     with isolated_env(team=team) as tmp, _fake_tmux(session_alive=True) as tx:
