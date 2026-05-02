@@ -53,7 +53,6 @@ def main(argv: list[str]) -> int:
         print("❌ chat_id not set in runtime_config.json", file=sys.stderr)
         return 1
 
-    team = config.load_team()
     agents = config.agent_names()
     if not agents:
         print("❌ team.json has no agents", file=sys.stderr)
@@ -86,6 +85,14 @@ def main(argv: list[str]) -> int:
             print("❌ lark-cli started without stdout pipe", file=sys.stderr)
             return 1
 
+        loop_kwargs = dict(
+            team_agents=agents,
+            chat_id=chat,
+            default_target="manager",
+            apply_fn=_apply_with_wake,
+            on_progress=_on_progress,
+        )
+
         # Catchup: replay anything newer than the cursor before going live
         try:
             pending = catchup.pending_lines(chat, profile=profile)
@@ -94,23 +101,9 @@ def main(argv: list[str]) -> int:
             pending = []
         if pending:
             print(f"📥 catching up {len(pending)} missed message(s)")
-            process_lines(
-                iter(pending),
-                team_agents=agents,
-                chat_id=chat,
-                default_target="manager",
-                apply_fn=_apply_with_wake,
-                on_progress=_on_progress,
-            )
+            process_lines(iter(pending), **loop_kwargs)
 
-        stats = process_lines(
-            proc.stdout,
-            team_agents=agents,
-            chat_id=chat,
-            default_target="manager",
-            apply_fn=_apply_with_wake,
-            on_progress=_on_progress,
-        )
+        stats = process_lines(proc.stdout, **loop_kwargs)
         print(f"router exited: handled={stats.handled} dropped={stats.dropped}")
         return 0 if proc.wait() == 0 else 1
     except KeyboardInterrupt:
