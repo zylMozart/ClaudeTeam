@@ -114,7 +114,8 @@ src/claudeteam/
 tests/
 ├── unit/              pure-module tests (mocked I/O via attr_patch)
 ├── smoke/             end-to-end in-process tests + scenarios/*.md
-├── helpers.py         isolated_env() + run_cli() + env_patch / attr_patch / tmux_patch
+├── helpers.py         isolated_env() + run_cli() + env_patch / attr_patch /
+│                      tmux_patch + FakeProc / CallRecorder
 └── run.py             stdlib-only runner (no pytest dep)
 ```
 
