@@ -25,21 +25,16 @@ from typing import Callable, Iterable
 from claudeteam.feishu import chat as _chat
 from claudeteam.feishu.router import Decision
 from claudeteam.runtime import paths
-from claudeteam.util import atomic_write_text
+from claudeteam.util import atomic_write_text, read_json
 
 
 # ── cursor persistence ─────────────────────────────────────────
 
 
 def read_cursor() -> dict:
-    p = paths.router_cursor_file()
-    if not p.exists():
-        return {}
-    raw = p.read_text(encoding="utf-8").strip()
-    if not raw:
-        return {}
+    """Return the persisted cursor or {} (missing / corrupt / blank file)."""
     try:
-        return json.loads(raw)
+        return read_json(paths.router_cursor_file(), {})
     except json.JSONDecodeError:
         return {}
 
