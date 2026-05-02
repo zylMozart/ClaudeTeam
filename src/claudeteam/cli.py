@@ -28,6 +28,7 @@ from claudeteam.commands import (
     hire as _hire,
     fire as _fire,
     say as _say,
+    router as _router,
 )
 
 COMMANDS: dict[str, CommandHandler] = {
@@ -45,6 +46,7 @@ COMMANDS: dict[str, CommandHandler] = {
     "fire": _fire.main,
     # feishu transport
     "say": _say.main,
+    "router": _router.main,
 }
 
 
