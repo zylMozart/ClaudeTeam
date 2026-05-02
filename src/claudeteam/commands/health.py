@@ -16,6 +16,7 @@ not fail the check.
 from __future__ import annotations
 
 import json
+import shutil
 
 from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
@@ -119,6 +120,43 @@ def _check_daemon(out: list[str], spec: watchdog.ProcessSpec) -> int:
     return 1
 
 
+def _check_binaries(out: list[str], agents: list[str]) -> int:
+    """For each unique CLI process_name (claude/codex/kimi/...), verify the
+    binary is on PATH. Missing binaries don't crash claudeteam, but every
+    pane spawn will fail to launch its CLI."""
+    bad = 0
+    seen: dict[str, list[str]] = {}
+    for agent in agents:
+        try:
+            name = adapter_for_agent(agent).process_name()
+        except Exception:
+            continue
+        seen.setdefault(name, []).append(agent)
+    for binary, used_by in sorted(seen.items()):
+        path = shutil.which(binary)
+        if path:
+            out.append(f"  {_OK} {binary}: {path}  (used by {', '.join(used_by)})")
+        else:
+            out.append(f"  {_BAD} {binary}: not on PATH  (used by {', '.join(used_by)})")
+            bad = 1
+    return bad
+
+
+def _check_proxy_env(out: list[str]) -> None:
+    """If HTTPS_PROXY/HTTP_PROXY is set without LARK_CLI_NO_PROXY=1, lark-cli
+    requests transit through the proxy — usually fatal on host networks.
+    Warning only (not fatal): user may genuinely want the proxy."""
+    proxy = env_str("HTTPS_PROXY") or env_str("HTTP_PROXY")
+    if not proxy:
+        return
+    if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
+        out.append(f"  {_OK} HTTPS_PROXY set ({proxy}) but LARK_CLI_NO_PROXY=1 — wrapper will strip")
+    else:
+        out.append(
+            f"  {_WARN} HTTPS_PROXY={proxy} set without LARK_CLI_NO_PROXY=1; "
+            "lark-cli requests may fail. `export LARK_CLI_NO_PROXY=1` to strip.")
+
+
 def _check_cursor(out: list[str]) -> None:
     cur = catchup.read_cursor()
     if cur:
@@ -152,6 +190,15 @@ def main(argv: list[str]) -> int:
         agents = sorted(team.get("agents", {}))
     except Exception:
         session, agents = "ClaudeTeam", []
+
+    if agents:
+        out.append("binaries:")
+        bad += _check_binaries(out, agents)
+        out.append("")
+
+    out.append("env:")
+    _check_proxy_env(out)
+    out.append("")
 
     out.append("tmux:")
     session_alive = _check_session(out, session)

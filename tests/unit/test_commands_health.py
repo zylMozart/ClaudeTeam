@@ -1,7 +1,9 @@
 """Tests for `claudeteam health`."""
 from __future__ import annotations
 
-from helpers import isolated_env, run_cli, tmux_patch
+import shutil
+
+from helpers import attr_patch, env_patch, isolated_env, run_cli, tmux_patch
 
 
 def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
@@ -115,6 +117,53 @@ def test_health_warns_when_cursor_empty():
         rc, out, _ = run_cli(["health"])
         assert rc == 0
         assert "router cursor: empty" in out
+
+
+# ── binaries / env ──────────────────────────────────────────────
+
+
+def _stub_which(present: set[str]):
+    """shutil.which replacement: returns a fake path for names in `present`,
+    None for everything else. Doesn't fall through to the real PATH."""
+    return attr_patch(
+        shutil,
+        which=lambda name, *a, **kw: f"/usr/bin/{name}" if name in present else None,
+    )
+
+
+def test_health_red_when_binary_missing():
+    team = {"session": "S", "agents": {"m": {"cli": "claude-code"}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
+            session_alive=True, panes_with_cli=["m"]), _stub_which(set()):
+        rc, out, _ = run_cli(["health"])
+        assert rc == 1
+        assert "claude: not on PATH" in out
+
+
+def test_health_green_when_binaries_present():
+    team = {"session": "S", "agents": {"m": {"cli": "claude-code"}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
+            session_alive=True, panes_with_cli=["m"]), _stub_which({"claude"}):
+        rc, out, _ = run_cli(["health"])
+        assert "claude: /usr/bin/claude" in out
+
+
+def test_health_warns_when_proxy_set_without_no_proxy():
+    team = {"session": "S", "agents": {"m": {}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
+            session_alive=True, panes_with_cli=["m"]), \
+            env_patch(HTTPS_PROXY="http://proxy:7890", LARK_CLI_NO_PROXY=None):
+        rc, out, _ = run_cli(["health"])
+        assert "HTTPS_PROXY=http://proxy:7890 set without LARK_CLI_NO_PROXY" in out
+
+
+def test_health_silent_when_proxy_unset():
+    team = {"session": "S", "agents": {"m": {}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
+            session_alive=True, panes_with_cli=["m"]), \
+            env_patch(HTTPS_PROXY=None, HTTP_PROXY=None):
+        rc, out, _ = run_cli(["health"])
+        assert "HTTPS_PROXY" not in out
 
 
 # ── help ────────────────────────────────────────────────────────
