@@ -27,6 +27,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from claudeteam.runtime import tmux as _tmux
+
 
 @dataclass
 class FakeProc:
@@ -145,5 +147,4 @@ def tmux_patch(**stubs):
         with tmux_patch(has_session=lambda s: False, kill_session=lambda s: True):
             ...
     """
-    from claudeteam.runtime import tmux as _tmux
     return attr_patch(_tmux, **stubs)
