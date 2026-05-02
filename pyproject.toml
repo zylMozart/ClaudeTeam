@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claudeteam"
+version = "0.0.0"
+description = "Multi-agent CLI orchestrator (clean-slate rebuild)"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+claudeteam = "claudeteam.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"

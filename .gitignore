@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# runtime state from old branch
+workspace/
+agents/
+projects/
+scripts/.router.pid
+scripts/.team.json.prev
+scripts/runtime_config.json
+.claude/scheduled_tasks.lock
+team.json
