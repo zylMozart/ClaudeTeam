@@ -63,13 +63,13 @@ _COMMANDS: dict[str, str] = {
     ),
 }
 
-# Commands whose body refers to <your-name>/the agent's identity.
-_NEEDS_IDENTITY = {"inbox", "team", "status", "say", "task"}
+# Every command except `health` refers to <your-name>; `health` is name-agnostic.
+_NAME_AGNOSTIC = {"health"}
 
 
 def _full_body(name: str) -> str:
     body = _COMMANDS[name]
-    return _HEAD + body if name in _NEEDS_IDENTITY else body
+    return body if name in _NAME_AGNOSTIC else _HEAD + body
 
 
 def _write_command_files(target_dir: Path) -> tuple[int, int]:
