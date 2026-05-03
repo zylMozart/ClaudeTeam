@@ -6,10 +6,22 @@ until SIGTERM / Ctrl-C.
 
 Self-locks via state_dir/watchdog.pid so two watchdogs can't fight.
 
-Round-82: when a supervised daemon enters cooldown (max_retries respawns
-failed) the watchdog posts a Feishu message to the team chat so the boss
-sees the death without having to tail the watchdog log. Best-effort —
-chat-send failures are swallowed (don't kill the watchdog).
+Cooldown alerts:
+- R82 added alert_fn: when a supervised daemon enters cooldown
+  (max_retries respawns failed) the watchdog posts to Feishu chat so
+  the boss sees the death without tailing the watchdog log.
+- R98 upgraded the alert from plain text to a red Feishu card with a
+  3-step recovery checklist (`claudeteam health` / read daemon log /
+  `claudeteam down && up` after fix). Falls back to send_text on card
+  schema rejection so the alert still lands.
+- Returns None alert_fn when chat_id is unset — alerts are pointless
+  without a delivery target. Boot banner says "no chat alerts" in
+  that case so operator knows.
+
+All alert paths are best-effort: chat send / card send failures are
+swallowed at the alert_fn level (and runtime/watchdog's supervise
+also try/excepts alert_fn). A broken alert path mustn't kill the
+supervisor.
 """
 from __future__ import annotations
 

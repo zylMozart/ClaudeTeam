@@ -1,13 +1,24 @@
 """Pure routing decisions for inbound Feishu events.
 
-Given a Feishu message event dict and the team's agent list, decide:
-  - drop: dedup, cross-team, bot self-talk, empty text, etc.
-  - route: deliver this text to one or more agents (and identify the sender)
+Given a Feishu message event dict and the team's agent list, decide one of:
+  - DROP:      dedup, cross-team, bot self-talk, empty text, no msg_id,
+               agent message with no @target
+  - SLASH:     text starts with `/` after stripping any `[<sender>] `
+               prefix → router-level zero-LLM dispatch
+               (handled by `feishu/slash.dispatch`)
+  - BROADCAST: `@team` / `@all` / `全体X` triggers fan-out to every
+               non-sender agent (R36 + R42 token-boundary fix to include
+               ASCII period in the @-name terminator set)
+  - ROUTE:     `@<agent>` mention → deliver to those agents, OR
+               unrecognised sender (= human, defaults to `default_target`)
 
-Pure function — no I/O, no globals.  The router daemon (next round)
-calls this once per event and acts on the decision.
+Pure function — no I/O, no globals. `commands/router.py` calls this
+once per event from the subscribe loop and `feishu/deliver.apply`
+acts on the Decision.
 
-Drop reasons are stable strings so log filters can grep for them.
+Drop reasons (`Decision.reason`) are stable strings so log filters
+can grep for them: `no_msg_id` / `dedup` / `cross_team` / `bot_self`
+/ `empty` / `agent_no_target`.
 """
 from __future__ import annotations
 
