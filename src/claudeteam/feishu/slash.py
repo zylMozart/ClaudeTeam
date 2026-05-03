@@ -99,17 +99,17 @@ def _shell(ctx: SlashContext, argv: list[str], timeout: int = 30) -> str:
 # ── individual handlers ───────────────────────────────────────────
 
 
-_HELP_TEXT = """🆘 ClaudeTeam 斜杠命令（router 直接处理，零 LLM 消耗）
+_HELP_TEXT = """🆘 ClaudeTeam 自定义斜杠命令（零 LLM，router/hook 直拦）
 
 /help                    → 本帮助
-/team                    → 所有员工 tmux 实时状态（emoji + 汇总）
-/health                  → 部署 health 快照（路径/binaries/proxy/tmux/daemons）
-/usage [view]            → claude-code 用量（ccusage 包装）
-/tmux [agent] [lines]    → capture-pane 抓窗口（默认第一个 agent / 10 行）
-/send <agent> <msg>      → 直接 tmux send-keys 注入消息到 agent 窗口
-/compact [agent]         → 群聊无参=压缩第一个 agent；带参压缩指定 agent
+/team                    → 所有员工实时 tmux 状态（卡片）
+/usage                   → claude-code 用量（ccusage 包装，卡片）
+/health                  → 主机 + 员工资源占用（卡片）
+/tmux [agent] [lines]    → capture-pane 窗口（默认 manager/10 行）
+/send <agent> <msg>      → 直接注入消息到 agent 窗口
+/compact [agent]         → 群聊无参=压缩 manager；带参压缩指定 agent
 /stop <agent>            → 送 C-c 到 agent 窗口（中断当前动作）
-/clear <agent>           → 送 /clear + 重新入职 init prompt"""
+/clear <agent>           → 送 /clear + 重新入职 init_msg（相当于 rehire）"""
 
 
 def _handle_help(args: str, ctx: SlashContext) -> str:
@@ -119,13 +119,17 @@ def _handle_help(args: str, ctx: SlashContext) -> str:
 def _handle_team(args: str, ctx: SlashContext) -> str:
     """Capture each agent's pane, classify state, format as table.
 
-    Output mirrors the old branch's /team text block:
-      👥 /team — 员工实时状态 (2026-05-03 09:30)
-        💤 manager       idle
-        🔄 worker_cc     working 1m 12s
-        ⚠️  worker_codex  awaiting permission
-        🛑 worker_kimi   CLI not running (bash)
-      汇总: 4 agents · 💤 1 / 🔄 1 / ⚠️ 1 / 🛑 1
+    Output mirrors main branch's /team text block (cards aren't supported
+    yet on this rebuild — text only):
+      👥 /team — 员工实时状态 (2026-05-03 09:30 北京时间)
+
+      [本机 ClaudeTeam]
+        💤 manager     idle
+        🔄 worker_cc   working 1m 12s
+        ⚠️  worker_codex awaiting permission
+        🛑 worker_kimi CLI not running (bash)
+
+      汇总：4 agents · 💤 1 / 🔄 1 / ⚠️ 1 / 🛑 1
     """
     now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     rows = []
@@ -141,20 +145,21 @@ def _handle_team(args: str, ctx: SlashContext) -> str:
         tally[emoji] += 1
 
     name_w = max((len(a) for a, *_ in rows), default=8)
-    lines = [f"👥 /team — 员工实时状态 ({now_str})", ""]
+    lines = [f"👥 /team — 员工实时状态 ({now_str} 北京时间)", ""]
+    lines.append(f"[本机 {ctx.session}]")
     for agent, emoji, brief in rows:
-        lines.append(f"  {emoji} {agent.ljust(name_w)}  {brief}")
+        lines.append(f"  {emoji} {agent.ljust(name_w)} {brief}")
     lines.append("")
     total = sum(tally.values())
     summary = " / ".join(f"{k} {v}" for k, v in tally.most_common())
-    lines.append(f"汇总: {total} agents · {summary}")
+    lines.append(f"汇总：{total} agents · {summary}")
     return "\n".join(lines)
 
 
 def _handle_health(args: str, ctx: SlashContext) -> str:
     now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     out = _shell(ctx, ["claudeteam", "health"], timeout=60)
-    return f"🩺 /health — 部署快照 ({now_str})\n\n{out}"
+    return f"🩺 /health — 部署快照 ({now_str} 北京时间)\n\n{out}"
 
 
 def _handle_usage(args: str, ctx: SlashContext) -> str:
@@ -165,7 +170,7 @@ def _handle_usage(args: str, ctx: SlashContext) -> str:
         argv += ["--view", view_arg]
     view = view_arg or "daily"
     out = _shell(ctx, argv, timeout=120)
-    return f"📊 /usage ({view}) ({now_str})\n\n{out}"
+    return f"📊 /usage ({view}) — ({now_str} 北京时间)\n\n{out}"
 
 
 def _handle_tmux(args: str, ctx: SlashContext) -> str:
@@ -177,7 +182,7 @@ def _handle_tmux(args: str, ctx: SlashContext) -> str:
         return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(ctx.agent_set)}）"
     target = tmux.Target(ctx.session, agent)
     body = tmux.capture_pane(target, lines=n_lines).rstrip() or "(窗口为空)"
-    return f"📺 {ctx.session}:{agent} 最后 {n_lines} 行\n\n{body}"
+    return f"📺 /tmux {agent} — 最近 {n_lines} 行 ({ctx.session})\n\n{body}"
 
 
 def _handle_send(args: str, ctx: SlashContext) -> str:

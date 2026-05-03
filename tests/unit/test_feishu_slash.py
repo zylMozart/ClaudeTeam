@@ -86,7 +86,7 @@ def test_team_classifies_each_pane_state_with_emoji():
     assert "💤" in reply and "manager" in reply       # bypass marker → idle
     assert "🔄" in reply and "worker_cc" in reply     # esc to interrupt → working
     assert "🔘" in reply and "worker_codex" in reply  # tail-fallback
-    assert "汇总: 3 agents" in reply
+    assert "汇总：3 agents" in reply
 
 
 # ── /health ──────────────────────────────────────────────────────
@@ -138,7 +138,9 @@ def test_tmux_captures_specified_pane():
         reply = slash.dispatch("/tmux worker_cc 30", _ctx())
     assert ("ClaudeTeam:worker_cc", 30) in captured["calls"]
     assert "line1\nline2\nline3" in reply
-    assert "ClaudeTeam:worker_cc" in reply
+    # Title now matches main: "📺 /tmux worker_cc — 最近 N 行 (SESSION)"
+    assert "/tmux worker_cc" in reply
+    assert "ClaudeTeam" in reply  # session shown in parens
 
 
 def test_tmux_unknown_agent_returns_warning():
