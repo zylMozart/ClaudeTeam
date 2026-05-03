@@ -96,10 +96,17 @@ def is_alive(spec: ProcessSpec, *,
 
 
 def respawn(spec: ProcessSpec, *,
-            popen: Callable = subprocess.Popen) -> bool:
+            popen: Callable | None = None) -> bool:
+    """Spawn `spec` detached. Returns True on launch, False on OSError.
+
+    `popen` is resolved at call time (not as a default-arg) so callers
+    that monkeypatch `subprocess.Popen` for tests intercept this call
+    too — `claudeteam up`'s test rig relies on that.
+    """
+    runner = popen if popen is not None else subprocess.Popen
     try:
-        popen(spec.spawn_cmd, start_new_session=True,
-              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        runner(spec.spawn_cmd, start_new_session=True,
+               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except (OSError, ValueError) as e:
         print(f"  ⚠️ {spec.name} respawn failed: {e}")

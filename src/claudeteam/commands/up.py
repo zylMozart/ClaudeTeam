@@ -10,8 +10,6 @@ Returns 0 if everything ends up alive, 1 if any required step failed.
 """
 from __future__ import annotations
 
-import os
-import subprocess
 import time
 
 from claudeteam.commands import start as _start
@@ -31,12 +29,9 @@ def _ensure_daemon(spec: watchdog.ProcessSpec) -> int:
     if watchdog.is_alive(spec):
         print(f"⏭  {spec.name} already alive, skipping")
         return 0
-    try:
-        subprocess.Popen(spec.spawn_cmd, start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         env=os.environ.copy())
-    except OSError as e:
-        return error_exit(f"❌ failed to spawn {spec.name}: {e}")
+    if not watchdog.respawn(spec):
+        # respawn() already prints the OS error reason; up.py just sets rc=1.
+        return error_exit(f"❌ failed to spawn {spec.name}")
     # Give the daemon a beat to write its pid file
     for _ in range(20):
         if spec.pid_file.exists():
