@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from claudeteam.agents import adapter_for_agent as _default_adapter_for_agent
+from claudeteam.agents import identity as _identity
+from claudeteam.feishu import chat as _chat
 from claudeteam.feishu import slash as _slash
 from claudeteam.feishu.router import Action, Decision
 from claudeteam.runtime import config, tmux, wake
@@ -58,9 +60,31 @@ def _write_inbox(agent: str, sender: str, decision: Decision,
     return True
 
 
+def _build_wake_args(agent: str, adapter) -> dict:
+    """Kwargs for wake_fn: spawn_cmd, init_msg, on_woken.
+
+    Wrapping the lazy-wake setup keeps `_inject_to_pane` focused on its
+    actual job (deliver text) and isolates the cross-module wiring
+    (start.pane_env_prefix, identity.init_prompt, status upsert).
+    """
+    # Local import: pane_env_prefix lives in commands/start.py to share
+    # with hire.py; importing at module-top would couple deliver.py to a
+    # command module purely for one helper. Cheap and one-shot here.
+    from claudeteam.commands.start import pane_env_prefix
+    spawn_cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
+    return {
+        "spawn_cmd": spawn_cmd,
+        "init_msg": _identity.init_prompt(agent),
+        # Flip status from "待命" to "进行中" so `claudeteam team` reflects
+        # reality once the lazy pane actually wakes up.
+        "on_woken": lambda: local_facts.upsert_status(
+            agent, "进行中", "responding to first message"),
+    }
+
+
 def _inject_to_pane(agent: str, decision: Decision,
                     deps: _Deps, wake_fn: Callable | None) -> str:
-    """Try to deliver `decision.text` to the agent's pane.
+    """Deliver `decision.text` to the agent's pane.
 
     Returns a DeliveryReport field name: 'injected' / 'failed_inject' /
     'rate_limited'.
@@ -72,18 +96,7 @@ def _inject_to_pane(agent: str, decision: Decision,
             print(f"  ⏸  {agent} rate-limited; inbox row kept, inject skipped")
             return "rate_limited"
         if wake_fn is not None:
-            # Wrap with the same env prefix start.py / hire.py use so a
-            # lazy-woken pane inherits CLAUDETEAM_STATE_DIR and friends.
-            from claudeteam.agents import identity as _identity
-            from claudeteam.commands.start import pane_env_prefix
-            spawn_cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
-            init_msg = _identity.init_prompt(agent)
-            # A lazy pane that just got woken needs its status flipped from
-            # "待命" to "进行中" so `claudeteam team` reflects reality.
-            on_woken = lambda: local_facts.upsert_status(
-                agent, "进行中", "responding to first message")
-            if not wake_fn(target, adapter, spawn_cmd=spawn_cmd,
-                           init_msg=init_msg, on_woken=on_woken):
+            if not wake_fn(target, adapter, **_build_wake_args(agent, adapter)):
                 print(f"  ⚠️ {agent} pane not ready; injecting anyway")
         ok = deps.tmux_inject(target, decision.text, submit_keys=adapter.submit_keys())
     except Exception as e:
@@ -154,7 +167,6 @@ def _apply_slash(decision: Decision, deps: _Deps, *,
 
     report = DeliveryReport(slash_reply=reply)
     if chat_send is None:
-        from claudeteam.feishu import chat as _chat
         chat_send = _chat.send_text
     chat = chat_id if chat_id is not None else config.chat_id()
     if not chat:
