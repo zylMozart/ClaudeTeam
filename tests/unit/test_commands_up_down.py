@@ -27,35 +27,33 @@ def _fake_tmux(session_alive=False):
         yield state
 
 
+class _FakePopenProc:
+    """subprocess.Popen-shaped fake good enough for both `watchdog.respawn`
+    (which discards the proc) and `watchdog.list_orphan_pids` →
+    `subprocess.run` (which uses Popen as context manager and calls
+    poll/communicate/wait/kill on the result). Round-65 round-67: hoisted
+    to module level so `_fake_popen` and `silent_popen` share one
+    Popen-contract surface — fixing a subprocess-internal contract change
+    only needs touching one class."""
+
+    def __init__(self, argv):
+        self.argv = argv
+        self.returncode = 0
+        self.stdout = ""
+        self.stderr = ""
+
+    def __enter__(self): return self
+    def __exit__(self, *exc): return False
+    def communicate(self, *a, **kw): return (self.stdout, self.stderr)
+    def wait(self, *a, **kw): return self.returncode
+    def poll(self): return self.returncode
+    def kill(self): return None
+
+
 @contextlib.contextmanager
 def _fake_popen():
-    """Replace subprocess.Popen used by up.py.
-
-    Round-65: _FakeProc must support the context-manager protocol because
-    subprocess.run (used by watchdog.list_orphan_pids → ps) calls Popen
-    via `with Popen(...) as process:`. Without __enter__/__exit__, run
-    raises TypeError before reaching our reap_orphans logic.
-    """
+    """Replace subprocess.Popen used by up.py."""
     calls = []
-
-    class _FakeProc:
-        def __init__(self, argv):
-            self.argv = argv
-            self.returncode = 0
-            self.stdout = ""
-            self.stderr = ""
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def communicate(self, *a, **kw):
-            return (self.stdout, self.stderr)
-
-        def wait(self, *a, **kw):
-            return self.returncode
 
     def fake_popen(argv, *args, **kwargs):
         calls.append(list(argv))
@@ -66,7 +64,7 @@ def _fake_popen():
         elif argv[:2] == ["claudeteam", "watchdog"]:
             paths.ensure_state_dir()
             paths.watchdog_pid_file().write_text("12346", encoding="utf-8")
-        return _FakeProc(argv)
+        return _FakePopenProc(argv)
 
     with attr_patch(subprocess, Popen=fake_popen):
         yield calls
@@ -146,19 +144,7 @@ def test_up_returns_one_when_daemon_fast_fails_no_pid_file():
 
     def silent_popen(argv, *args, **kwargs):
         # Popen succeeds but the daemon fast-fails — never writes a pid
-        class _FakeProc:
-            def __init__(self, argv):
-                self.argv = argv
-                self.returncode = 0
-                self.stdout = ""
-                self.stderr = ""
-            def __enter__(self): return self
-            def __exit__(self, *exc): return False
-            def communicate(self, *a, **kw): return ("", "")
-            def wait(self, *a, **kw): return 0
-            def poll(self): return self.returncode
-            def kill(self): return None
-        return _FakeProc(argv)
+        return _FakePopenProc(argv)
 
     with isolated_env(team=team), _fake_tmux(session_alive=True), \
             attr_patch(subprocess, Popen=silent_popen), \
