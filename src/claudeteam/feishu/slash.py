@@ -85,6 +85,18 @@ def _beijing_stamp(ctx: SlashContext) -> str:
     return f"{ctx.now().strftime('%Y-%m-%d %H:%M')} 北京时间"
 
 
+def _fenced_block(text: str) -> str:
+    """Wrap `text` in a triple-backtick lark_md fence so monospace /
+    box-drawing / ANSI artefacts survive Feishu's lark_md collapsing
+    (which would otherwise eat indentation and merge consecutive spaces).
+
+    Round-118: extracted from 3 card handlers (/health, /usage, /tmux)
+    that all do the same `f"```\\n{out}\\n```"` wrap. Empty / whitespace-
+    only input still produces a valid fence so Feishu doesn't reject
+    the card."""
+    return f"```\n{text}\n```"
+
+
 def _default_agent(ctx: SlashContext) -> str:
     return ctx.team_agents[0] if ctx.team_agents else "manager"
 
@@ -195,10 +207,9 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     # _BAD / _WARN). Either should flip the card off green so the boss
     # notices something's off without reading the body.
     color = "yellow" if ("❌" in out or "⚠️" in out) else "green"
-    body = f"```\n{out}\n```"
     return simple_card(
         f"🩺 /health — 部署快照 {_beijing_stamp(ctx)}",
-        body,
+        _fenced_block(out),
         color=color,
     )
 
@@ -216,10 +227,9 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
         argv += ["--view", view_arg]
     view = view_arg or "daily"
     out = _shell(ctx, argv, timeout=120)
-    body = f"```\n{out}\n```"
     return simple_card(
         f"📊 /usage ({view}) — {_beijing_stamp(ctx)}",
-        body,
+        _fenced_block(out),
         color="blue",
     )
 
@@ -242,10 +252,9 @@ def _handle_tmux(args: str, ctx: SlashContext) -> str | dict:
         return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(ctx.agent_set)}）"
     target = tmux.Target(ctx.session, agent)
     raw = tmux.capture_pane(target, lines=n_lines).rstrip() or "(窗口为空)"
-    body = f"```\n{raw}\n```"
     return simple_card(
         f"📺 /tmux {agent} — 最近 {n_lines} 行 [{ctx.session}]",
-        body,
+        _fenced_block(raw),
         color="blue",
     )
 
