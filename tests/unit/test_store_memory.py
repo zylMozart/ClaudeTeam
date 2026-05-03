@@ -119,3 +119,57 @@ def test_all_agents_with_memory_lists_only_agents_that_wrote():
         memory.append("worker_cc", "note", "w")
         agents = list(memory.all_agents_with_memory())
         assert sorted(agents) == ["manager", "worker_cc"]
+
+
+# ── Round-106: KNOWN_KINDS soft validation ──────────────────────
+
+
+def test_known_kinds_covers_documented_vocabulary():
+    """The 6 conventional kinds match what manager identity v2 +
+    install-hooks `/remember` documentation teaches. Pin the set so a
+    drift between code and docs gets caught."""
+    assert set(memory.KNOWN_KINDS) == {
+        "task_assigned", "task_completed", "learning",
+        "blocker", "decision", "note",
+    }
+
+
+def test_append_warns_on_unknown_kind_but_still_writes():
+    """Soft validation: unknown kind prints a stderr warning but the
+    entry IS persisted. Free-form is sometimes the right call (a
+    one-off `experiment_log`); we only nudge."""
+    import contextlib, io
+    with isolated_env():
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            memory.append("worker_cc", "fyi", "this is a note")
+        # Warning visible
+        assert "unknown kind 'fyi'" in err.getvalue()
+        # Entry still written
+        rows = memory.list_recent("worker_cc")
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "fyi"
+
+
+def test_append_silent_for_known_kinds():
+    """No noise when the kind is in the convention — only unknown
+    kinds nudge, otherwise stderr would flood on every memory write."""
+    import contextlib, io
+    with isolated_env():
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for k in memory.KNOWN_KINDS:
+                memory.append("manager", k, f"{k} content")
+        assert err.getvalue() == ""
+
+
+def test_append_empty_kind_does_not_warn():
+    """Empty `kind` (some integration callers might pass it) — don't
+    warn. Validate only when something IS supplied that misses the
+    vocabulary."""
+    import contextlib, io
+    with isolated_env():
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            memory.append("manager", "", "anonymous note")
+        assert err.getvalue() == ""

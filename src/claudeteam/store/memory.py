@@ -29,6 +29,20 @@ from claudeteam.util import flock, now_ms, read_jsonl
 
 _MAX_PER_AGENT = 200  # cap retained entries; oldest get dropped on overflow
 
+# Convention vocabulary for memory entry `kind`. Not enforced — `append`
+# accepts any string so future kinds can land without a code change —
+# but unknown kinds get a soft stderr warning so boss `recall` reading
+# doesn't get a long-tail of free-form labels (`fyi`, `important!!!`,
+# `mood-of-day`) that fragment the schema. Round-106 added the warn.
+KNOWN_KINDS: tuple[str, ...] = (
+    "task_assigned",
+    "task_completed",
+    "learning",
+    "blocker",
+    "decision",
+    "note",
+)
+
 
 def _agent_dir(agent: str):
     return paths.facts_dir() / agent
@@ -49,7 +63,18 @@ def append(agent: str, kind: str, content: str, *, ref: str = "") -> dict:
     panes don't interleave bytes mid-line. Caller passes `ref` (a
     message_id, task_id, etc.) when the memory is tied to an external
     artefact — it is rendered verbatim into the recall view, not parsed.
+
+    Round-106: when `kind` isn't in KNOWN_KINDS, print a one-line
+    stderr warning suggesting a known kind. Doesn't reject the write
+    (free-form is sometimes the right call), just nudges so recall
+    output stays scannable.
     """
+    if kind and kind not in KNOWN_KINDS:
+        import sys
+        print(f"  ⚠️ memory.append: unknown kind {kind!r} for {agent} — "
+              f"convention is {sorted(KNOWN_KINDS)}; entry written "
+              f"anyway",
+              file=sys.stderr)
     entry = {
         "kind": str(kind),
         "content": str(content or ""),
