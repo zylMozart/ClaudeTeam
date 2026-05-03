@@ -51,16 +51,13 @@ def _run_ccusage(view: str, days: str = "",
     return r.returncode, out
 
 
-def _summary_for_clis(clis: set[str]) -> list[str]:
-    lines = []
-    for cli in sorted(clis):
-        if cli == "claude-code":
-            continue   # handled by ccusage block
-        if cli in ("codex-cli", "kimi-code", "kimi-cli"):
-            lines.append(f"  {cli}: no upstream usage tool — track via the provider dashboard")
-        else:
-            lines.append(f"  {cli}: unknown — no usage adapter")
-    return lines
+_NO_TOOL = "no upstream usage tool — track via the provider dashboard"
+_UNKNOWN = "unknown — no usage adapter"
+_KNOWN_NO_TOOL = ("codex-cli", "kimi-code", "kimi-cli")
+
+
+def _note_for(cli: str) -> str:
+    return _NO_TOOL if cli in _KNOWN_NO_TOOL else _UNKNOWN
 
 
 def _build_data(view: str, days: str, clis: set[str]) -> dict:
@@ -84,11 +81,7 @@ def _build_data(view: str, days: str, clis: set[str]) -> dict:
     for cli in sorted(clis):
         if cli == "claude-code":
             continue
-        if cli in ("codex-cli", "kimi-code", "kimi-cli"):
-            note = "no upstream usage tool — track via the provider dashboard"
-        else:
-            note = "unknown — no usage adapter"
-        data["other_clis"].append({"cli": cli, "note": note})
+        data["other_clis"].append({"cli": cli, "note": _note_for(cli)})
     return data
 
 

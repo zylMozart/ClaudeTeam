@@ -47,6 +47,27 @@ and `tests/scenarios/*.md` (operator-run regression playbooks).
    and `run_cli()`.  Don't copy-paste a new `_isolated_state()` per
    file (R16 deleted ~150 LOC of that duplication).
 
+## Simplicity gate (read before opening a PR)
+
+Inspired by `forrestchang/andrej-karpathy-skills` CLAUDE.md.  Before
+merging a refactor or new module, walk this checklist:
+
+- **Two-use rule.**  Helpers, dataclasses, and base classes only earn
+  their own existence at the *third* call site.  Two similar blocks
+  inline beats one premature abstraction.
+- **Dead code = delete.**  An unused private function isn't
+  "documentation" — it's noise that drifts.  If `grep -rn '\b_fn\b'`
+  shows only the definition, remove it.
+- **Single-file ceiling: ~300 LOC.**  Past that, ask whether the file
+  is doing two jobs.  If yes, split.  If no, leave it.
+- **Match the canonical command.**  `commands/health.py` is the
+  reference shape: `_check_*` helpers + `HealthReport` accumulator +
+  `_emit_text` / `_emit_json` + `main(argv)`.  New commands that look
+  drastically different need a one-line "why" in their docstring.
+- **No compatibility shims for unreleased work.**  If you renamed a
+  function nobody outside the repo calls, just rename it everywhere;
+  don't leave a wrapper.
+
 ## Test gate (must stay green)
 
 ```bash
