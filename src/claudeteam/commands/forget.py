@@ -24,7 +24,7 @@ from claudeteam.util import (
 
 USAGE = (
     "usage: claudeteam forget <agent> [--kind K] [--yes]\n"
-    f"       known kinds: {' / '.join(memory.KNOWN_KINDS)}\n"
+    f"       known kinds: {memory.kinds_summary()}\n"
     "       (--kind drops only that slice; default = all entries)"
 )
 

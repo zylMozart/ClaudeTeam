@@ -29,7 +29,7 @@ from claudeteam.util import (
 
 USAGE = (
     "usage: claudeteam recall <agent> [--limit N] [--kind K] [--json]\n"
-    f"       known kinds: {' / '.join(memory.KNOWN_KINDS)}\n"
+    f"       known kinds: {memory.kinds_summary()}\n"
     "       (--kind accepts any string; unknown kinds get a stderr nudge)"
 )
 

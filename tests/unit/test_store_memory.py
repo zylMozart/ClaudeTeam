@@ -180,6 +180,20 @@ def test_known_kinds_covers_documented_vocabulary():
     }
 
 
+def test_kinds_summary_renders_canonical_separator():
+    """Round-119: USAGE strings + future docs format kinds with `' / '`.
+    The helper is the single source of truth so a separator change
+    (e.g. to commas) propagates without grep-and-replace."""
+    s = memory.kinds_summary()
+    # Every kind shows up at least once
+    for k in memory.KNOWN_KINDS:
+        assert k in s
+    # Separator is `" / "` (with surrounding spaces)
+    assert " / " in s
+    # No double-separator (would mean order quirk)
+    assert " /  / " not in s
+
+
 def test_append_warns_on_unknown_kind_but_still_writes():
     """Soft validation: unknown kind prints a stderr warning but the
     entry IS persisted. Free-form is sometimes the right call (a

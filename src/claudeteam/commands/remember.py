@@ -20,7 +20,7 @@ from claudeteam.util import maybe_print_help, pop_flag, usage_error
 
 USAGE = (
     "usage: claudeteam remember <agent> <kind> <content> [--ref <ref>]\n"
-    f"       known kinds: {' / '.join(memory.KNOWN_KINDS)}\n"
+    f"       known kinds: {memory.kinds_summary()}\n"
     "       (any string accepted; unknown kinds get a stderr nudge)"
 )
 

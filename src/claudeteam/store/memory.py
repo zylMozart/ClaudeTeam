@@ -44,6 +44,15 @@ KNOWN_KINDS: tuple[str, ...] = (
 )
 
 
+def kinds_summary() -> str:
+    """`' / '`-joined list of KNOWN_KINDS — used by `claudeteam remember /
+    recall / forget` USAGE strings. Round-119: extracted from the three
+    CLI commands so the separator (and any future kinds) flows from one
+    place. Slash handlers prefer `sorted(KNOWN_KINDS)` for in-card
+    display so they're not affected."""
+    return " / ".join(KNOWN_KINDS)
+
+
 def _agent_dir(agent: str):
     return paths.facts_dir() / agent
 
