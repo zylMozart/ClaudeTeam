@@ -298,10 +298,14 @@ def test_slash_logs_warning_when_chat_send_returns_none():
 
     decision = Decision(action=Action.SLASH, text="/help",
                         msg_id="om_slash_test", create_time="0")
-    chat_send_calls = []
+    # Round-79: /help now returns a card dict; it routes through
+    # chat_send_card, not chat_send. Capture both sites so the test still
+    # exercises the failure path regardless of which transport the handler
+    # picked.
+    chat_send_card_calls = []
 
-    def failing_chat_send(chat_id, text, **kw):
-        chat_send_calls.append({"chat_id": chat_id, "text": text, **kw})
+    def failing_chat_send_card(chat_id, card, **kw):
+        chat_send_card_calls.append({"chat_id": chat_id, "card": card, **kw})
         return None  # simulate lark-cli failure
 
     out = io.StringIO()
@@ -309,15 +313,14 @@ def test_slash_logs_warning_when_chat_send_returns_none():
                       runtime_config={"chat_id": "oc_x"}), \
             contextlib.redirect_stdout(out):
         report = apply(decision,
-                       chat_send=failing_chat_send,
+                       chat_send_card=failing_chat_send_card,
                        team_agents=["manager"],
                        chat_id="oc_x",
                        profile="prod")
-    # chat_send was called (slash dispatched + tried to post)
-    assert len(chat_send_calls) == 1
-    assert "/help" in chat_send_calls[0]["text"] or "🆘" in chat_send_calls[0]["text"]
+    # send_card was called (slash dispatched + tried to post a card)
+    assert len(chat_send_card_calls) == 1
+    body = chat_send_card_calls[0]["card"]["elements"][0]["text"]["content"]
+    assert "/help" in body or "🆘" in body
     # Warning was logged so operator can grep the daemon log
     log = out.getvalue()
     assert "chat reply for om_slash_test failed to post" in log
-    # slash_reply was still computed (the dispatch worked)
-    assert report.slash_reply

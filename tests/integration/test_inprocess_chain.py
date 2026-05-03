@@ -20,18 +20,30 @@ from claudeteam.store import local_facts
 
 @contextlib.contextmanager
 def _fake_chat_send():
-    """Intercept feishu.chat.send_text so the SLASH path doesn't try
-    to hit a real Feishu API. Returns a state dict recording each post.
-    """
+    """Intercept feishu.chat.send_text + send_card so the SLASH path doesn't
+    try to hit a real Feishu API. Returns a state dict recording each post;
+    `posts[i]['kind']` is `"text"` or `"card"` and `posts[i]['text']` carries
+    the text body for both (cards' body is pulled from elements[0])."""
     state = {"posts": []}
 
-    def fake(chat_id, text, **kw):
-        state["posts"].append({"chat_id": chat_id, "text": text, **kw})
+    def fake_text(chat_id, text, **kw):
+        state["posts"].append({"chat_id": chat_id, "text": text,
+                               "kind": "text", **kw})
         return {"message_id": "om_fake"}
+
+    def fake_card(chat_id, card, **kw):
+        body = ""
+        try:
+            body = card["elements"][0]["text"]["content"]
+        except (KeyError, IndexError, TypeError):
+            pass
+        state["posts"].append({"chat_id": chat_id, "card": card,
+                               "text": body, "kind": "card", **kw})
+        return {"message_id": "om_fake_card"}
 
     from helpers import attr_patch
     from claudeteam.feishu import chat as _chat_module
-    with attr_patch(_chat_module, send_text=fake):
+    with attr_patch(_chat_module, send_text=fake_text, send_card=fake_card):
         yield state
 
 
@@ -258,7 +270,9 @@ def test_broadcast_from_known_agent_excludes_sender():
 
 def test_slash_help_does_not_touch_inboxes_or_panes():
     """`/help` is recognised at the router level → bot reply only,
-    no inbox row, no pane inject. This is the core "zero LLM" promise."""
+    no inbox row, no pane inject. This is the core "zero LLM" promise.
+    Round-79: /help now sends a card (kind="card"); cards don't carry
+    reply_to (Feishu interactive cards don't thread)."""
     with _isolated(), _fake_inject() as inj, _fake_chat_send() as chat:
         line = _ndjson_event("om_help_1", "ou_user", "/help")
         stats = _run_lines([line])
@@ -270,24 +284,23 @@ def test_slash_help_does_not_touch_inboxes_or_panes():
         # Zero inbox rows written
         for agent in _DEFAULT_AGENTS:
             assert local_facts.list_messages(agent) == []
-        # The bot reply IS posted to chat
+        # The bot reply IS posted to chat — as a card
         assert len(chat["posts"]) == 1
+        assert chat["posts"][0]["kind"] == "card"
         assert "/help" in chat["posts"][0]["text"]
-        # ...with reply_to threading back to the boss's message
-        assert chat["posts"][0]["reply_to"] == "om_help_1"
 
 
 def test_slash_with_sender_prefix_still_recognised():
     """REGRESSION (round A2 B1): `say` wraps outbound text with
     `[<sender>] ...`. The router pre-strips that prefix before checking
-    for `/`, so `[boss] /team` still dispatches as a slash command."""
+    for `/`, so `[boss] /help` still dispatches as a slash command."""
     with _isolated(), _fake_inject() as inj, _fake_chat_send() as chat:
         line = _ndjson_event("om_slash_2", "ou_user", "[boss] /help")
         _run_lines([line])
         # zero panes, one chat post (bot reply)
         assert inj["calls"] == []
         assert len(chat["posts"]) == 1
-        # The reply is the help text — "/help" appears in the body
+        # /help sends a card whose body contains "/help"
         assert "/help" in chat["posts"][0]["text"]
 
 

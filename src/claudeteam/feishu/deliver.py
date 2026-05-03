@@ -111,6 +111,7 @@ def apply(decision: Decision, *,
           team_agents: list[str] | None = None,
           slash_dispatch: Callable | None = None,
           chat_send: Callable | None = None,
+          chat_send_card: Callable | None = None,
           chat_id: str | None = None,
           profile: str | None = None) -> DeliveryReport:
     """Apply `decision`. Side-effects per action:
@@ -134,6 +135,7 @@ def apply(decision: Decision, *,
                             team_agents=team_agents,
                             slash_dispatch=slash_dispatch,
                             chat_send=chat_send,
+                            chat_send_card=chat_send_card,
                             chat_id=chat_id,
                             profile=profile)
 
@@ -151,10 +153,16 @@ def _apply_slash(decision: Decision, deps: _Deps, *,
                  team_agents: list[str] | None,
                  slash_dispatch: Callable | None,
                  chat_send: Callable | None,
+                 chat_send_card: Callable | None,
                  chat_id: str | None,
                  profile: str | None) -> DeliveryReport:
     """Run slash command at router level (zero LLM) and post reply to chat
-    as bot. Pane is never touched."""
+    as bot. Pane is never touched.
+
+    Round-79: dispatch may now return a dict (Feishu card schema) — branch
+    on type to call chat.send_card instead of chat.send_text. `reply_to`
+    only applies to the text path; cards don't support thread-reply.
+    """
     dispatch = slash_dispatch or _slash.dispatch
     ctx = _slash.SlashContext(
         team_agents=team_agents or config.agent_names(),
@@ -162,19 +170,24 @@ def _apply_slash(decision: Decision, deps: _Deps, *,
     )
     reply = dispatch(decision.text, ctx)
 
-    report = DeliveryReport(slash_reply=reply)
-    if chat_send is None:
-        chat_send = _chat.send_text
+    report = DeliveryReport(slash_reply=reply if isinstance(reply, str) else "")
     chat = chat_id if chat_id is not None else config.chat_id()
     if not chat:
-        print(f"  ⚠️ slash reply ready but chat_id unset; reply suppressed:\n{reply[:200]}")
+        preview = (reply[:200] if isinstance(reply, str)
+                   else str(reply)[:200])
+        print(f"  ⚠️ slash reply ready but chat_id unset; reply suppressed:\n{preview}")
         return report
     prof = profile if profile is not None else config.lark_profile()
-    result = chat_send(chat, reply, profile=prof, as_user=False, reply_to=decision.msg_id)
+    if isinstance(reply, dict):
+        send_card = chat_send_card or _chat.send_card
+        result = send_card(chat, reply, profile=prof, as_user=False)
+    else:
+        send_text = chat_send or _chat.send_text
+        result = send_text(chat, reply, profile=prof, as_user=False,
+                           reply_to=decision.msg_id)
     if result is None:
-        # chat.send_text already logged the underlying failure (timeout,
-        # FileNotFoundError, API error, etc.). Surface a one-line warning
-        # here too so router.log makes it obvious the slash dispatch
-        # ran but its reply card never landed in chat.
+        # chat.send_text/send_card already logged the underlying failure.
+        # Surface a one-line warning here so router.log makes it obvious
+        # the slash dispatch ran but the reply never landed in chat.
         print(f"  ⚠️ slash dispatched OK but chat reply for {decision.msg_id} failed to post")
     return report

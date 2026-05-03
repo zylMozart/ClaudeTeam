@@ -35,6 +35,7 @@ from typing import Callable
 
 from claudeteam.agents import identity
 from claudeteam.feishu import pane_state
+from claudeteam.feishu.cards import simple_card
 from claudeteam.runtime import tmux
 
 
@@ -112,8 +113,11 @@ _HELP_TEXT = """🆘 ClaudeTeam 自定义斜杠命令（零 LLM，router/hook �
 /clear <agent>           → 送 /clear + 重新入职 init_msg（相当于 rehire）"""
 
 
-def _handle_help(args: str, ctx: SlashContext) -> str:
-    return _HELP_TEXT
+def _handle_help(args: str, ctx: SlashContext) -> dict:
+    """/help → interactive card. Returning a dict (instead of str) signals
+    deliver._apply_slash to send via chat.send_card. The body is the same
+    text block used historically; only the wrapper changes."""
+    return simple_card("🆘 ClaudeTeam 自定义斜杠命令", _HELP_TEXT)
 
 
 def _handle_team(args: str, ctx: SlashContext) -> str:
@@ -283,8 +287,12 @@ def is_slash_command(text: str) -> bool:
     return cmd in _HANDLERS
 
 
-def dispatch(text: str, ctx: SlashContext) -> str:
-    """Route `text` to its handler, return the reply (always a string).
+def dispatch(text: str, ctx: SlashContext) -> str | dict:
+    """Route `text` to its handler, return the reply.
+
+    Return type is union: legacy handlers return `str` (sent as plain text);
+    cards-aware handlers return `dict` (Feishu card schema, sent via
+    `chat.send_card`). `deliver._apply_slash` branches on type.
 
     Unknown commands get a `/help` suggestion. Handler exceptions are
     caught and returned as `⚠️ slash handler error: …` so a buggy

@@ -1,0 +1,9 @@
+{
+  "session": "claudeteam",
+  "agents": {
+    "manager":   { "role": "团队主管",   "emoji": "🎯", "color": "blue" },
+    "architect": { "role": "系统架构师", "emoji": "🏗",  "color": "purple" },
+    "coder":     { "role": "软件工程师", "emoji": "💻", "color": "green" },
+    "tester":    { "role": "测试工程师", "emoji": "🧪", "color": "orange" }
+  }
+}

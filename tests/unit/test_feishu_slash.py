@@ -55,11 +55,17 @@ def test_is_slash_command_handles_leading_whitespace():
 # ── /help ────────────────────────────────────────────────────────
 
 
-def test_help_lists_all_commands():
+def test_help_returns_card_listing_all_commands():
+    """Round-79: /help now returns a Feishu card dict (not text). The card's
+    body element is the same _HELP_TEXT block, so command-name search runs
+    against `elements[0]['text']['content']` instead of the bare reply."""
     reply = slash.dispatch("/help", _ctx())
+    assert isinstance(reply, dict), f"/help should return a card dict, got {type(reply)}"
+    assert reply["header"]["title"]["content"] == "🆘 ClaudeTeam 自定义斜杠命令"
+    body = reply["elements"][0]["text"]["content"]
     for c in ("/help", "/team", "/health", "/usage", "/tmux",
               "/send", "/compact", "/stop", "/clear"):
-        assert c in reply
+        assert c in body
 
 
 # ── /team ────────────────────────────────────────────────────────
