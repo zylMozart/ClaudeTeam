@@ -211,3 +211,35 @@ def test_default_specs_includes_router_pointing_at_state_dir():
         router = next(s for s in specs if s.name == "router")
         assert str(router.pid_file).startswith(str(tmp))
         assert router.spawn_cmd == ["claudeteam", "router"]
+
+
+def test_default_specs_does_not_include_watchdog():
+    """default_specs is what the watchdog itself supervises — and the
+    watchdog doesn't supervise itself (no infinite recursion). It only
+    knows about router."""
+    from claudeteam.runtime.watchdog import default_specs as _default
+    with isolated_env():
+        names = [s.name for s in _default()]
+    assert names == ["router"]
+
+
+def test_all_known_specs_includes_both_router_and_watchdog():
+    """all_known_specs is the bigger list used by `claudeteam health`
+    (and `claudeteam up` / `claudeteam down`) to enumerate every
+    daemon ClaudeTeam ships. Includes the watchdog itself so health
+    can verify its lock file matches a live process."""
+    from claudeteam.runtime.watchdog import all_known_specs
+    with isolated_env() as tmp:
+        specs = all_known_specs()
+        names = sorted(s.name for s in specs)
+        assert names == ["router", "watchdog"]
+        # Both pid files live under the isolated state_dir
+        for s in specs:
+            assert str(s.pid_file).startswith(str(tmp))
+        # spawn_cmd shape is ["claudeteam", <name>]
+        for s in specs:
+            assert s.spawn_cmd == ["claudeteam", s.name]
+        # Both expect the "claudeteam" cmdline marker (defends against
+        # PID reuse — see ProcessSpec.expected_cmdline)
+        for s in specs:
+            assert s.expected_cmdline == "claudeteam"
