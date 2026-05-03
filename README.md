@@ -9,7 +9,7 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~12.9 K LOC (src + tests), 583 tests green.
+capability requires them.  Currently ~15.9 K LOC (src + tests), 725 tests green.
 
 ## Prerequisites
 
@@ -288,7 +288,12 @@ self-compacting; slash-command interceptors via
 rate-limit detection (adapter `rate_limit_markers()` +
 deliver-skips-when-rate-limited); zero-LLM router-level slash
 dispatch (`/help /team /tmux /send /compact /stop /clear /usage
-/health`); broadcast routing (`@team` / `@all` / `全体X`).
+/health /recall /forget`); broadcast routing (`@team` / `@all` /
+`全体X`); per-agent durable memory with `claudeteam remember /
+recall / forget` (CRUD slice, `--kind K` filter, `KNOWN_KINDS` soft
+validation); manager-from-pane fast paths (`claudeteam peek <agent>`,
+`claudeteam reidentify --all`, `say --card`); 5/5 CLI adapter parity
+(claude-code / codex-cli / gemini-cli / kimi-code / qwen-code).
 
 The rebuild is on `rebuild/minimal`; it does not share history with
 `main`.  See `tests/scenarios/*.md` for natural-language scenarios
