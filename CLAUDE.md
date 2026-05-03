@@ -160,4 +160,10 @@ fixture instead of a real subprocess.
 26. (done) Lark perf — bypass `npx`'s package-lookup overhead (`feishu/lark._resolve_cli_prefix`); 73s → 0.6s on macOS host
 27. (done) Structured `--help` output grouped by `[bootstrap]` / `[team lifecycle]` / `[durable agent memory]` etc.
 28. (done) `claudeteam reidentify --all` for batch re-injection across the team
-29. (next) Round C real-task end-to-end smoke (boss assigns task → manager dispatches → workers execute → manager summarizes — playbook `tests/scenarios/round_c_real_task.md` exists; live boss→manager→workers→summary loop has not been confirmed in a single session yet)
+29. (done) Watchdog cooldown alert promoted to red Feishu card with recovery checklist (was plain text)
+30. (done) `claudeteam say <agent> <msg> --card` for card-formatted chat replies; manager → blue / worker_* → green template by convention
+31. (done) `qwen-code` adapter (alias `qwen-cli`); adapter coverage 5/5 with old main (claude-code / codex-cli / gemini-cli / kimi-code / qwen-code)
+32. (done) `claudeteam peek <agent> [N]` branded fast path for the 5-min 巡视 cadence; install-hooks `/peek` + manager identity v2 migrated off raw `tmux capture-pane`
+33. (done) Slash hook coverage parity with R83-R96 commands: `/say --card` / `/remember` / `/recall` / `/peek` all in `claudeteam install-hooks`
+34. (done) Round C playbook refresh (post-R86 perf reality, "what's already verified piece-meal" map)
+35. (next) Round C real-task end-to-end smoke (boss assigns task → manager dispatches → workers execute → manager summarizes — playbook `tests/scenarios/round_c_real_task.md` exists; live boss→manager→workers→summary loop has not been confirmed in a single session yet)
