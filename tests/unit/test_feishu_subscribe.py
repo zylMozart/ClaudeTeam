@@ -251,3 +251,122 @@ def test_default_target_param_routes_human_messages_elsewhere():
         apply_fn=applied.append,
     )
     assert applied[0].targets == ["worker_cc"]
+
+
+# ── B.1 image / file / audio messages ─────────────────────────────
+
+
+def test_normalises_image_message_to_placeholder_text():
+    """REGRESSION (Round B.1): image messages used to drop as 'empty'
+    because content didn't include a 'text' field. Now produces a
+    placeholder so the router can route the message and the worker
+    knows something arrived."""
+    line = json.dumps({
+        "message_id": "om_img1",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "image",
+        "content": json.dumps({"image_key": "img_v3_xxx"}),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    assert "image_key=img_v3_xxx" in applied[0].text
+    assert "[image:" in applied[0].text
+
+
+def test_normalises_image_message_no_key_falls_back_to_bracket():
+    line = json.dumps({
+        "message_id": "om_img2",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "image",
+        "content": "{}",
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    assert applied[0].text == "[image]"
+
+
+def test_normalises_file_message_with_filename():
+    line = json.dumps({
+        "message_id": "om_file1",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "file",
+        "content": json.dumps({
+            "file_name": "report.pdf",
+            "file_key": "file_v2_xxx",
+        }),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    assert "report.pdf" in applied[0].text
+    assert "file_key=file_v2_xxx" in applied[0].text
+
+
+def test_normalises_file_message_filename_only():
+    line = json.dumps({
+        "message_id": "om_file2",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "file",
+        "content": json.dumps({"file_name": "notes.txt"}),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    assert applied[0].text == "[file: notes.txt]"
+
+
+def test_normalises_audio_message():
+    line = json.dumps({
+        "message_id": "om_audio1",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "audio",
+        "content": json.dumps({"file_key": "audio_xxx"}),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    assert "[audio:" in applied[0].text
+    assert "audio_xxx" in applied[0].text
+
+
+def test_normalises_sticker_message():
+    line = json.dumps({
+        "message_id": "om_stk1",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "sticker",
+        "content": json.dumps({"file_key": "stk_xxx"}),
+    })
+    applied = []
+    stats = process_lines([line], team_agents=_AGENTS,
+                          chat_id="oc_team", apply_fn=applied.append)
+    assert stats.handled == 1
+    assert "[sticker: stk_xxx]" in applied[0].text
+
+
+def test_text_message_extraction_unchanged_after_b1():
+    """Regression: text-message extraction still works after _extract_text
+    refactor."""
+    line = json.dumps({
+        "message_id": "om_t",
+        "chat_id": "oc_team",
+        "sender_id": "ou_user",
+        "message_type": "text",
+        "content": json.dumps({"text": "hello world"}),
+    })
+    applied = []
+    process_lines([line], team_agents=_AGENTS,
+                  chat_id="oc_team", apply_fn=applied.append)
+    assert applied[0].text == "hello world"

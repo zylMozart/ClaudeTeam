@@ -53,29 +53,70 @@ def _normalise(raw: dict) -> dict:
     msg = ev.get("message") or {}
     sender = ev.get("sender") or {}
 
+    msg_type = (msg.get("message_type")
+                or ev.get("message_type")
+                or ev.get("msg_type", "text"))
+
     # Content: legacy puts it under msg.content, modern at ev.content.
-    # In either form it might be JSON-encoded {"text": "..."} or plain text.
+    # In either form it might be JSON-encoded ({"text": "..."} for text,
+    # {"image_key": "..."} for image, {"file_key": ..., "file_name": ...}
+    # for file) or plain text.
     content = msg.get("content") if msg else ev.get("content")
-    text = ""
-    if isinstance(content, str):
-        try:
-            text = (json.loads(content) or {}).get("text", "")
-        except json.JSONDecodeError:
-            text = content
+    text = _extract_text(content, msg_type) or ev.get("text", "")
 
     return {
         "message_id": msg.get("message_id") or ev.get("message_id", ""),
         "chat_id": msg.get("chat_id") or ev.get("chat_id", ""),
         "sender_id": (sender.get("sender_id", {}).get("open_id")
                       or ev.get("sender_id", "")),
-        "text": text or ev.get("text", ""),
-        # Modern emits "message_type", legacy varied between "msg_type" and
-        # message.message_type; check all three.
-        "msg_type": (msg.get("message_type")
-                     or ev.get("message_type")
-                     or ev.get("msg_type", "text")),
+        "text": text,
+        "msg_type": msg_type,
         "create_time": msg.get("create_time") or ev.get("create_time", ""),
     }
+
+
+def _extract_text(content, msg_type: str) -> str:
+    """Reduce a Feishu message content payload to a plain-text representation
+    classify_event can route on.
+
+    - text: returns the literal "text" field (or the raw string if not JSON).
+    - image: returns "[image: image_key=<key>]" so the message routes
+      instead of getting dropped as "empty".
+    - file: returns "[file: <file_name>]" or "[file: file_key=<key>]".
+    - audio / sticker / unknown: returns "[<msg_type>]" placeholder.
+
+    Workers receiving these placeholders can use the message_id to fetch
+    the actual binary via `lark-cli im +messages-resources-download` if
+    they need it; the router's job is just to deliver the route + placeholder
+    so the worker pane is aware something arrived.
+    """
+    if not isinstance(content, str):
+        return ""
+    try:
+        data = json.loads(content) or {}
+    except json.JSONDecodeError:
+        # Plain string content (legacy variant)
+        return content
+    if msg_type == "image":
+        key = data.get("image_key", "")
+        return f"[image: image_key={key}]" if key else "[image]"
+    if msg_type == "file":
+        name = data.get("file_name") or ""
+        key = data.get("file_key", "")
+        if name and key:
+            return f"[file: {name} (file_key={key})]"
+        if name:
+            return f"[file: {name}]"
+        return f"[file: file_key={key}]" if key else "[file]"
+    if msg_type == "audio":
+        key = data.get("file_key", "")
+        return f"[audio: file_key={key}]" if key else "[audio]"
+    if msg_type == "sticker":
+        key = data.get("file_key", "")
+        return f"[sticker: {key}]" if key else "[sticker]"
+    # Default: text or unknown — try common .text field, then .content,
+    # then leave empty so callers can fall back to ev.get("text").
+    return data.get("text") or data.get("content") or ""
 
 
 def _record_drop(stats: LoopStats, reason: str) -> None:

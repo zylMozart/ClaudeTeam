@@ -7,16 +7,21 @@ from claudeteam.runtime import tmux
 
 
 def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
-         session="ClaudeTeam", run=None, sleep=None):
+         session="ClaudeTeam", run=None, sleep=None, background=None):
     """Build a SlashContext for tests with sane stubs by default."""
     fake_run = run or (lambda *a, **kw: type("R", (), {
         "returncode": 0, "stdout": "ok\n", "stderr": ""})())
     fake_sleep = sleep or (lambda _s: None)
+    # Default: drop background callbacks (no real thread, no eager
+    # execution) so test inject capture isn't polluted by post-compact
+    # reidentify firing inline.
+    fake_background = background or (lambda _fn: None)
     return slash.SlashContext(
         team_agents=list(agents),
         session=session,
         run=fake_run,
         sleep=fake_sleep,
+        background=fake_background,
     )
 
 
@@ -203,17 +208,64 @@ def test_send_unknown_agent_warns():
 
 
 def test_compact_injects_literal_compact_into_pane():
-    captured = {}
+    captured = []
 
     def fake_inject(target, text, **kw):
-        captured["target"] = str(target)
-        captured["text"] = text
+        captured.append((str(target), text))
         return True
 
     with tmux_patch(inject=fake_inject):
-        slash.dispatch("/compact worker_cc", _ctx())
-    assert captured["target"] == "ClaudeTeam:worker_cc"
-    assert captured["text"] == "/compact"
+        reply = slash.dispatch("/compact worker_cc", _ctx())
+    assert ("ClaudeTeam:worker_cc", "/compact") in captured
+    # Default ctx has background=no-op so no second inject for reidentify
+    assert len(captured) == 1
+    assert "45s 后自动重注 identity" in reply
+
+
+def test_compact_schedules_background_reidentify_on_success():
+    """Round B.2: /compact should schedule a delayed re-injection of
+    the identity init prompt so the agent reloads identity.md after
+    its self-compact settles."""
+    captured = []
+    scheduled = []
+
+    def fake_inject(target, text, **kw):
+        captured.append((str(target), text))
+        return True
+
+    def capture_bg(fn):
+        scheduled.append(fn)
+
+    with tmux_patch(inject=fake_inject):
+        slash.dispatch("/compact worker_cc", _ctx(background=capture_bg))
+
+        # First inject is /compact; reidentify is queued on background
+        assert captured == [("ClaudeTeam:worker_cc", "/compact")]
+        assert len(scheduled) == 1
+
+        # Run the queued callback — it should sleep then inject identity prompt
+        scheduled[0]()
+        assert len(captured) == 2
+        target, text = captured[1]
+        assert target == "ClaudeTeam:worker_cc"
+        assert "You are worker_cc" in text
+        assert "agents/worker_cc/identity.md" in text
+
+
+def test_compact_skips_reidentify_when_inject_fails():
+    """If the initial /compact send fails, don't schedule a reidentify."""
+    scheduled = []
+
+    def fake_inject(target, text, **kw):
+        return False  # simulate tmux send-keys failure
+
+    def capture_bg(fn):
+        scheduled.append(fn)
+
+    with tmux_patch(inject=fake_inject):
+        reply = slash.dispatch("/compact worker_cc", _ctx(background=capture_bg))
+    assert scheduled == []
+    assert "45s 后自动重注 identity" not in reply
 
 
 # ── /stop ────────────────────────────────────────────────────────

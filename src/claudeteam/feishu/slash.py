@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -39,6 +40,16 @@ from claudeteam.feishu import pane_state
 from claudeteam.runtime import tmux
 
 
+def _spawn_daemon_thread(fn: Callable[[], None]) -> None:
+    """Default ctx.background — fire-and-forget a daemon thread.
+
+    Used by /compact to schedule a delayed re-identify after the agent
+    finishes its self-compact. Tests override this with a no-op so
+    they don't block on the 45-second timer.
+    """
+    threading.Thread(target=fn, daemon=True).start()
+
+
 # ── context wiring ────────────────────────────────────────────────
 
 
@@ -48,9 +59,10 @@ class SlashContext:
     they only touch what's in here, easy to fake in tests."""
     team_agents: list[str]
     session: str
-    run: Callable = subprocess.run    # for shell-out (`claudeteam <cmd>`)
-    sleep: Callable = time.sleep      # for /clear's settle delay
-    now: Callable = datetime.now      # injectable clock for header timestamps
+    run: Callable = subprocess.run         # for shell-out (`claudeteam <cmd>`)
+    sleep: Callable = time.sleep           # for /clear's settle delay
+    now: Callable = datetime.now           # injectable clock for header timestamps
+    background: Callable[[Callable[[], None]], None] = _spawn_daemon_thread
 
     @property
     def agent_set(self) -> frozenset[str]:
@@ -195,7 +207,13 @@ def _handle_send(text: str, ctx: SlashContext) -> str | None:
     return f"{glyph} /send → {ctx.session}:{agent}\n内容: {msg}"
 
 
+_REIDENTIFY_DELAY_S = 45.0   # rough upper bound for claude-code /compact
+
+
 def _handle_compact(text: str, ctx: SlashContext) -> str | None:
+    """Send /compact to agent's pane, then schedule a background
+    re-identify so the agent reloads its identity.md after compaction
+    settles (Round B.2 — post-compact identity reread)."""
     m = re.fullmatch(r"/compact(?:\s+(\S+))?\s*", text)
     if not m:
         return None
@@ -205,7 +223,19 @@ def _handle_compact(text: str, ctx: SlashContext) -> str | None:
     target = tmux.Target(ctx.session, agent)
     ok = tmux.inject(target, "/compact")
     glyph = "✅" if ok else "❌"
-    return f"{glyph} /compact → {ctx.session}:{agent} · 已让 agent 自压缩上下文"
+    if not ok:
+        return f"{glyph} /compact → {ctx.session}:{agent} · 已让 agent 自压缩上下文"
+    # Schedule the re-identify on a background thread so the bot reply
+    # comes back to chat immediately (no 45s block).
+    init_msg = identity.init_prompt(agent)
+
+    def _reidentify_later():
+        ctx.sleep(_REIDENTIFY_DELAY_S)
+        tmux.inject(target, init_msg)
+
+    ctx.background(_reidentify_later)
+    return (f"{glyph} /compact → {ctx.session}:{agent} · 已让 agent 自压缩上下文 · "
+            f"{int(_REIDENTIFY_DELAY_S)}s 后自动重注 identity")
 
 
 def _handle_stop(text: str, ctx: SlashContext) -> str | None:
