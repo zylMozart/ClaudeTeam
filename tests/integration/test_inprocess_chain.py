@@ -18,6 +18,23 @@ from claudeteam.feishu.deliver import apply
 from claudeteam.store import local_facts
 
 
+@contextlib.contextmanager
+def _fake_chat_send():
+    """Intercept feishu.chat.send_text so the SLASH path doesn't try
+    to hit a real Feishu API. Returns a state dict recording each post.
+    """
+    state = {"posts": []}
+
+    def fake(chat_id, text, **kw):
+        state["posts"].append({"chat_id": chat_id, "text": text, **kw})
+        return {"message_id": "om_fake"}
+
+    from helpers import attr_patch
+    from claudeteam.feishu import chat as _chat_module
+    with attr_patch(_chat_module, send_text=fake):
+        yield state
+
+
 _TEAM = {
     "session": "SmokeTeam",
     "agents": {
@@ -173,5 +190,98 @@ def test_mixed_traffic_classifies_each_event_correctly():
         assert len(local_facts.list_messages("manager")) == 1
         assert len(local_facts.list_messages("worker_kimi")) == 2
         assert len(local_facts.list_messages("worker_codex")) == 1
+
+
+# ── Scenario F: BROADCAST fans out to non-sender agents ──────────
+
+
+def test_broadcast_token_at_team_fans_out_to_all_workers():
+    """`@team` from a human reaches every team agent's inbox + pane.
+    Sender is unknown (human), so all 3 team_agents get the message."""
+    with _isolated(), _fake_inject() as inj:
+        line = _ndjson_event("om_bcast_1", "ou_user", "@team standup at 3pm")
+        stats = _run_lines([line])
+        assert stats.handled == 1
+
+        for agent in _DEFAULT_AGENTS:
+            assert len(local_facts.list_messages(agent)) == 1, (
+                f"{agent} should have 1 inbox row from broadcast")
+            agent_inj = [c for c in inj["calls"]
+                         if c["target"] == f"SmokeTeam:{agent}"]
+            assert len(agent_inj) == 1, (
+                f"{agent} pane should have 1 inject from broadcast")
+
+
+def test_broadcast_chinese_quanti_prefix_routes_same_way():
+    """`全体X` Chinese broadcast trigger — same fanout as @team."""
+    with _isolated(), _fake_inject() as inj:
+        line = _ndjson_event("om_bcast_2", "ou_user", "全体注意：今晚封版")
+        _run_lines([line])
+        assert len(local_facts.list_messages("manager")) == 1
+        assert len(local_facts.list_messages("worker_codex")) == 1
+        assert len(local_facts.list_messages("worker_kimi")) == 1
+
+
+def test_broadcast_from_known_agent_excludes_sender():
+    """If [worker_codex] @team broadcasts, codex's own inbox shouldn't
+    receive a copy — broadcast targets non-sender agents."""
+    with _isolated(), _fake_inject() as inj:
+        line = _ndjson_event("om_bcast_3", "ou_user",
+                             "[worker_codex] @team status sync")
+        _run_lines([line])
+        # manager + kimi got it; codex did not
+        assert len(local_facts.list_messages("manager")) == 1
+        assert len(local_facts.list_messages("worker_kimi")) == 1
+        assert local_facts.list_messages("worker_codex") == []
+
+
+# ── Scenario G: SLASH dispatches at router level (zero LLM) ──────
+
+
+def test_slash_help_does_not_touch_inboxes_or_panes():
+    """`/help` is recognised at the router level → bot reply only,
+    no inbox row, no pane inject. This is the core "zero LLM" promise."""
+    with _isolated(), _fake_inject() as inj, _fake_chat_send() as chat:
+        line = _ndjson_event("om_help_1", "ou_user", "/help")
+        stats = _run_lines([line])
+        assert stats.handled == 1
+
+        # Zero panes touched
+        assert inj["calls"] == [], (
+            f"/help should not inject into any pane; got {inj['calls']}")
+        # Zero inbox rows written
+        for agent in _DEFAULT_AGENTS:
+            assert local_facts.list_messages(agent) == []
+        # The bot reply IS posted to chat
+        assert len(chat["posts"]) == 1
+        assert "/help" in chat["posts"][0]["text"]
+        # ...with reply_to threading back to the boss's message
+        assert chat["posts"][0]["reply_to"] == "om_help_1"
+
+
+def test_slash_with_sender_prefix_still_recognised():
+    """REGRESSION (round A2 B1): `say` wraps outbound text with
+    `[<sender>] ...`. The router pre-strips that prefix before checking
+    for `/`, so `[boss] /team` still dispatches as a slash command."""
+    with _isolated(), _fake_inject() as inj, _fake_chat_send() as chat:
+        line = _ndjson_event("om_slash_2", "ou_user", "[boss] /help")
+        _run_lines([line])
+        # zero panes, one chat post (bot reply)
+        assert inj["calls"] == []
+        assert len(chat["posts"]) == 1
+        # The reply is the help text — "/help" appears in the body
+        assert "/help" in chat["posts"][0]["text"]
+
+
+def test_unknown_slash_still_zero_llm_returns_help_hint():
+    """Unrecognised slash commands like `/madeupthing` still get handled
+    at the router — bot replies with a "use /help" hint, no pane touched."""
+    with _isolated(), _fake_inject() as inj, _fake_chat_send() as chat:
+        line = _ndjson_event("om_slash_3", "ou_user", "/madeupthing")
+        _run_lines([line])
+        assert inj["calls"] == []
+        assert len(chat["posts"]) == 1
+        assert "未知斜杠命令" in chat["posts"][0]["text"]
+        assert "/help" in chat["posts"][0]["text"]
 
 
