@@ -6,6 +6,7 @@ from claudeteam.runtime.config import agent_cli
 from .base import CliAdapter
 from .claude_code import ClaudeCodeAdapter
 from .codex_cli import CodexCliAdapter
+from .gemini_cli import GeminiCliAdapter
 from .kimi_code import KimiCodeAdapter
 
 
@@ -13,6 +14,7 @@ _kimi = KimiCodeAdapter()
 _REGISTRY: dict[str, CliAdapter] = {
     "claude-code": ClaudeCodeAdapter(),
     "codex-cli": CodexCliAdapter(),
+    "gemini-cli": GeminiCliAdapter(),
     "kimi-code": _kimi,
     "kimi-cli": _kimi,  # alias: upstream package name
 }

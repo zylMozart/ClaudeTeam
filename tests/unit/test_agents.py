@@ -11,9 +11,10 @@ from claudeteam.agents.kimi_code import KimiCodeAdapter
 # ── registry ──────────────────────────────────────────────────────
 
 
-def test_registry_lists_three_known_clis_plus_kimi_alias():
+def test_registry_lists_known_clis_plus_kimi_alias():
+    """Round-85 added gemini-cli; kimi-cli stays as alias for kimi-code."""
     names = set(known_clis())
-    assert names == {"claude-code", "codex-cli", "kimi-code", "kimi-cli"}
+    assert names == {"claude-code", "codex-cli", "gemini-cli", "kimi-code", "kimi-cli"}
 
 
 def test_get_adapter_returns_matching_concrete_type():

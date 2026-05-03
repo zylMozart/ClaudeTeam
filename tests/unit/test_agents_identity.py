@@ -10,11 +10,17 @@ from claudeteam.store import memory
 
 
 def test_render_manager_uses_manager_template():
-    text = identity.render("manager", role="team manager",
+    """Round-85: manager identity rewritten in Chinese with reference/main's
+    rich management discipline (角色边界 / 秒回闭环 / 巡视核实 / 集合指令铁律)."""
+    text = identity.render("manager", role="团队主管",
                            cli="claude-code", model="opus")
-    assert "team manager" in text
+    assert "团队主管" in text
     assert "manager" in text
-    assert "Receive messages from the boss" in text
+    # Core management rules from main's manager.identity.md
+    assert "管理分发铁律" in text
+    assert "集合类指令必须 dispatch" in text
+    # Argument-order contract carried over from rebuild's earlier version
+    assert "claudeteam send <recipient> <sender>" in text
 
 
 def test_render_worker_uses_worker_template():
@@ -93,13 +99,16 @@ def test_identity_path_under_state_dir():
 
 
 def test_write_persists_file_and_creates_parents():
-    team = {"agents": {"manager": {"cli": "claude-code", "model": "opus"}}}
+    team = {"agents": {"manager": {"cli": "claude-code", "model": "opus",
+                                    "role": "团队主管"}}}
     with isolated_env(team=team) as tmp:
         path = identity.write("manager")
         assert path.exists()
         assert path == tmp / "state" / "agents" / "manager" / "identity.md"
         text = path.read_text(encoding="utf-8")
-        assert "team manager" in text
+        # Round-85: manager body now in Chinese, anchored on "管理分发铁律"
+        assert "团队主管" in text
+        assert "管理分发铁律" in text
 
 
 def test_write_overwrites_existing_file():
