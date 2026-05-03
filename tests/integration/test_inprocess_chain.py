@@ -379,3 +379,86 @@ def test_image_with_at_mention_caption_routes_to_mentioned_worker():
         assert local_facts.list_messages("worker_kimi") == []
 
 
+# ── Scenario I: lazy wake on first message ───────────────────────
+
+
+def test_lazy_pane_wake_fn_invoked_then_inject_proceeds():
+    """When deliver.apply is wired with a wake_fn (production: the
+    router daemon passes wake.wake_if_dormant), an inbound message to
+    a lazy pane should trigger the wake before the inject. Verifies
+    wake_fn was called with the right kwargs (spawn_cmd, init_msg,
+    on_woken) and that the inject still happens after."""
+    wake_calls = []
+
+    def fake_wake(target, adapter, *, spawn_cmd, init_msg, on_woken):
+        wake_calls.append({
+            "target": str(target),
+            "spawn_cmd": spawn_cmd,
+            "init_msg": init_msg,
+        })
+        on_woken()  # simulate the lazy pane coming alive
+        return True
+
+    def apply_with_wake(decision):
+        return apply(decision, wake_fn=fake_wake)
+
+    with _isolated(), _fake_inject() as inj:
+        line = _ndjson_event("om_lazy_1", "ou_user", "@worker_kimi wake up")
+        subscribe.process_lines(
+            [line], team_agents=_DEFAULT_AGENTS, chat_id="oc_smoke",
+            apply_fn=apply_with_wake,
+        )
+        # wake_fn was called with the right shape
+        assert len(wake_calls) == 1
+        assert wake_calls[0]["target"] == "SmokeTeam:worker_kimi"
+        assert "worker_kimi" in wake_calls[0]["init_msg"]
+        assert "identity.md" in wake_calls[0]["init_msg"]
+        # Inject still happened after wake
+        kimi_inj = [c for c in inj["calls"]
+                    if c["target"] == "SmokeTeam:worker_kimi"]
+        assert len(kimi_inj) == 1
+        # on_woken flipped status to 进行中
+        snap = local_facts.get_status("worker_kimi")
+        assert snap is not None
+        assert snap["status"] == "进行中"
+
+
+# ── Scenario J: rate-limited pane skips inject, keeps inbox ──────
+
+
+def test_rate_limited_pane_keeps_inbox_skips_inject():
+    """When the pane shows a rate-limit marker, deliver should still
+    write the inbox row (so the message isn't lost) but skip the tmux
+    inject (the CLI won't process it). Verifies wake.is_rate_limited
+    short-circuits the inject without losing the inbox write."""
+    from helpers import attr_patch
+    from claudeteam.runtime import wake as _wake
+
+    def fake_rate_limited(target, adapter, **kw):
+        # Only worker_codex is rate-limited; others are clear
+        return target.window == "worker_codex"
+
+    with _isolated(), _fake_inject() as inj, attr_patch(
+            _wake, is_rate_limited=fake_rate_limited):
+        events = [
+            # @ codex (rate-limited) → inbox written, inject skipped
+            _ndjson_event("om_rl_1", "ou_user", "@worker_codex urgent"),
+            # @ kimi (clear) → both inbox + inject happen
+            _ndjson_event("om_rl_2", "ou_user", "@worker_kimi do this"),
+        ]
+        _run_lines(events)
+
+        # codex: inbox YES, inject NO
+        assert len(local_facts.list_messages("worker_codex")) == 1
+        codex_inj = [c for c in inj["calls"]
+                     if c["target"] == "SmokeTeam:worker_codex"]
+        assert codex_inj == [], (
+            f"rate-limited codex should not be injected; got {codex_inj}")
+
+        # kimi: inbox YES, inject YES (control case)
+        assert len(local_facts.list_messages("worker_kimi")) == 1
+        kimi_inj = [c for c in inj["calls"]
+                    if c["target"] == "SmokeTeam:worker_kimi"]
+        assert len(kimi_inj) == 1
+
+
