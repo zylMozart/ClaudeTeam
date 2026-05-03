@@ -4,7 +4,6 @@ Mark a message as read by its local id.  Returns 1 if no such message.
 """
 from __future__ import annotations
 
-
 from claudeteam.store import local_facts
 from claudeteam.util import error_exit, usage_error
 

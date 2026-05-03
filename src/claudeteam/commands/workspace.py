@@ -5,7 +5,6 @@ audit log per agent.
 """
 from __future__ import annotations
 
-
 from claudeteam.store import local_facts
 from claudeteam.util import fmt_time_ms, pop_flag, usage_error
 

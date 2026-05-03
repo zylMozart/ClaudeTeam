@@ -6,7 +6,6 @@ with no further args.
 """
 from __future__ import annotations
 
-
 from claudeteam.store import local_facts
 from claudeteam.util import usage_error
 
