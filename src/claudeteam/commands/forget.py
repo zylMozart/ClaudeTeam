@@ -1,23 +1,32 @@
-"""`claudeteam forget <agent> [--yes]` — wipe an agent's durable memory.
+"""`claudeteam forget <agent> [--kind K] [--yes]` — wipe agent memory.
 
-Symmetric to `claudeteam recall`. Used when an agent's memory has
-gotten poisoned (wrong learning recorded, stale task assignments
-piling up) and starting fresh is cheaper than triaging which entries
-are still useful.
+Symmetric to `claudeteam recall` + `remember`. Used when an agent's
+memory has gotten poisoned (wrong learning recorded, stale task
+assignments piling up) and starting fresh is cheaper than triaging
+which entries are still useful.
 
-Refuses to nuke without `--yes` so an operator typo doesn't take out
-hours of accumulated context. The reset command (`claudeteam reset`)
-already wipes the whole state dir; this is the per-agent scalpel.
+Two flavours:
+- `forget <agent> --yes`              — wipe ALL entries
+- `forget <agent> --kind K --yes`     — wipe only entries with kind=K
+                                          (round-111 scalpel-inside-scalpel)
+
+Refuses without `--yes` so an operator typo doesn't take out hours of
+accumulated context. The reset command (`claudeteam reset`) already
+does the whole-state nuke; this is the per-agent scalpel.
 """
 from __future__ import annotations
 
 from claudeteam.store import memory
 from claudeteam.util import (
-    error_exit, maybe_print_help, pop_bool_flag, usage_error,
+    error_exit, maybe_print_help, pop_bool_flag, pop_flag, usage_error, warn,
 )
 
 
-USAGE = "usage: claudeteam forget <agent> [--yes]"
+USAGE = (
+    "usage: claudeteam forget <agent> [--kind K] [--yes]\n"
+    f"       known kinds: {' / '.join(memory.KNOWN_KINDS)}\n"
+    "       (--kind drops only that slice; default = all entries)"
+)
 
 
 def main(argv: list[str]) -> int:
@@ -25,18 +34,35 @@ def main(argv: list[str]) -> int:
     if maybe_print_help(rest, USAGE):
         return 0
     yes = pop_bool_flag(rest, "--yes")
+    kind = pop_flag(rest, "--kind") or ""
     if len(rest) < 1:
         return usage_error(USAGE)
     agent = rest[0]
     if not yes:
+        target = f"{agent}'s {kind} memory" if kind else f"{agent}'s memory"
+        recall_hint = (f"claudeteam recall {agent} --kind {kind}" if kind
+                       else f"claudeteam recall {agent}")
         return error_exit(
-            f"❌ refusing to wipe {agent}'s memory without --yes; "
-            f"run `claudeteam recall {agent}` first to verify what "
-            f"you're about to drop, then `claudeteam forget {agent} --yes`")
-    n = memory.clear(agent)
-    if n == 0:
-        print(f"🧠 {agent}: nothing to forget (memory was already empty)")
+            f"❌ refusing to wipe {target} without --yes; "
+            f"run `{recall_hint}` first to verify what you're about to "
+            f"drop, then re-run with --yes")
+
+    if kind and kind not in memory.KNOWN_KINDS:
+        warn(f"⚠️  --kind {kind!r} not in known kinds "
+             f"({sorted(memory.KNOWN_KINDS)}); proceeding anyway")
+
+    if kind:
+        n = memory.clear_kind(agent, kind)
+        if n == 0:
+            print(f"🧠 {agent}: nothing to forget (no entries with kind={kind})")
+        else:
+            print(f"🗑  {agent}: forgot {n} {kind} memory entr"
+                  f"{'ies' if n != 1 else 'y'}")
     else:
-        print(f"🗑  {agent}: forgot {n} memory entr"
-              f"{'ies' if n != 1 else 'y'}")
+        n = memory.clear(agent)
+        if n == 0:
+            print(f"🧠 {agent}: nothing to forget (memory was already empty)")
+        else:
+            print(f"🗑  {agent}: forgot {n} memory entr"
+                  f"{'ies' if n != 1 else 'y'}")
     return 0

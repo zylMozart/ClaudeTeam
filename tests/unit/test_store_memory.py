@@ -121,6 +121,52 @@ def test_all_agents_with_memory_lists_only_agents_that_wrote():
         assert sorted(agents) == ["manager", "worker_cc"]
 
 
+# ── Round-111: clear_kind (scalpel inside the scalpel) ─────────
+
+
+def test_clear_kind_drops_only_matching_entries():
+    """Round-111: `clear_kind(agent, K)` removes only entries with
+    kind == K, leaves others untouched."""
+    with isolated_env():
+        memory.append("manager", "decision", "use bcrypt")
+        memory.append("manager", "blocker", "missing PAT")
+        memory.append("manager", "decision", "rotate keys")
+        memory.append("manager", "learning", "auth path /v2")
+        n = memory.clear_kind("manager", "decision")
+        assert n == 2
+        rows = memory.list_recent("manager")
+        kinds = [r["kind"] for r in rows]
+        assert kinds == ["blocker", "learning"]
+
+
+def test_clear_kind_returns_zero_when_no_match():
+    """No matching kind → 0 dropped, no file mutation."""
+    with isolated_env():
+        memory.append("manager", "note", "only a note")
+        n = memory.clear_kind("manager", "decision")
+        assert n == 0
+        assert len(memory.list_recent("manager")) == 1
+
+
+def test_clear_kind_empty_agent_is_zero_no_op():
+    with isolated_env():
+        assert memory.clear_kind("nobody", "decision") == 0
+
+
+def test_clear_kind_drops_all_unlinks_file():
+    """When clear_kind drops every entry (only one kind in the file),
+    the file is removed so list_recent treats the agent as fresh —
+    matches `clear`'s 'empty memory == no file' invariant."""
+    with isolated_env():
+        memory.append("worker_cc", "blocker", "a")
+        memory.append("worker_cc", "blocker", "b")
+        n = memory.clear_kind("worker_cc", "blocker")
+        assert n == 2
+        # File gone
+        assert not memory._memory_file("worker_cc").exists()
+        assert memory.list_recent("worker_cc") == []
+
+
 # ── Round-106: KNOWN_KINDS soft validation ──────────────────────
 
 

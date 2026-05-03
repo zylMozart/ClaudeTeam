@@ -119,6 +119,40 @@ def clear(agent: str) -> int:
     return n
 
 
+def clear_kind(agent: str, kind: str) -> int:
+    """Drop only entries with `kind == <kind>` from `agent`'s memory.
+
+    Returns the number of dropped entries (0 if the file is missing or
+    no entries match). Round-111: scalpel inside the scalpel — `forget
+    --kind blocker` lets boss / manager wipe one slice (e.g. resolved
+    blockers) while keeping decisions / learnings intact.
+
+    Reads + filters + atomic-rewrites under the same flock the append
+    path uses, so concurrent writers can't see a partial state.
+    """
+    path = _memory_file(agent)
+    if not path.exists():
+        return 0
+    with _locked(agent):
+        rows = read_jsonl(path)
+        kept = [r for r in rows if r.get("kind") != kind]
+        dropped = len(rows) - len(kept)
+        if dropped == 0:
+            return 0
+        if not kept:
+            # All entries matched the filter — remove the file entirely
+            # so list_recent treats this agent as fresh (matches `clear`'s
+            # "empty memory == no file" invariant).
+            path.unlink()
+        else:
+            path.write_text(
+                "\n".join(json.dumps(r, ensure_ascii=False)
+                          for r in kept) + "\n",
+                encoding="utf-8",
+            )
+        return dropped
+
+
 def render_for_prompt(agent: str, *, limit: int = 20) -> str:
     """Format `agent`'s recent memory as a markdown block suitable for
     injecting into the identity init prompt.
