@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from claudeteam.runtime import config, paths
+from claudeteam.store import memory
 from claudeteam.util import atomic_write_text
 
 
@@ -130,13 +131,22 @@ def init_prompt(agent: str) -> str:
     agent's pane so it loads its identity, checks inbox, and reports for
     duty. Without this, a freshly-spawned claude-code sits at an empty
     prompt and never knows it's "manager" or "worker_cc".
+
+    Round-84: append the agent's recent durable memory (if any) so a
+    pane that's been /clear-ed or restarted picks up where it left off
+    instead of losing all task continuity. Empty memory → no extra
+    section appears (avoid noise on a brand-new agent).
     """
-    return (
+    base = (
         f"You are {agent}. Read agents/{agent}/identity.md, then run:\n"
         f"  claudeteam inbox {agent}\n"
         f"  claudeteam status {agent} 进行中 \"ready\"\n"
         f"Acknowledge with one line: name, state, unread count."
     )
+    recall = memory.render_for_prompt(agent)
+    if not recall:
+        return base
+    return f"{base}\n\n{recall}\n\n继续之前未完成的工作；如已完成则确认并待命。"
 
 
 def identity_path(agent: str) -> Path:

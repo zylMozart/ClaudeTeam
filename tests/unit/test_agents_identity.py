@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from helpers import isolated_env
 from claudeteam.agents import identity
+from claudeteam.store import memory
 
 
 # ── render() — template selection ─────────────────────────────────
@@ -112,3 +113,32 @@ def test_write_overwrites_existing_file():
         second = path.read_text(encoding="utf-8")
         assert "new" in second
         assert "old" not in second
+
+
+# ── init_prompt() — round-84 memory injection ─────────────────────
+
+
+def test_init_prompt_omits_memory_section_when_empty():
+    """Brand-new agent: no memory file, no extra section appended.
+    Avoids confusing the agent with a `## 既往记忆` block that's empty."""
+    with isolated_env():
+        prompt = identity.init_prompt("manager")
+        assert "claudeteam inbox manager" in prompt
+        assert "既往记忆" not in prompt
+
+
+def test_init_prompt_appends_memory_when_present():
+    """After memory.append, the next init_prompt should include the
+    memory block so a /clear-ed pane re-reads its prior context on wake."""
+    with isolated_env():
+        memory.append("manager", "task_assigned", "fix login bug", ref="om_1")
+        memory.append("manager", "learning", "auth uses bcrypt")
+        prompt = identity.init_prompt("manager")
+        # Base reporting still present
+        assert "claudeteam inbox manager" in prompt
+        # Memory block present
+        assert "## 既往记忆" in prompt
+        assert "[task_assigned] fix login bug (ref=om_1)" in prompt
+        assert "[learning] auth uses bcrypt" in prompt
+        # Tail nudge tells agent what to do with the recall
+        assert "继续之前未完成的工作" in prompt
