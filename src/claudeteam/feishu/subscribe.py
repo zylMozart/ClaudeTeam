@@ -163,5 +163,14 @@ def process_lines(lines: Iterable[str], *,
         apply_fn(decision)
         stats.handled += 1
         if on_progress is not None:
-            on_progress(decision, stats)
+            try:
+                on_progress(decision, stats)
+            except Exception as e:
+                # on_progress is the catchup-cursor writer in production
+                # (commands/router._on_progress → catchup.record_decision
+                # → atomic_write_text). Disk full / permission denied
+                # / temp tmp.replace() race could raise — that should
+                # NOT kill the daemon. Cursor staleness is recoverable
+                # on the next event; daemon death is not.
+                print(f"  ⚠️ on_progress callback failed on {decision.msg_id}: {e}")
     return stats

@@ -132,6 +132,39 @@ def test_mention_routes_to_specific_worker():
     assert applied[0].targets == ["worker_codex"]
 
 
+def test_progress_callback_failure_does_not_kill_loop():
+    """REGRESSION: in production, on_progress is catchup.record_decision
+    which writes to disk via atomic_write_text. Disk full / permission
+    denied / tmp-replace race could raise — that must NOT kill the
+    daemon. Cursor staleness recovers on next event; daemon death does
+    not. Verifies the try/except inside process_lines."""
+    applied = []
+    progress_calls = []
+
+    def flaky_on_progress(decision, stats):
+        progress_calls.append(decision.msg_id)
+        # First call succeeds, second raises, third succeeds
+        if len(progress_calls) == 2:
+            raise OSError("disk full")
+
+    stats = process_lines(
+        _ndjson(
+            _wrapped("om_a", "oc_team", "ou_user", "first"),
+            _wrapped("om_b", "oc_team", "ou_user", "second"),  # cursor write raises
+            _wrapped("om_c", "oc_team", "ou_user", "third"),
+        ),
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=applied.append,
+        on_progress=flaky_on_progress,
+    )
+    # All three events were handled — second one's cursor failure
+    # didn't propagate. Loop kept going.
+    assert stats.handled == 3
+    assert len(progress_calls) == 3
+    assert len(applied) == 3
+
+
 def test_progress_callback_invoked_per_handled_event():
     applied = []
     progress = []
