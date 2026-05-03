@@ -225,6 +225,44 @@ def test_broadcast_at_all_token():
     assert d.action is Action.BROADCAST
 
 
+def test_broadcast_at_everyone_token():
+    """`@everyone` is in _BROADCAST_TOKENS too — third trigger besides
+    @team / @all. Was missing direct coverage."""
+    d = classify_event(_ev(text="@everyone deploy now"), team_agents=_AGENTS)
+    assert d.action is Action.BROADCAST
+
+
+def test_broadcast_substring_does_not_match():
+    """`@teammate` looks like a broadcast token but isn't — the regex
+    token-boundary check (^|\\s before, \\s|$|[,!?...] after) must reject
+    it, otherwise an @-mention to a worker named "teammate" would
+    silently fan out to everyone. No `teammate` agent in this team, so
+    the message routes as default-target instead."""
+    d = classify_event(_ev(text="@teammate hi"), team_agents=_AGENTS)
+    assert d.action is not Action.BROADCAST
+    assert d.targets == ["manager"]
+
+
+def test_broadcast_token_followed_by_punctuation_still_matches():
+    """`@team!` / `@team,` / `@team?` should all match — punctuation is
+    in the allowed after-set so urgent messages still trigger broadcast."""
+    for trailing in ("!", ",", ".", "?"):
+        text = f"@team{trailing} ASAP"
+        d = classify_event(_ev(text=text, message_id=f"om_punct_{trailing}"),
+                           team_agents=_AGENTS)
+        assert d.action is Action.BROADCAST, (
+            f"@team{trailing} should still trigger broadcast")
+
+
+def test_broadcast_token_mid_word_does_not_match():
+    """`team@team` (no whitespace before the token) should NOT trigger
+    broadcast — otherwise email-style addresses or jargon could fire
+    it accidentally."""
+    d = classify_event(_ev(text="discussed at team@team yesterday"),
+                       team_agents=_AGENTS)
+    assert d.action is not Action.BROADCAST
+
+
 def test_broadcast_excludes_agent_sender():
     """When manager broadcasts, manager itself is not a target."""
     d = classify_event(_ev(text="[manager] @team please report"),

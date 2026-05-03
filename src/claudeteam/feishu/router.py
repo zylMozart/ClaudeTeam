@@ -55,9 +55,13 @@ def _is_broadcast(text: str) -> bool:
         return False
     if _BROADCAST_PREFIX in text:
         return True
-    # Token-aware check (avoid matching @teammate or @allowance)
+    # Token-aware check (avoid matching @teammate or @allowance) — the
+    # token must end at whitespace, EOL, or punctuation. Both ASCII and
+    # full-width punct counts: an operator ending a sentence with
+    # "@team." (period) should still broadcast, not just "@team!" /
+    # "@team,". Round-42 caught the missing ASCII period.
     for tok in _BROADCAST_TOKENS:
-        if re.search(rf"(^|\s){re.escape(tok)}(\s|$|[，。,!?])", text):
+        if re.search(rf"(^|\s){re.escape(tok)}(\s|$|[，。,.!?])", text):
             return True
     return False
 
