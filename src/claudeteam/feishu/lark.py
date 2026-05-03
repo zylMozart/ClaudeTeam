@@ -47,12 +47,19 @@ def _build_argv(args: list[str], profile: str) -> list[str]:
 
 
 def _resolve_timeout(explicit: int | None) -> int:
+    """Resolve subprocess timeout in seconds. Caller arg wins; otherwise
+    CLAUDETEAM_LARK_TIMEOUT env; otherwise 90. Round-64: clamp the
+    final value to >=1 — a garbage env like CLAUDETEAM_LARK_TIMEOUT=0
+    used to make subprocess.run insta-TimeoutExpired on every call,
+    silently failing every lark op. -1 raised ValueError downstream.
+    Either way operator hit a confusing error far from the misconfig."""
     if explicit is not None:
-        return explicit
+        return max(1, int(explicit))
     try:
-        return int(env_str("CLAUDETEAM_LARK_TIMEOUT") or "90")
+        raw = int(env_str("CLAUDETEAM_LARK_TIMEOUT") or "90")
     except ValueError:
-        return 90
+        raw = 90
+    return max(1, raw)
 
 
 def call(args: list[str], *, profile: str = "", timeout: int | None = None,

@@ -282,6 +282,31 @@ def test_timeout_falls_back_to_90_when_env_is_garbage():
     assert rec.calls[0]["kwargs"]["timeout"] == 90
 
 
+def test_timeout_clamps_zero_or_negative_to_one():
+    """REGRESSION (round-64): CLAUDETEAM_LARK_TIMEOUT=0 used to be
+    passed through to subprocess.run, which insta-raises TimeoutExpired
+    on every call → every lark op silently fails. -1 caused ValueError
+    deeper in subprocess. Now clamped to min 1 second; operator gets
+    a real timeout window even with a fat-fingered config."""
+    rec = _Recorder(FakeProc(stdout="{}"))
+    with env_patch(CLAUDETEAM_LARK_TIMEOUT="0"):
+        lark.call(["x"], run=rec)
+    assert rec.calls[0]["kwargs"]["timeout"] == 1
+    rec2 = _Recorder(FakeProc(stdout="{}"))
+    with env_patch(CLAUDETEAM_LARK_TIMEOUT="-5"):
+        lark.call(["x"], run=rec2)
+    assert rec2.calls[0]["kwargs"]["timeout"] == 1
+
+
+def test_timeout_explicit_zero_also_clamped():
+    """Same clamp applied to the explicit `timeout=` kwarg path —
+    a caller passing 0 still gets a usable 1s window, not an
+    insta-fail."""
+    rec = _Recorder(FakeProc(stdout="{}"))
+    lark.call(["x"], timeout=0, run=rec)
+    assert rec.calls[0]["kwargs"]["timeout"] == 1
+
+
 # ── Popen-time errors (npx missing, permission denied, ...) ────
 
 
