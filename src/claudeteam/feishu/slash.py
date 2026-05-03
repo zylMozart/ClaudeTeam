@@ -37,6 +37,8 @@ from claudeteam.agents import identity
 from claudeteam.feishu import pane_state
 from claudeteam.feishu.cards import simple_card
 from claudeteam.runtime import tmux
+from claudeteam.store import memory
+from claudeteam.util import fmt_time_ms
 
 
 def _spawn_daemon_thread(fn: Callable[[], None]) -> None:
@@ -109,6 +111,7 @@ _HELP_TEXT = """🆘 ClaudeTeam 自定义斜杠命令（零 LLM，router/hook �
 /tmux [agent] [lines]    → capture-pane 窗口（默认 manager/10 行）
 /send <agent> <msg>      → 直接注入消息到 agent 窗口
 /compact [agent]         → 群聊无参=压缩 manager；带参压缩指定 agent
+/recall <agent> [N]      → 看任意 agent 最近 N 条 durable memory（卡片）
 /stop <agent>            → 送 C-c 到 agent 窗口（中断当前动作）
 /clear <agent>           → 送 /clear + 重新入职 init_msg（相当于 rehire）"""
 
@@ -255,6 +258,55 @@ def _handle_compact(args: str, ctx: SlashContext) -> str:
             f"{int(_REIDENTIFY_DELAY_S)}s 后自动重注 identity")
 
 
+_RECALL_DEFAULT_LIMIT = 10
+_RECALL_MAX_LIMIT = 50
+
+
+def _handle_recall(args: str, ctx: SlashContext) -> str | dict:
+    """`/recall <agent> [N]` — boss-from-chat path to inspect any agent's
+    durable memory without opening tmux. Default N = 10 entries; max 50
+    so a card body fits in Feishu's render window.
+
+    Round-95: complementary to install-hooks' /recall (which fires from
+    inside the agent's pane and shells through `claudeteam recall`).
+    This one fires from the chat — boss types `/recall worker_cc 5` and
+    sees a card with the worker's last 5 memory entries."""
+    parts = args.split()
+    if not parts:
+        return ("用法: /recall <agent> [N]\n"
+                f"例: /recall manager 5（最近 5 条；默认 {_RECALL_DEFAULT_LIMIT}，"
+                f"最多 {_RECALL_MAX_LIMIT}）")
+    agent = parts[0]
+    if (warn := _bad_agent(agent, ctx)):
+        return warn
+    raw_n = parts[1] if len(parts) >= 2 else ""
+    if raw_n and not raw_n.isdigit():
+        return f"⚠️ /recall {agent} <N>: N 必须是正整数（got `{raw_n}`）"
+    n = max(1, min(int(raw_n) if raw_n else _RECALL_DEFAULT_LIMIT,
+                   _RECALL_MAX_LIMIT))
+    rows = memory.list_recent(agent, limit=n)
+    now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
+    if not rows:
+        return simple_card(
+            f"🧠 /recall {agent} — 无记忆 ({now_str} 北京时间)",
+            f"_{agent} 还没写过任何 memory entry。试 `claudeteam remember "
+            f"{agent} ...` 写一条。_",
+            color="grey",
+        )
+    body_lines = []
+    for r in rows:
+        ts = fmt_time_ms(r.get("created_at", 0))
+        kind = r.get("kind", "?")
+        content = r.get("content", "")
+        ref = r.get("ref", "")
+        suffix = f" (ref={ref})" if ref else ""
+        body_lines.append(f"`[{ts}]` **[{kind}]** {content}{suffix}")
+    return simple_card(
+        f"🧠 /recall {agent} — 最近 {len(rows)} 条 ({now_str} 北京时间)",
+        "\n".join(body_lines),
+    )
+
+
 def _handle_stop(args: str, ctx: SlashContext) -> str:
     if not args.strip():
         return "用法: /stop <agent>\n例: /stop worker_cc（送 C-c 中断当前动作）"
@@ -291,6 +343,7 @@ _HANDLERS: dict[str, Callable[[str, SlashContext], str]] = {
     "/tmux": _handle_tmux,
     "/send": _handle_send,
     "/compact": _handle_compact,
+    "/recall": _handle_recall,  # round-95: boss-from-chat agent memory inspect
     "/stop": _handle_stop,
     "/clear": _handle_clear,
 }

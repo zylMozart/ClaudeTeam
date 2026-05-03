@@ -58,13 +58,14 @@ def test_is_slash_command_handles_leading_whitespace():
 def test_help_returns_card_listing_all_commands():
     """Round-79: /help now returns a Feishu card dict (not text). The card's
     body element is the same _HELP_TEXT block, so command-name search runs
-    against `elements[0]['text']['content']` instead of the bare reply."""
+    against `elements[0]['text']['content']` instead of the bare reply.
+    Round-95: /recall added — must also appear."""
     reply = slash.dispatch("/help", _ctx())
     assert isinstance(reply, dict), f"/help should return a card dict, got {type(reply)}"
     assert reply["header"]["title"]["content"] == "🆘 ClaudeTeam 自定义斜杠命令"
     body = reply["elements"][0]["text"]["content"]
     for c in ("/help", "/team", "/health", "/usage", "/tmux",
-              "/send", "/compact", "/stop", "/clear"):
+              "/send", "/compact", "/recall", "/stop", "/clear"):
         assert c in body
 
 
@@ -374,6 +375,80 @@ def test_unknown_slash_returns_help_hint():
     reply = slash.dispatch("/unknownfoo", _ctx())
     assert "未知斜杠命令" in reply
     assert "/help" in reply
+
+
+# ── /recall (round-95) ──────────────────────────────────────────
+
+
+def test_recall_no_arg_returns_usage_text():
+    """Empty `/recall` is a hint, not an error — show usage as plain
+    text (str return) so it threads back as a Feishu reply, not a card."""
+    reply = slash.dispatch("/recall", _ctx())
+    assert isinstance(reply, str)
+    assert "用法: /recall" in reply
+
+
+def test_recall_unknown_agent_returns_warning():
+    reply = slash.dispatch("/recall ghost", _ctx())
+    # _bad_agent emits a Chinese warning when name not in agent_set
+    assert isinstance(reply, str)
+    assert "未知 agent" in reply
+
+
+def test_recall_with_no_memory_returns_grey_card():
+    """Empty memory: card with grey template + helpful nudge to write one.
+    Avoid yellow / red because no memory is the default state on a fresh
+    deploy, not an alarm."""
+    from helpers import isolated_env
+    with isolated_env():
+        reply = slash.dispatch("/recall manager", _ctx())
+    assert isinstance(reply, dict)
+    assert reply["header"]["template"] == "grey"
+    assert "无记忆" in reply["header"]["title"]["content"]
+    body = reply["elements"][0]["text"]["content"]
+    assert "claudeteam remember" in body  # nudge
+
+
+def test_recall_renders_recent_entries_as_card():
+    """Populated memory: card with title `/recall <agent> — 最近 N 条`,
+    body lists `[ts] [kind] content (ref=X)` per entry. Default N = 10."""
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        memory.append("manager", "task_assigned", "fix login", ref="om_1")
+        memory.append("manager", "task_completed", "fix login", ref="om_1")
+        reply = slash.dispatch("/recall manager", _ctx())
+    assert isinstance(reply, dict)
+    title = reply["header"]["title"]["content"]
+    assert "/recall manager" in title
+    assert "最近 2 条" in title
+    body = reply["elements"][0]["text"]["content"]
+    assert "[task_assigned]" in body
+    assert "[task_completed]" in body
+    assert "fix login" in body
+    assert "(ref=om_1)" in body
+
+
+def test_recall_explicit_limit_caps_at_max():
+    """`/recall agent N` honours N; over the cap (50) it gets clamped."""
+    from helpers import isolated_env
+    from claudeteam.store import memory
+    with isolated_env():
+        for i in range(10):
+            memory.append("worker_cc", "note", f"i={i}")
+        reply = slash.dispatch("/recall worker_cc 3", _ctx())
+    body = reply["elements"][0]["text"]["content"]
+    # Only last 3 entries (i=7, 8, 9)
+    for i in (7, 8, 9):
+        assert f"i={i}" in body
+    for i in (0, 1, 2, 3, 4, 5, 6):
+        assert f"i={i}" not in body
+
+
+def test_recall_invalid_limit_returns_warning():
+    reply = slash.dispatch("/recall manager not_a_number", _ctx())
+    assert isinstance(reply, str)
+    assert "N 必须是正整数" in reply
 
 
 def test_handler_exception_is_caught():
