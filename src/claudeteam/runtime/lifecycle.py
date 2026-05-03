@@ -57,6 +57,7 @@ LAZY = "lazy"
 READY = "ready"
 READY_NO_INIT = "ready_no_init"
 SPAWN_FAILED = "spawn_failed"
+CONFIG_ERROR = "config_error"
 
 
 def provision_pane(agent: str, target: tmux.Target) -> str:
@@ -80,6 +81,9 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
       READY           — CLI spawned + identity init injected
       READY_NO_INIT   — CLI spawned but ready marker didn't appear in 20s
       SPAWN_FAILED    — tmux.spawn_agent returned False
+      CONFIG_ERROR    — agent's `cli` value isn't registered (typo /
+                        missing adapter); caller should warn + continue
+                        with the rest of the team, NOT kill the whole start.
     """
     cfg = config.agent_config(agent)
     identity.write(agent)
@@ -88,7 +92,15 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         return LAZY
     if cfg.get("cli", "claude-code") == "codex-cli":
         ensure_workdir_trusted(Path.cwd())
-    adapter = adapter_for_agent(agent)
+    try:
+        adapter = adapter_for_agent(agent)
+    except KeyError as e:
+        # Bad `cli` value in team.json — typo, dropped adapter, etc. One
+        # bad agent shouldn't kill `claudeteam start` for the rest of
+        # the team. Caller logs + skips.
+        import sys
+        print(f"  ⚠️ {agent}: {e}", file=sys.stderr)
+        return CONFIG_ERROR
     cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED

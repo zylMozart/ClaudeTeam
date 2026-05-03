@@ -42,6 +42,8 @@ def main(argv: list[str]) -> int:
             print(f"  → {agent} ({cli}) lazy-pane ready")
         elif outcome == lifecycle.SPAWN_FAILED:
             warn(f"⚠️  failed to spawn CLI in {agent} pane")
+        elif outcome == lifecycle.CONFIG_ERROR:
+            warn(f"⚠️  {agent} skipped: bad cli config in team.json")
         elif outcome == lifecycle.READY_NO_INIT:
             warn(f"⚠️  {agent} CLI didn't show ready marker in 20s; "
                  f"identity init prompt skipped")

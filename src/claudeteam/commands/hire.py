@@ -40,6 +40,10 @@ def main(argv: list[str]) -> int:
     if outcome == lifecycle.LAZY:
         print(f"✅ hired (lazy): {agent} ({cli}) → {target}")
         return 0
+    if outcome == lifecycle.CONFIG_ERROR:
+        return error_exit(
+            f"❌ {agent}: bad cli config in team.json (see warning above); "
+            f"hire aborted, fix team.json and retry")
     if outcome == lifecycle.SPAWN_FAILED:
         return error_exit(f"❌ failed to spawn CLI in {agent} pane")
     if outcome == lifecycle.READY_NO_INIT:

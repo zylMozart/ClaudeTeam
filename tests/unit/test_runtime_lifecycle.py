@@ -12,7 +12,8 @@ from __future__ import annotations
 from helpers import attr_patch, env_patch, isolated_env, tmux_patch
 from claudeteam.runtime import lifecycle, tmux, wake
 from claudeteam.runtime.lifecycle import (
-    LAZY, READY, READY_NO_INIT, SPAWN_FAILED, pane_env_prefix, provision_pane,
+    LAZY, READY, READY_NO_INIT, SPAWN_FAILED, CONFIG_ERROR,
+    pane_env_prefix, provision_pane,
 )
 from claudeteam.store import local_facts
 
@@ -144,3 +145,24 @@ def test_provision_ready_no_init_when_marker_never_appears():
         assert inject_calls == []  # no identity init when CLI not ready
         snap = local_facts.get_status("a")
         assert snap["status"] == "进行中"  # status still flips
+
+
+# ── provision_pane: CONFIG_ERROR (round-61) ──────────────────────
+
+
+def test_provision_returns_config_error_on_unknown_cli():
+    """REGRESSION: a typo in team.json's `cli` field (e.g. 'claude-cod'
+    missing the e) used to raise KeyError straight through start.py,
+    killing the entire claudeteam start. Now returns CONFIG_ERROR so
+    the caller can warn + skip + continue with the rest of the team."""
+    import io
+    import contextlib
+    team = {"agents": {"typo_agent": {"cli": "claude-cod"}}}  # unknown CLI
+    err = io.StringIO()
+    with isolated_env(team=team), \
+            contextlib.redirect_stderr(err):
+        outcome = provision_pane("typo_agent", tmux.Target("S", "typo_agent"))
+    assert outcome == CONFIG_ERROR
+    # Stderr explains which agent + what's wrong
+    assert "typo_agent" in err.getvalue()
+    assert "claude-cod" in err.getvalue() or "unknown cli" in err.getvalue()
