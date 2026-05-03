@@ -9,7 +9,8 @@ This branch is a **clean-slate rebuild**.  The previous implementation
 (on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
 across ~200 files; we are rebuilding with the smallest possible
 footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Currently ~15.9 K LOC (src + tests), 725 tests green.
+capability requires them.  Run `python3 tests/run.py` for the live test count
+on whichever commit you have; the baseline is "all green, 0 failed".
 
 ## Prerequisites
 
@@ -265,8 +266,10 @@ Stdlib-only runner.  No pytest dependency.  Discovers `tests/unit/test_*.py`
 and `tests/integration/test_*.py`, runs every `test_*` function, prints a
 summary; non-zero exit on any failure.
 
+Output shape (N grows with each round; gate is "0 failed", not the absolute count):
+
 ```
-tests: 463 passed, 0 failed
+tests: N passed, 0 failed
 ```
 
 ## What's missing
