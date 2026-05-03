@@ -144,6 +144,33 @@ def read_json(path: Path, default):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def read_jsonl(path: Path) -> list[dict]:
+    """Read `path` as JSONL → list of records. Tolerant by design:
+
+    - Missing file → [] (caller usually treats "no records" as the
+      empty case, no need to special-case existence).
+    - Blank lines → silently skipped.
+    - Lines that fail json.loads → silently skipped (keeps the file
+      forward-readable when a previous crash left a half-written line;
+      callers can still write valid entries afterwards).
+
+    Returns records oldest-first (file order), since JSONL is append-only
+    in this rebuild. Callers that want newest-first reverse explicitly.
+    """
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8") -> None:
     """Write `content` to `path` via tmp + rename so a crash mid-write
     can't leave the destination half-written.

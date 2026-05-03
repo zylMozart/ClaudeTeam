@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path
 
 from claudeteam.runtime.paths import facts_dir as _facts_dir
-from claudeteam.util import flock, now_ms, read_json, write_json
+from claudeteam.util import flock, now_ms, read_json, read_jsonl, write_json
 
 
 def _inbox_file() -> Path:
@@ -181,16 +181,9 @@ def append_log(agent: str, kind: str, content: str, *, ref: str = "") -> str:
 
 
 def list_logs(agent: str, *, limit: int = 20) -> list[dict]:
-    path = _log_file()
-    if not path.exists():
-        return []
-    rows = []
-    with path.open(encoding="utf-8") as fh:
-        for raw in fh:
-            raw = raw.strip()
-            if not raw:
-                continue
-            row = json.loads(raw)
-            if row.get("agent") == agent:
-                rows.append(row)
+    """Return up to `limit` most recent log entries for `agent`,
+    oldest-first. Round-90: corrupt lines (half-written from a crash)
+    are now silently skipped instead of raising — same behavior as
+    store/memory."""
+    rows = [r for r in read_jsonl(_log_file()) if r.get("agent") == agent]
     return rows[-limit:]

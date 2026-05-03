@@ -13,7 +13,8 @@ from claudeteam.runtime import tmux
 from claudeteam.util import (
     ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
     fmt_time_ms, help_requested, maybe_print_help, now_ms, pop_bool_flag,
-    pop_flag, print_json, read_json, reject_extra_args, usage_error, warn,
+    pop_flag, print_json, read_json, read_jsonl, reject_extra_args,
+    usage_error, warn,
 )
 
 
@@ -271,6 +272,62 @@ def test_reject_extra_args_returns_one_and_prints_when_leftover():
 
 
 # ── print_json ──────────────────────────────────────────────────
+
+
+# ── read_jsonl ──────────────────────────────────────────────────
+
+
+def test_read_jsonl_returns_empty_when_missing(tmp_dir_path=None):
+    """Round-90: missing file is the common 'no records yet' case;
+    callers shouldn't have to special-case existence."""
+    import tempfile, os
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        assert read_jsonl(Path(td) / "missing.jsonl") == []
+
+
+def test_read_jsonl_parses_records_in_file_order():
+    """Append-only convention: file order = chronological order, oldest
+    first. read_jsonl preserves that."""
+    import tempfile, os, json as _json
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "x.jsonl"
+        p.write_text(
+            _json.dumps({"i": 1}) + "\n"
+            + _json.dumps({"i": 2}) + "\n"
+            + _json.dumps({"i": 3}) + "\n",
+            encoding="utf-8",
+        )
+        assert [r["i"] for r in read_jsonl(p)] == [1, 2, 3]
+
+
+def test_read_jsonl_skips_blank_lines():
+    """Blank lines (from manual edits or crash artefacts) must NOT
+    raise json.JSONDecodeError on empty input."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "x.jsonl"
+        p.write_text('\n{"i": 1}\n\n{"i": 2}\n\n', encoding="utf-8")
+        assert [r["i"] for r in read_jsonl(p)] == [1, 2]
+
+
+def test_read_jsonl_skips_corrupt_lines_silently():
+    """Half-written lines from a crashed writer must NOT brick the file
+    forever — drop them, keep the valid ones, let the next write append
+    cleanly."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "x.jsonl"
+        p.write_text(
+            '{"i": 1}\n'
+            '{"i": 2, "broken\n'  # truncated mid-line, no closing brace
+            '{"i": 3}\n',
+            encoding="utf-8",
+        )
+        assert [r["i"] for r in read_jsonl(p)] == [1, 3]
 
 
 def test_print_json_uses_canonical_formatting():

@@ -24,7 +24,7 @@ import json
 from typing import Iterable
 
 from claudeteam.runtime import paths
-from claudeteam.util import flock, now_ms
+from claudeteam.util import flock, now_ms, read_jsonl
 
 
 _MAX_PER_AGENT = 200  # cap retained entries; oldest get dropped on overflow
@@ -59,21 +59,11 @@ def append(agent: str, kind: str, content: str, *, ref: str = "") -> dict:
     _agent_dir(agent).mkdir(parents=True, exist_ok=True)
     path = _memory_file(agent)
     with _locked(agent):
-        # Read existing (if any), append, truncate from front if over cap,
-        # write back atomically. Append-only file mode would be faster but
-        # we need the truncate-from-front step to keep memory size bounded.
-        rows: list[dict] = []
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    # Corrupt line (partial write from a crash) — drop it
-                    # silently rather than let one bad entry brick the file.
-                    continue
+        # Read existing (corrupt-tolerant via util.read_jsonl), append,
+        # truncate from front if over cap, write back atomically.
+        # Append-only file mode would be faster but we need the
+        # truncate-from-front step to keep memory size bounded.
+        rows = read_jsonl(path)
         rows.append(entry)
         if len(rows) > _MAX_PER_AGENT:
             rows = rows[-_MAX_PER_AGENT:]
@@ -87,19 +77,7 @@ def append(agent: str, kind: str, content: str, *, ref: str = "") -> dict:
 def list_recent(agent: str, *, limit: int = 20) -> list[dict]:
     """Return up to `limit` most recent memory entries, oldest-first
     (so the agent reads them in chronological order)."""
-    path = _memory_file(agent)
-    if not path.exists():
-        return []
-    rows: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return rows[-limit:]
+    return read_jsonl(_memory_file(agent))[-limit:]
 
 
 def clear(agent: str) -> int:
