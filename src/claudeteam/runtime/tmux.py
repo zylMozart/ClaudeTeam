@@ -24,8 +24,39 @@ class Target:
         return f"{self.session}:{self.window}"
 
 
+class _FailedRun:
+    """Stand-in for subprocess.CompletedProcess when the call could
+    not be made at all (FileNotFoundError, TimeoutExpired). Mirrors
+    the .returncode / .stdout / .stderr trio so `_ok` and friends can
+    treat it uniformly as "this tmux op didn't succeed"."""
+    __slots__ = ("returncode", "stdout", "stderr")
+
+    def __init__(self, reason: str):
+        self.returncode = 1
+        self.stdout = ""
+        self.stderr = reason
+
+
 def _default_run(args, **kwargs):
-    return subprocess.run(args, capture_output=True, text=True, timeout=10, **kwargs)
+    """subprocess.run wrapper that converts hard failures into a
+    soft "rc=1, stderr=<reason>" so callers (has_session, capture_pane,
+    inject, ...) just see a normal "tmux op failed" instead of a
+    FileNotFoundError traceback bubbling up through every command
+    that touches tmux.
+
+    Catches:
+      - FileNotFoundError: tmux binary not on PATH (fresh container,
+        derived Docker image without tmux). claudeteam health flags
+        the missing session red, but the rest of the CLI keeps working.
+      - subprocess.TimeoutExpired: tmux server hung (extremely rare;
+        most commands return in <50ms). 10s timeout per call.
+    """
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=10, **kwargs)
+    except FileNotFoundError:
+        return _FailedRun("tmux not found on PATH")
+    except subprocess.TimeoutExpired:
+        return _FailedRun("tmux command timed out (>10s)")
 
 
 def _ok(args: list[str], run: Callable) -> bool:

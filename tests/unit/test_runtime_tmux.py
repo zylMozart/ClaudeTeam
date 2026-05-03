@@ -139,3 +139,55 @@ def test_has_window_uses_session_colon_window():
     rec = _Recorder([_FakeResult(returncode=0)])
     has_window(Target("S", "manager"), run=rec)
     assert rec.calls == [["tmux", "has-session", "-t", "S:manager"]]
+
+
+# ── _default_run resilience ──────────────────────────────────────
+
+
+def test_default_run_returns_soft_failure_when_tmux_missing():
+    """REGRESSION: tmux binary missing (fresh container, derived Docker
+    image, broken PATH) used to raise FileNotFoundError straight through
+    every claudeteam command that touches tmux. Now returns a soft
+    rc=1 result with explanatory stderr so callers degrade cleanly."""
+    import subprocess
+    from helpers import attr_patch
+    from claudeteam.runtime import tmux as tmux_mod
+
+    def boom(*a, **kw):
+        raise FileNotFoundError("[Errno 2] tmux: not found")
+
+    with attr_patch(subprocess, run=boom):
+        result = tmux_mod._default_run(["tmux", "has-session"])
+    assert result.returncode == 1
+    assert "not found on PATH" in result.stderr
+
+
+def test_default_run_returns_soft_failure_on_timeout():
+    """tmux server hang (extremely rare; most commands return in <50ms)
+    should also give a soft failure rather than a TimeoutExpired
+    traceback at the operator."""
+    import subprocess
+    from helpers import attr_patch
+    from claudeteam.runtime import tmux as tmux_mod
+
+    def slow(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=a[0], timeout=10)
+
+    with attr_patch(subprocess, run=slow):
+        result = tmux_mod._default_run(["tmux", "capture-pane"])
+    assert result.returncode == 1
+    assert "timed out" in result.stderr
+
+
+def test_has_session_returns_false_when_tmux_missing():
+    """End-to-end: when tmux is missing, public callers see False rather
+    than crashing. health uses this to flag tmux as red."""
+    import subprocess
+    from helpers import attr_patch
+
+    def boom(*a, **kw):
+        raise FileNotFoundError("[Errno 2] tmux")
+
+    with attr_patch(subprocess, run=boom):
+        # Don't override `run=` so _default_run path is exercised
+        assert has_session("X") is False
