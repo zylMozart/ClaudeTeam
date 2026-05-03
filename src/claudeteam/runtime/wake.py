@@ -100,9 +100,9 @@ def wake_if_dormant(target: tmux.Target, adapter: CliAdapter, *,
     to inject anyway, queue, or surface to boss.
 
     When the function had to actually spawn (pane was dormant on entry)
-    AND \`init_msg\` is provided, it injects the identity/init prompt
-    after the CLI shows ready, then calls \`on_woken\` (typically used
-    to flip the agent's status row from \"待命\" to \"进行中\").
+    AND `init_msg` is provided, it injects the identity/init prompt
+    after the CLI shows ready, then calls `on_woken` (typically used
+    to flip the agent's status row from "待命" to "进行中").
     """
     capture = capture or tmux.capture_pane
     spawn = spawn or tmux.spawn_agent

@@ -49,7 +49,7 @@ _BROADCAST_PREFIX = "全体"   # matches "全体成员", "全体注意" etc.
 
 
 def _is_broadcast(text: str) -> bool:
-    """Detect operator broadcast: \`@team\` / \`@all\` / \`@everyone\` or
+    """Detect operator broadcast: `@team` / `@all` / `@everyone` or
     a Chinese 全体X phrase."""
     if not text:
         return False
