@@ -25,7 +25,7 @@ from typing import Callable, Iterable
 from claudeteam.feishu import chat as _chat
 from claudeteam.feishu.router import Decision
 from claudeteam.runtime import paths
-from claudeteam.util import atomic_write_text, read_json
+from claudeteam.util import read_json, write_json
 
 
 # ── cursor persistence ─────────────────────────────────────────
@@ -43,11 +43,8 @@ def write_cursor(message_id: str, create_time: str) -> None:
     """Persist the last-seen message marker. No-op if either field is empty."""
     if not message_id or not create_time:
         return
-    atomic_write_text(
-        paths.router_cursor_file(),
-        json.dumps({"message_id": message_id, "create_time": str(create_time)},
-                   ensure_ascii=False) + "\n",
-    )
+    write_json(paths.router_cursor_file(),
+               {"message_id": message_id, "create_time": str(create_time)})
 
 
 def record_decision(decision: Decision) -> None:
