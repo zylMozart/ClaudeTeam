@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import dataclass, field
 
 from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
@@ -31,103 +32,127 @@ _WARN = "⚠️ "
 _INFO = "ℹ️ "
 
 
-def _check_state_dir(out: list[str]) -> None:
-    sd = paths.state_dir()
+@dataclass
+class HealthReport:
+    """Accumulator handed to every `_check_*`. Emission and counting
+    happen in one place so we don't string-search the formatted output
+    later to figure out how many warnings we logged.
+    """
+    lines: list[str] = field(default_factory=list)
+    bad: int = 0
+    warn: int = 0
+
+    def ok(self, msg: str) -> None:
+        self.lines.append(f"  {_OK} {msg}")
+
+    def fail(self, msg: str) -> None:
+        self.lines.append(f"  {_BAD} {msg}")
+        self.bad += 1
+
+    def yellow(self, msg: str) -> None:
+        self.lines.append(f"  {_WARN}{msg}")
+        self.warn += 1
+
+    def info(self, msg: str) -> None:
+        self.lines.append(f"  {_INFO}{msg}")
+
+    def note(self, msg: str) -> None:
+        """Indented plain line (no glyph)."""
+        self.lines.append(f"  {msg}")
+
+    def section(self, title: str) -> None:
+        """Unindented section header."""
+        self.lines.append(title)
+
+    def blank(self) -> None:
+        self.lines.append("")
+
+
+def _check_state_dir(rep: HealthReport) -> None:
     src = "env" if env_str("CLAUDETEAM_STATE_DIR") else "default (~/.claudeteam)"
-    out.append(f"  state_dir: {sd}  ({src})")
+    rep.note(f"state_dir: {paths.state_dir()}  ({src})")
 
 
-def _check_team(out: list[str]) -> int:
+def _check_team(rep: HealthReport) -> None:
     tf = config.team_file()
     if not tf.exists():
-        out.append(f"  {_BAD} team.json missing at {tf}")
-        return 1
+        rep.fail(f"team.json missing at {tf}")
+        return
     try:
         team = config.load_team()
     except json.JSONDecodeError as e:
-        out.append(f"  {_BAD} team.json parse error: {e}")
-        return 1
+        rep.fail(f"team.json parse error: {e}")
+        return
     agents = team.get("agents", {})
-    out.append(f"  {_OK} team.json: {len(agents)} agent(s) ({tf})")
+    rep.ok(f"team.json: {len(agents)} agent(s) ({tf})")
     if not agents:
-        out.append(f"  {_WARN} team.json has no agents")
-    return 0
+        rep.yellow("team.json has no agents")
 
 
-def _check_runtime_config(out: list[str]) -> int:
-    bad = 0
+def _check_runtime_config(rep: HealthReport) -> None:
     rc = config.runtime_config_file()
     if not rc.exists():
-        out.append(f"  {_BAD} runtime_config.json missing at {rc}")
-        return 1
+        rep.fail(f"runtime_config.json missing at {rc}")
+        return
     cfg = config.load_runtime_config()
-    chat = cfg.get("chat_id", "")
-    if not chat:
-        out.append(f"  {_BAD} runtime_config.json has empty chat_id")
-        bad = 1
+    if chat := cfg.get("chat_id", ""):
+        rep.ok(f"chat_id: {chat}")
     else:
-        out.append(f"  {_OK} chat_id: {chat}")
-    profile = config.lark_profile()
-    if profile:
-        out.append(f"  {_OK} lark_profile: {profile}")
+        rep.fail("runtime_config.json has empty chat_id")
+    if profile := config.lark_profile():
+        rep.ok(f"lark_profile: {profile}")
     else:
-        out.append(f"  {_WARN} lark_profile blank — bot identity required for sends")
-    return bad
+        rep.yellow("lark_profile blank — bot identity required for sends")
 
 
-def _check_session(out: list[str], session: str) -> bool:
+def _check_session(rep: HealthReport, session: str) -> bool:
     if tmux.has_session(session):
-        out.append(f"  {_OK} tmux session: {session}")
+        rep.ok(f"tmux session: {session}")
         return True
-    out.append(f"  {_BAD} tmux session {session} not running (run `claudeteam start`)")
+    rep.fail(f"tmux session {session} not running (run `claudeteam start`)")
     return False
 
 
-def _check_agents(out: list[str], session: str, agents: list[str], session_alive: bool) -> int:
-    bad = 0
+def _check_agents(rep: HealthReport, session: str, agents: list[str],
+                  session_alive: bool) -> None:
     heartbeats = local_facts.all_heartbeats()
     for agent in agents:
         target = tmux.Target(session, agent)
-        line = f"    {agent}"
         hb = heartbeats.get(agent)
         hb_suffix = f"  ♥ {ago_ms(hb)}" if hb else "  ♥ never"
         if not session_alive:
-            out.append(f"  {_WARN} {line}: session down, skip{hb_suffix}")
+            rep.yellow(f"  {agent}: session down, skip{hb_suffix}")
             continue
         if not tmux.has_window(target):
-            out.append(f"  {_BAD} {line}: no tmux window{hb_suffix}")
-            bad = 1
+            rep.fail(f"  {agent}: no tmux window{hb_suffix}")
             continue
         try:
             adapter = adapter_for_agent(agent)
             text = tmux.capture_pane(target, lines=80)
             if any(m in text for m in adapter.ready_markers()):
-                out.append(f"  {_OK} {line}: pane ready ({config.agent_cli(agent)}){hb_suffix}")
+                rep.ok(f"  {agent}: pane ready ({config.agent_cli(agent)}){hb_suffix}")
             elif config.agent_config(agent).get("lazy"):
-                out.append(f"  {_OK} {line}: lazy pane (CLI starts on first message){hb_suffix}")
+                rep.ok(f"  {agent}: lazy pane (CLI starts on first message){hb_suffix}")
             else:
-                out.append(f"  {_WARN} {line}: pane up but CLI not ready yet — wait a few seconds or check the pane{hb_suffix}")
+                rep.yellow(f"  {agent}: pane up but CLI not ready yet — wait a few seconds or check the pane{hb_suffix}")
         except Exception as e:
-            out.append(f"  {_WARN} {line}: probe failed — {e}")
-    return bad
+            rep.yellow(f"  {agent}: probe failed — {e}")
 
 
-def _check_daemon(out: list[str], spec: watchdog.ProcessSpec) -> int:
+def _check_daemon(rep: HealthReport, spec: watchdog.ProcessSpec) -> None:
     if not spec.pid_file.exists():
-        out.append(f"  {_WARN} {spec.name}: no pid file (not running?)")
-        return 0
+        rep.yellow(f"{spec.name}: no pid file (not running?)")
+        return
     if watchdog.is_alive(spec):
-        out.append(f"  {_OK} {spec.name}: alive ({spec.pid_file.read_text().strip()})")
-        return 0
-    out.append(f"  {_BAD} {spec.name}: pid file present but process dead")
-    return 1
+        rep.ok(f"{spec.name}: alive ({spec.pid_file.read_text().strip()})")
+        return
+    rep.fail(f"{spec.name}: pid file present but process dead")
 
 
-def _check_binaries(out: list[str], agents: list[str]) -> int:
+def _check_binaries(rep: HealthReport, agents: list[str]) -> None:
     """For each unique CLI process_name (claude/codex/kimi/...), verify the
     binary is on PATH. Missing binaries don't crash claudeteam, but every
     pane spawn will fail to launch its CLI."""
-    bad = 0
     seen: dict[str, list[str]] = {}
     for agent in agents:
         try:
@@ -136,16 +161,15 @@ def _check_binaries(out: list[str], agents: list[str]) -> int:
             continue
         seen.setdefault(name, []).append(agent)
     for binary, used_by in sorted(seen.items()):
+        users = ", ".join(used_by)
         path = shutil.which(binary)
         if path:
-            out.append(f"  {_OK} {binary}: {path}  (used by {', '.join(used_by)})")
+            rep.ok(f"{binary}: {path}  (used by {users})")
         else:
-            out.append(f"  {_BAD} {binary}: not on PATH  (used by {', '.join(used_by)})")
-            bad = 1
-    return bad
+            rep.fail(f"{binary}: not on PATH  (used by {users})")
 
 
-def _check_proxy_env(out: list[str]) -> None:
+def _check_proxy_env(rep: HealthReport) -> None:
     """If HTTPS_PROXY/HTTP_PROXY is set without LARK_CLI_NO_PROXY=1, lark-cli
     requests transit through the proxy — usually fatal on host networks.
     Warning only (not fatal): user may genuinely want the proxy."""
@@ -153,25 +177,22 @@ def _check_proxy_env(out: list[str]) -> None:
     if not proxy:
         return
     if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
-        # Proxy still in env even if wrapper strips it; informational, not green.
-        out.append(f"  {_INFO} HTTPS_PROXY set ({proxy}) but LARK_CLI_NO_PROXY=1 — wrapper will strip")
+        rep.info(f"HTTPS_PROXY set ({proxy}) but LARK_CLI_NO_PROXY=1 — wrapper will strip")
     else:
-        out.append(
-            f"  {_WARN} HTTPS_PROXY={proxy} set without LARK_CLI_NO_PROXY=1; "
+        rep.yellow(
+            f"HTTPS_PROXY={proxy} set without LARK_CLI_NO_PROXY=1; "
             "lark-cli requests may fail. `export LARK_CLI_NO_PROXY=1` to strip.")
 
 
-def _check_cursor(out: list[str]) -> None:
+def _check_cursor(rep: HealthReport) -> None:
     cur = catchup.read_cursor()
     if cur:
-        mid = cur.get("message_id", "?")
-        ct = cur.get("create_time", "?")
-        out.append(f"  {_OK} router cursor: {mid} (create_time={ct})")
+        rep.ok(f"router cursor: {cur.get('message_id', '?')} (create_time={cur.get('create_time', '?')})")
     else:
-        # No cursor is normal until the first inbound event lands; advancement
-        # only happens for events coming OFF the wire, not for self-originated
-        # `say` calls. Mark informational, not a warning.
-        out.append(f"  {_INFO} router cursor: empty (advances on first inbound event)")
+        # Empty cursor is normal until the first inbound event lands;
+        # advancement only happens for events coming OFF the wire, not
+        # for self-originated `say` calls. Informational, not warning.
+        rep.info("router cursor: empty (advances on first inbound event)")
 
 
 def main(argv: list[str]) -> int:
@@ -179,17 +200,16 @@ def main(argv: list[str]) -> int:
         print("usage: claudeteam health")
         return 0
 
-    out: list[str] = []
-    bad = 0
+    rep = HealthReport()
 
-    out.append("paths:")
-    _check_state_dir(out)
-    out.append("")
+    rep.section("paths:")
+    _check_state_dir(rep)
+    rep.blank()
 
-    out.append("config:")
-    bad += _check_team(out)
-    bad += _check_runtime_config(out)
-    out.append("")
+    rep.section("config:")
+    _check_team(rep)
+    _check_runtime_config(rep)
+    rep.blank()
 
     try:
         team = config.load_team()
@@ -199,35 +219,33 @@ def main(argv: list[str]) -> int:
         session, agents = "ClaudeTeam", []
 
     if agents:
-        out.append("binaries:")
-        bad += _check_binaries(out, agents)
-        out.append("")
+        rep.section("binaries:")
+        _check_binaries(rep, agents)
+        rep.blank()
 
-    out.append("env:")
-    _check_proxy_env(out)
-    out.append("")
+    rep.section("env:")
+    _check_proxy_env(rep)
+    rep.blank()
 
-    out.append("tmux:")
-    session_alive = _check_session(out, session)
-    bad += 0 if session_alive else 1
+    rep.section("tmux:")
+    session_alive = _check_session(rep, session)
     if agents:
-        bad += _check_agents(out, session, agents, session_alive)
-    out.append("")
+        _check_agents(rep, session, agents, session_alive)
+    rep.blank()
 
-    out.append("daemons:")
+    rep.section("daemons:")
     for spec in watchdog.all_known_specs():
-        bad += _check_daemon(out, spec)
-    out.append("")
+        _check_daemon(rep, spec)
+    rep.blank()
 
-    out.append("router state:")
-    _check_cursor(out)
+    rep.section("router state:")
+    _check_cursor(rep)
 
-    print("\n".join(out))
-    if bad:
-        return error_exit(f"\n{_BAD} {bad} red check(s) — see above")
-    warns = sum(1 for line in out if _WARN.strip() in line)
-    if warns:
-        print(f"\n{_WARN} no errors, {warns} warning(s) — see above")
+    print("\n".join(rep.lines))
+    if rep.bad:
+        return error_exit(f"\n{_BAD} {rep.bad} red check(s) — see above")
+    if rep.warn:
+        print(f"\n{_WARN}no errors, {rep.warn} warning(s) — see above")
     else:
         print(f"\n{_OK} all green")
     return 0
