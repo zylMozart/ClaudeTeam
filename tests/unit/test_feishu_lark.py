@@ -128,3 +128,43 @@ def test_subprocess_env_keeps_proxy_when_no_proxy_unset():
     with env_patch(HTTPS_PROXY="http://x", LARK_CLI_NO_PROXY=None):
         env = lark.subprocess_env()
     assert env.get("HTTPS_PROXY") == "http://x"
+
+
+# ── _resolve_timeout (env-driven default override) ────────────────
+
+
+def test_timeout_default_is_90s_when_unset():
+    """No explicit timeout, no CLAUDETEAM_LARK_TIMEOUT → 90 (matches the
+    docstring; lark-cli routinely takes ~73s on host networks per
+    project_lark_cli_slow.md memory)."""
+    rec = _Recorder(FakeProc(stdout="{}"))
+    with env_patch(CLAUDETEAM_LARK_TIMEOUT=None):
+        lark.call(["x"], run=rec)
+    assert rec.calls[0]["kwargs"]["timeout"] == 90
+
+
+def test_timeout_explicit_arg_wins_over_env():
+    """If the caller passes timeout=N, ignore the env entirely."""
+    rec = _Recorder(FakeProc(stdout="{}"))
+    with env_patch(CLAUDETEAM_LARK_TIMEOUT="240"):
+        lark.call(["x"], timeout=5, run=rec)
+    assert rec.calls[0]["kwargs"]["timeout"] == 5
+
+
+def test_timeout_picks_up_env_when_no_explicit_arg():
+    """CLAUDETEAM_LARK_TIMEOUT lets operators bump the default for slow
+    hosts without changing call sites."""
+    rec = _Recorder(FakeProc(stdout="{}"))
+    with env_patch(CLAUDETEAM_LARK_TIMEOUT="180"):
+        lark.call(["x"], run=rec)
+    assert rec.calls[0]["kwargs"]["timeout"] == 180
+
+
+def test_timeout_falls_back_to_90_when_env_is_garbage():
+    """Misconfigured env (`CLAUDETEAM_LARK_TIMEOUT=potato`) should fall
+    back to the default rather than raising. ValueError is caught
+    inside _resolve_timeout."""
+    rec = _Recorder(FakeProc(stdout="{}"))
+    with env_patch(CLAUDETEAM_LARK_TIMEOUT="not-a-number"):
+        lark.call(["x"], run=rec)
+    assert rec.calls[0]["kwargs"]["timeout"] == 90
