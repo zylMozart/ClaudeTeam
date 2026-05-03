@@ -11,9 +11,6 @@ dist/
 /agents/
 /projects/
 /state/
-scripts/.router.pid
-scripts/.team.json.prev
-scripts/runtime_config.json
 .claude/scheduled_tasks.lock
 team.json
 runtime_config.json
