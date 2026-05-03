@@ -75,6 +75,16 @@ _MAX_TMUX_LINES = 2000
 _REIDENTIFY_DELAY_S = 45.0   # rough upper bound for claude-code /compact
 
 
+def _beijing_stamp(ctx: SlashContext) -> str:
+    """Format `ctx.now()` as `YYYY-MM-DD HH:MM 北京时间` — the trailing
+    suffix every card title uses (R85 manager identity 沟通格式 rule).
+
+    Round-117: extracted from 5 card handlers (/team, /health, /usage,
+    /tmux, /recall) so a future "switch to UTC" / locale change is one
+    edit, and the suffix can't drift between handlers."""
+    return f"{ctx.now().strftime('%Y-%m-%d %H:%M')} 北京时间"
+
+
 def _default_agent(ctx: SlashContext) -> str:
     return ctx.team_agents[0] if ctx.team_agents else "manager"
 
@@ -134,7 +144,6 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     Color is `green` when no agent is in a warning/down state, `yellow`
     when at least one is, so the boss can scan group chat at a glance.
     """
-    now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     rows = []
     tally: Counter[str] = Counter()
     for agent in ctx.team_agents:
@@ -165,7 +174,7 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
              else "yellow")
 
     return simple_card(
-        f"👥 /team — 员工实时状态 [{ctx.session}] {now_str} 北京时间",
+        f"👥 /team — 员工实时状态 [{ctx.session}] {_beijing_stamp(ctx)}",
         "\n".join(body_lines),
         color=color,
     )
@@ -181,7 +190,6 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     indentation + glyph alignment carry through Feishu's lark_md
     rendering without getting collapsed.
     """
-    now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     out = _shell(ctx, ["claudeteam", "health"], timeout=60)
     # Health uses ❌ for hard fails and ⚠️ for warnings (see health.py
     # _BAD / _WARN). Either should flip the card off green so the boss
@@ -189,7 +197,7 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     color = "yellow" if ("❌" in out or "⚠️" in out) else "green"
     body = f"```\n{out}\n```"
     return simple_card(
-        f"🩺 /health — 部署快照 {now_str} 北京时间",
+        f"🩺 /health — 部署快照 {_beijing_stamp(ctx)}",
         body,
         color=color,
     )
@@ -202,7 +210,6 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
     Body fences raw output so the table-formatted ccusage rows
     (totals / per-day breakdown) survive Feishu's lark_md collapsing.
     """
-    now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
     view_arg = args.strip().split()[0] if args.strip() else ""
     argv = ["claudeteam", "usage"]
     if view_arg:
@@ -211,7 +218,7 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
     out = _shell(ctx, argv, timeout=120)
     body = f"```\n{out}\n```"
     return simple_card(
-        f"📊 /usage ({view}) — {now_str} 北京时间",
+        f"📊 /usage ({view}) — {_beijing_stamp(ctx)}",
         body,
         color="blue",
     )
@@ -342,11 +349,11 @@ def _handle_recall(args: str, ctx: SlashContext) -> str | dict:
     else:
         rows = memory.list_recent(agent, limit=n)
 
-    now_str = ctx.now().strftime("%Y-%m-%d %H:%M")
+    stamp = _beijing_stamp(ctx)
     title_filter = f" / kind={kind_filter}" if kind_filter else ""
     if not rows:
         return simple_card(
-            f"🧠 /recall {agent}{title_filter} — 无记忆 ({now_str} 北京时间)",
+            f"🧠 /recall {agent}{title_filter} — 无记忆 ({stamp})",
             f"_{agent} 在此过滤下没有任何 memory entry。{kind_warn}_"
             if kind_filter
             else f"_{agent} 还没写过任何 memory entry。试 `claudeteam "
@@ -365,7 +372,7 @@ def _handle_recall(args: str, ctx: SlashContext) -> str | dict:
         suffix = f" (ref={ref})" if ref else ""
         body_lines.append(f"`[{ts}]` **[{kind}]** {content}{suffix}")
     return simple_card(
-        f"🧠 /recall {agent}{title_filter} — 最近 {len(rows)} 条 ({now_str} 北京时间)",
+        f"🧠 /recall {agent}{title_filter} — 最近 {len(rows)} 条 ({stamp})",
         "\n".join(body_lines),
     )
 
