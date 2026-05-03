@@ -204,3 +204,42 @@ def test_down_help():
     rc, out, _ = run_cli(["down", "--help"])
     assert rc == 0
     assert "usage: claudeteam down" in out
+
+
+def test_down_handles_corrupt_pid_file():
+    """A pid file with non-int garbage (e.g. partial write from a crash)
+    should be removed and not blow up the down sequence — this is the
+    pidlock.read_pid → None branch."""
+    team = {"session": "S", "agents": {"manager": {}}}
+    with isolated_env(team=team), _fake_tmux(session_alive=False):
+        paths.ensure_state_dir()
+        paths.router_pid_file().write_text("garbage-not-an-int", encoding="utf-8")
+
+        rc, out, _ = run_cli(["down"])
+        assert rc == 0
+        assert "corrupt pid file" in out
+        assert not paths.router_pid_file().exists()
+
+
+def test_down_returns_one_when_pid_refuses_to_die():
+    """When SIGTERM is delivered but the process never exits within the
+    3s grace window, down should return non-zero so the operator knows
+    a manual SIGKILL might be needed."""
+    team = {"session": "S", "agents": {"manager": {}}}
+    with isolated_env(team=team), _fake_tmux(session_alive=False):
+        paths.ensure_state_dir()
+        paths.router_pid_file().write_text("99999", encoding="utf-8")
+
+        def fake_kill(pid, sig):
+            # SIGTERM accepted, but kill -0 always succeeds → process
+            # appears to stay alive forever (down's poll loop should
+            # eventually give up and surface the warning).
+            return None
+
+        with attr_patch(os, kill=fake_kill):
+            rc, _, err = run_cli(["down"])
+        # The router pid is "alive" → down returns non-zero
+        assert rc != 0
+        assert "still alive" in err
+        # pid file is NOT removed — operator needs to investigate
+        assert paths.router_pid_file().exists()
