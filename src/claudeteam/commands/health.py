@@ -23,7 +23,7 @@ from claudeteam.agents import adapter_for_agent
 from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
-from claudeteam.util import ago_ms, env_str, error_exit, help_requested
+from claudeteam.util import ago_ms, env_str, error_exit, help_requested, pop_bool_flag
 
 
 _OK = "✅"
@@ -195,11 +195,10 @@ def _check_cursor(rep: HealthReport) -> None:
         rep.info("router cursor: empty (advances on first inbound event)")
 
 
-def main(argv: list[str]) -> int:
-    if help_requested(argv):
-        print("usage: claudeteam health")
-        return 0
-
+def _build_report() -> HealthReport:
+    """Run every check and return the populated HealthReport. Pure
+    enumeration — main() picks the renderer (text or JSON) and the
+    exit code based on rep.bad."""
     rep = HealthReport()
 
     rep.section("paths:")
@@ -241,11 +240,45 @@ def main(argv: list[str]) -> int:
     rep.section("router state:")
     _check_cursor(rep)
 
+    return rep
+
+
+def _emit_text(rep: HealthReport) -> None:
+    """Default renderer: the formatted lines + a summary footer."""
     print("\n".join(rep.lines))
     if rep.bad:
-        return error_exit(f"\n{_BAD} {rep.bad} red check(s) — see above")
-    if rep.warn:
+        print(f"\n{_BAD} {rep.bad} red check(s) — see above")
+    elif rep.warn:
         print(f"\n{_WARN}no errors, {rep.warn} warning(s) — see above")
     else:
         print(f"\n{_OK} all green")
-    return 0
+
+
+def _emit_json(rep: HealthReport) -> None:
+    """Machine-readable shape:
+        {"ok": bool, "bad": int, "warn": int, "lines": [str, ...]}
+    Smoke conductors / CI can branch on `ok` and inspect `lines` for
+    the rendered glyphs (which still appear in `lines`, just packaged)."""
+    print(json.dumps({
+        "ok": rep.bad == 0,
+        "bad": rep.bad,
+        "warn": rep.warn,
+        "lines": list(rep.lines),
+    }, ensure_ascii=False, indent=2))
+
+
+def main(argv: list[str]) -> int:
+    rest = list(argv)
+    if help_requested(rest):
+        print("usage: claudeteam health [--json]")
+        return 0
+    as_json = pop_bool_flag(rest, "--json")
+    if rest:
+        return error_exit(f"❌ unexpected args: {rest}\nusage: claudeteam health [--json]")
+
+    rep = _build_report()
+    if as_json:
+        _emit_json(rep)
+    else:
+        _emit_text(rep)
+    return 1 if rep.bad else 0

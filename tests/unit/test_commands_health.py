@@ -195,3 +195,47 @@ def test_health_help():
     rc, out, _ = run_cli(["health", "--help"])
     assert rc == 0
     assert "usage: claudeteam health" in out
+
+
+# ── --json mode ─────────────────────────────────────────────────
+
+
+def test_health_json_emits_machine_readable_object():
+    """--json dumps {ok, bad, warn, lines} so smoke conductors can
+    branch on `ok` without grepping the formatted output."""
+    import json as _json
+    team = {"session": "S", "agents": {"manager": {"cli": "claude-code"}}}
+    rc_cfg = {"chat_id": "oc_x", "lark_profile": "prod"}
+    with isolated_env(team=team, runtime_config=rc_cfg), _stub_tmux(
+            session_alive=True, panes_with_cli=["manager"]), \
+            env_patch(HTTPS_PROXY=None, HTTP_PROXY=None):
+        rc, out, _ = run_cli(["health", "--json"])
+        # No reds → exit 0
+        assert rc == 0
+        data = _json.loads(out)
+        assert isinstance(data, dict)
+        assert data["ok"] is True
+        assert data["bad"] == 0
+        assert data["warn"] >= 0
+        assert isinstance(data["lines"], list)
+        assert any("team.json" in line for line in data["lines"])
+
+
+def test_health_json_with_bad_check_returns_one_and_ok_false():
+    """When a check fails, JSON mode still exits 1 and ok=False."""
+    import json as _json
+    # team.json missing → red
+    rc_cfg = {"chat_id": "oc_x"}
+    with isolated_env(runtime_config=rc_cfg), _stub_tmux(session_alive=False):
+        rc, out, _ = run_cli(["health", "--json"])
+        assert rc == 1
+        data = _json.loads(out)
+        assert data["ok"] is False
+        assert data["bad"] >= 1
+
+
+def test_health_json_unknown_args_returns_one():
+    """Mistyped flag should fail loudly, not silently accept."""
+    rc, _, err = run_cli(["health", "--lol"])
+    assert rc == 1
+    assert "unexpected args" in err

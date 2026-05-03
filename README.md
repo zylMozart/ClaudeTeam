@@ -163,7 +163,8 @@ bootstrap & ops
   claudeteam version                            print installed package version
   claudeteam up                                 start + router + watchdog (idempotent)
   claudeteam down                               graceful inverse of up
-  claudeteam health                             one-shot deployment-state check
+  claudeteam health [--json]                    one-shot deployment-state check
+                                                (--json for {ok, bad, warn, lines} dict)
 
 local store / inbox
   claudeteam send <to> <from> <message> [priority]
