@@ -305,6 +305,57 @@ def test_supervise_enters_cooldown_after_max_retries():
     assert states["router"].fail_count == 0  # reset
 
 
+def test_supervise_calls_alert_fn_when_entering_cooldown():
+    """Round-82: cooldown entry triggers alert_fn(name, failed_at, cooldown_secs)
+    so callers can fan out to Feishu / pager / log."""
+    spec = _spec(max_retries=2, cooldown_secs=600)
+    states = {"router": ProcessState("router", fail_count=1)}
+    alerts = []
+    supervise([spec], states,
+              alive_check=lambda s: False,
+              respawn_fn=lambda s: False,
+              alert_fn=lambda name, fc, cd: alerts.append((name, fc, cd)),
+              now=lambda: 1000.0, log=lambda *_: None)
+    # Pre-cooldown fail_count was 2 (1 + 1), passed as failed_at
+    assert alerts == [("router", 2, 600)]
+
+
+def test_supervise_no_alert_when_only_one_fail_no_cooldown_yet():
+    """Single failure (still under max_retries) must not page the boss
+    — only the cooldown transition is alert-worthy."""
+    spec = _spec(max_retries=3, cooldown_secs=600)
+    states: dict = {}
+    alerts = []
+    supervise([spec], states,
+              alive_check=lambda s: False,
+              respawn_fn=lambda s: False,
+              alert_fn=lambda *a: alerts.append(a),
+              now=lambda: 0.0, log=lambda *_: None)
+    assert alerts == []
+    assert states["router"].fail_count == 1
+
+
+def test_supervise_swallows_alert_fn_exceptions():
+    """A broken alert path must not kill supervise. Daemon liveness
+    matters more than chat delivery."""
+    spec = _spec(max_retries=1, cooldown_secs=60)
+    states: dict = {}
+    logs = []
+
+    def broken_alert(*a):
+        raise RuntimeError("network down")
+
+    supervise([spec], states,
+              alive_check=lambda s: False,
+              respawn_fn=lambda s: False,
+              alert_fn=broken_alert,
+              now=lambda: 0.0, log=lambda msg: logs.append(msg))
+    # Cooldown still entered correctly
+    assert states["router"].last_action == "cooldown"
+    # Warning logged so operators can grep
+    assert any("alert_fn raised" in m for m in logs)
+
+
 def test_supervise_skips_during_cooldown():
     spec = _spec()
     states = {"router": ProcessState("router", cooldown_until=2000.0)}

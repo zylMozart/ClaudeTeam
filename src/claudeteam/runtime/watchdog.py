@@ -185,10 +185,21 @@ def supervise(specs: list[ProcessSpec],
               now: Callable = time.time,
               alive_check: Callable = is_alive,
               respawn_fn: Callable = respawn,
+              alert_fn: Callable | None = None,
               log: Callable = print) -> None:
     """Walk every spec once, decide alive / respawn / cooldown.
 
-    Mutates `states` in place.  Caller wraps this in their own loop.
+    Mutates `states` in place. Caller wraps this in their own loop.
+
+    Round-82: when a spec enters cooldown (max_retries respawns failed),
+    invoke `alert_fn(spec_name, fail_count, cooldown_secs)` so callers
+    can fan out to a Feishu chat / pager / log file. Default = None
+    means no alert (preserves backward compat). The router daemon wires
+    `alert_fn` to `feishu/chat.send_text` so boss sees daemon death
+    in chat the moment cooldown begins.
+
+    `alert_fn` exceptions are caught (best-effort): a broken alert path
+    must not stop supervise from doing its primary job (state machine).
     """
     t = now()
     for spec in specs:
@@ -216,9 +227,15 @@ def supervise(specs: list[ProcessSpec],
         st.fail_count += 1
         if st.fail_count >= spec.max_retries:
             st.cooldown_until = t + spec.cooldown_secs
+            failed_at = st.fail_count
             st.fail_count = 0  # reset for after cooldown
             st.last_action = "cooldown"
             log(f"⛔ {spec.name} entering {spec.cooldown_secs}s cooldown after {spec.max_retries} fails")
+            if alert_fn is not None:
+                try:
+                    alert_fn(spec.name, failed_at, spec.cooldown_secs)
+                except Exception as e:
+                    log(f"  ⚠️ alert_fn raised on {spec.name} cooldown: {e}")
         else:
             st.last_action = "fail"
             log(f"❌ {spec.name} respawn failed ({st.fail_count}/{spec.max_retries})")
