@@ -123,7 +123,11 @@ fixture instead of a real subprocess.
 10. (done) `claudeteam usage` — ccusage wrapper for claude-code agents
 11. (done) Rate-limit detection (adapter `rate_limit_markers`, deliver skips)
 12. (done) `claudeteam reset` + 15-helper `util.py` shared stdlib
-13. (next) Image / file Feishu messages
-14. (next) Post-compact identity reread
-15. (later) Dockerfile + compose
-16. (later) Multi-team isolation polish (`claudeteam switch <team>`)
+13. (done) Image / file / audio / sticker Feishu messages → placeholder text
+14. (done) Post-compact identity reread (`/compact` schedules background re-init)
+15. (done) Slash command router-level dispatch (zero LLM `/help /team /tmux /send /compact /stop /clear /usage /health`)
+16. (done) Broadcast routing (`@team` / `@all` / `全体X` → fan out to non-sender agents)
+17. (done) Lifecycle helper extraction (`runtime/lifecycle.provision_pane`)
+18. (next) Dockerfile + compose
+19. (next) Multi-team isolation polish (`claudeteam switch <team>`)
+20. (next) Round C real-task end-to-end smoke (boss assigns task → manager dispatches → workers execute → manager summarizes)
