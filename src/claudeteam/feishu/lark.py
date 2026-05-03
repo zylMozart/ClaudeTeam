@@ -105,7 +105,39 @@ def call(args: list[str], *, profile: str = "", timeout: int | None = None,
     # lark-cli wraps results in {"ok": ..., "data": ...} or returns data directly.
     # `ok: false` means the API returned an error even though lark-cli exited 0.
     if isinstance(full, dict) and full.get("ok") is False:
-        reason = full.get("msg") or full.get("error") or full.get("code") or "?"
+        reason = _extract_error_message(full)
         print(f"  ⚠️ lark-cli API error: {reason}"[:200])
         return None
     return full.get("data", full)
+
+
+def _extract_error_message(full: dict) -> str:
+    """Pull the most informative human-readable string out of lark-cli's
+    error-shape variants. Real responses seen in the wild:
+
+      {"ok": false, "msg": "plain message"}
+      {"ok": false, "error": "plain string"}
+      {"ok": false, "error": {"type": "validation", "message": "..."}}
+      {"ok": false, "error": {"type": "api_error", "code": 230002,
+                              "message": "HTTP 400: Bot/User can NOT be out of the chat."}}
+
+    Round-58 smoke caught this: when error is a structured dict, the
+    old `or "?"` chain returned the dict and the warning line printed
+    `{'type': ..., 'message': '...'}` — useless to operators. Now we
+    extract `error.message` when error is a dict, falling back through
+    msg / code / "?" if nothing useful is present.
+    """
+    if msg := full.get("msg"):
+        return str(msg)
+    err = full.get("error")
+    if isinstance(err, dict):
+        # Prefer message; tag with type/code if present so the line
+        # gives operators both the human string AND the API code.
+        message = err.get("message") or err.get("code") or "?"
+        kind = err.get("type")
+        return f"{message} (type={kind})" if kind else str(message)
+    if isinstance(err, str) and err:
+        return err
+    if code := full.get("code"):
+        return str(code)
+    return "?"

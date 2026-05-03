@@ -62,6 +62,68 @@ def test_run_returns_none_when_api_says_ok_false():
     assert lark.call(["x"], run=rec) is None
 
 
+def test_api_error_extracts_message_from_nested_error_dict():
+    """REGRESSION (round-60): lark-cli sometimes returns a structured
+    error object: {"error": {"type": "...", "code": ..., "message": "..."}}
+    instead of a plain "msg" field. Old code printed the dict's repr
+    making the warning useless. Now extract error.message + type."""
+    import io
+    import contextlib
+    payload = ('{"ok":false,"error":{"type":"api_error","code":230002,'
+               '"message":"HTTP 400: Bot/User can NOT be out of the chat."}}')
+    rec = _Recorder(FakeProc(stdout=payload))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = lark.call(["x"], run=rec)
+    assert result is None
+    log = out.getvalue()
+    assert "HTTP 400: Bot/User can NOT be out of the chat." in log
+    assert "type=api_error" in log
+    # Should NOT print the dict repr (old behaviour)
+    assert "{'type'" not in log
+
+
+def test_api_error_extracts_message_from_validation_error():
+    """Same shape, different type — `validation` errors from
+    `--image` flag rejection (round-58 saw this). Operator wants
+    the actual rejection reason, not a dict literal."""
+    import io
+    import contextlib
+    payload = ('{"ok":false,"error":{"type":"validation",'
+               '"message":"--image: --file must be a relative path"}}')
+    rec = _Recorder(FakeProc(stdout=payload))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        lark.call(["x"], run=rec)
+    log = out.getvalue()
+    assert "must be a relative path" in log
+    assert "type=validation" in log
+
+
+def test_api_error_falls_back_when_error_is_plain_string():
+    """Some endpoints return error as a plain string. Fall back to
+    that string verbatim."""
+    import io
+    import contextlib
+    rec = _Recorder(FakeProc(stdout='{"ok":false,"error":"something went wrong"}'))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        lark.call(["x"], run=rec)
+    assert "something went wrong" in out.getvalue()
+
+
+def test_api_error_falls_back_to_code_when_no_message():
+    """Sparse error responses with only a code field — surface the
+    code rather than '?'."""
+    import io
+    import contextlib
+    rec = _Recorder(FakeProc(stdout='{"ok":false,"code":42}'))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        lark.call(["x"], run=rec)
+    assert "42" in out.getvalue()
+
+
 def test_run_returns_data_when_ok_true():
     """Belt-and-suspenders: ok=true with data should still unwrap data."""
     rec = _Recorder(FakeProc(stdout='{"ok":true,"data":{"message_id":"om_2"}}'))
