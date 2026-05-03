@@ -119,6 +119,58 @@ def test_is_rate_limited_false_when_pane_clean():
     assert wake.is_rate_limited(target, WithMarkers(), capture=capture) is False
 
 
+# ── wait_until_ready (no spawn — pure polling) ────────────────────
+
+
+def test_wait_until_ready_returns_true_immediately_when_already_ready():
+    """No-spawn poll variant: if the marker is already there on first
+    capture, no sleep happens — the loop checks then exits."""
+    target = tmux.Target("S", "manager")
+    capture = _capturer(["bypass permissions on\n>"])
+    sleeps = []
+    ok = wake.wait_until_ready(
+        target, _ClaudeFake(), capture=capture,
+        sleep=lambda s: sleeps.append(s),
+        timeout_s=5.0, poll_interval_s=0.1,
+    )
+    assert ok is True
+    assert sleeps == []  # ready on first check, no sleep needed
+
+
+def test_wait_until_ready_polls_with_sleep_then_returns_true():
+    """When the marker appears on the second capture, exactly one sleep
+    fires between the two checks."""
+    target = tmux.Target("S", "manager")
+    capture = _capturer(["$ ", "bypass permissions on\n>"])
+    sleeps = []
+    ok = wake.wait_until_ready(
+        target, _ClaudeFake(), capture=capture,
+        sleep=lambda s: sleeps.append(s),
+        timeout_s=5.0, poll_interval_s=0.1,
+    )
+    assert ok is True
+    assert len(sleeps) == 1
+
+
+def test_wait_until_ready_returns_false_on_timeout():
+    """Marker never appears — function returns False after the deadline.
+    Uses a fake clock so the test doesn't actually sleep through 20s."""
+    target = tmux.Target("S", "manager")
+    capture = lambda t, lines=80: "$ "  # always dormant
+    clock = {"t": 0.0}
+
+    def now():
+        clock["t"] += 0.5
+        return clock["t"]
+
+    ok = wake.wait_until_ready(
+        target, _ClaudeFake(), capture=capture,
+        sleep=lambda s: None, now=now,
+        timeout_s=1.0, poll_interval_s=0.1,
+    )
+    assert ok is False
+
+
 def test_wake_returns_false_on_timeout():
     target = tmux.Target("S", "worker")
     # always dormant
