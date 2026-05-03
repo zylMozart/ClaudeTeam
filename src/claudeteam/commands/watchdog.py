@@ -18,6 +18,7 @@ import sys
 import time
 
 from claudeteam.feishu import chat as _chat
+from claudeteam.feishu.cards import simple_card
 from claudeteam.runtime import config, paths, pidlock, watchdog
 from claudeteam.util import maybe_print_help
 
@@ -31,19 +32,38 @@ def _make_alert_fn():
     so each cooldown event sends without re-reading config.
 
     Returns None when chat_id is unset — alerts are pointless without a
-    delivery target, and a None alert_fn is the supervise default."""
+    delivery target, and a None alert_fn is the supervise default.
+
+    Round-98: send as red Feishu card (was plain text in R82) so the
+    cooldown event is visually distinct from normal /team / /health
+    cards in the chat. Falls back to text if send_card raises.
+    """
     chat_id = config.chat_id()
     if not chat_id:
         return None
     profile = config.lark_profile()
 
     def alert(name: str, failed_at: int, cooldown_secs: int) -> None:
-        text = (
-            f"🚨 watchdog: daemon {name} entered {cooldown_secs}s cooldown "
-            f"after {failed_at} failed respawns. "
-            f"`claudeteam health` for current state; check daemon log for root cause."
+        title = f"🚨 watchdog: {name} entered cooldown"
+        body = (
+            f"daemon **{name}** entered **{cooldown_secs}s cooldown** "
+            f"after **{failed_at}** failed respawns.\n\n"
+            f"- `claudeteam health` for current state\n"
+            f"- check daemon log for root cause\n"
+            f"- after fix: `claudeteam down && claudeteam up`"
         )
-        _chat.send_text(chat_id, text, profile=profile, as_user=False)
+        card = simple_card(title, body, color="red")
+        try:
+            _chat.send_card(chat_id, card, profile=profile, as_user=False)
+        except Exception as e:
+            # Card delivery shouldn't kill the watchdog. Fall back to
+            # plain text so the alert still lands somehow; if THAT also
+            # fails the supervise outer try/except logs it.
+            print(f"  ⚠️ watchdog: card alert send failed ({e}); falling back to text")
+            _chat.send_text(chat_id,
+                            f"🚨 watchdog: {name} entered {cooldown_secs}s cooldown "
+                            f"after {failed_at} failed respawns",
+                            profile=profile, as_user=False)
 
     return alert
 
