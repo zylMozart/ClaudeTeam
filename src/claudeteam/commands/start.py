@@ -48,7 +48,7 @@ def main(argv: list[str]) -> int:
         elif outcome == lifecycle.CONFIG_ERROR:
             warn(f"⚠️  {agent} skipped: bad cli config in team.json")
         elif outcome == lifecycle.READY_NO_INIT:
-            warn(f"⚠️  {agent} CLI didn't show ready marker in 20s; "
+            warn(f"⚠️  {agent} CLI didn't show ready marker in 60s; "
                  f"identity init prompt skipped")
             print(f"  → {agent} ({cli}) spawned (no init)")
         else:  # READY

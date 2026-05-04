@@ -48,6 +48,61 @@ _PROPAGATED_ENV = (
 )
 
 
+def _ensure_claude_agent_home(agent: str) -> None:
+    """Materialise a per-agent claude state dir at /data/agent-home/<agent>.
+
+    R172.b: each claude pane spawns with HOME=/data/agent-home/<agent>
+    so each agent has its own ~/.claude.json (avoids the shared-file
+    write-race that corrupted the previous single-mount setup). The
+    directory contains:
+      .claude/settings.json           — silent-launch flags (theme, perms)
+      .claude/.credentials.json       — symlink to /root/.claude/.credentials.json
+                                        so OAuth tokens stay bind-mount shared
+      .claude/projects                — symlink to /root/.claude/projects
+                                        so ccusage in /usage finds session logs
+    Best-effort: if /data isn't writable (host tests where the path
+    doesn't exist), silently skip. The pane spawn won't crash, claude
+    will fall back to its default discovery against `$HOME` and the
+    boss-flagged setup gets exercised only in real container
+    deployments where /data is mounted.
+    """
+    base = Path("/data/agent-home")
+    if not base.parent.exists():
+        return  # /data doesn't exist (typical macOS test env)
+    home = base / agent
+    claude_dir = home / ".claude"
+    try:
+        claude_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    settings = claude_dir / "settings.json"
+    if not settings.exists():
+        settings.write_text(
+            '{\n'
+            '  "skipDangerousModePermissionPrompt": true,\n'
+            '  "hasCompletedOnboarding": true,\n'
+            '  "theme": "dark",\n'
+            '  "permissions": {\n'
+            '    "allow": ["Bash", "Edit", "Read", "Write"]\n'
+            '  }\n'
+            '}\n'
+        )
+    cred_link = claude_dir / ".credentials.json"
+    cred_target = Path("/root/.claude/.credentials.json")
+    if cred_target.exists() and not cred_link.exists():
+        try:
+            cred_link.symlink_to(cred_target)
+        except OSError:
+            pass
+    projects_link = claude_dir / "projects"
+    projects_target = Path("/root/.claude/projects")
+    if projects_target.exists() and not projects_link.exists():
+        try:
+            projects_link.symlink_to(projects_target)
+        except OSError:
+            pass
+
+
 def pane_env_prefix() -> str:
     """Build a shell env prefix that, prepended to a spawn_cmd, makes the
     spawned process inherit CLAUDETEAM_STATE_DIR and the Feishu env so
@@ -126,6 +181,8 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         return LAZY
     if cli == "codex-cli":
         ensure_workdir_trusted(Path.cwd())
+    if cli == "claude-code":
+        _ensure_claude_agent_home(agent)
     try:
         adapter = get_adapter(cli)
     except KeyError as e:
