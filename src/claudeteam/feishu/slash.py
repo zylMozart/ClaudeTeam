@@ -27,10 +27,11 @@ Dispatch is a leading-token dict lookup (`/cmd args…` → handler(args, ctx))
 so detection and execution share one path — no per-handler regex preamble.
 Each handler receives only the part of the message after the command name.
 
-Three shared helpers keep card builders declarative:
-    simple_card(title, body, color)    feishu/cards.py
-    _beijing_stamp(ctx) -> str         R117: card-title timestamp suffix
-    _fenced_block(text) -> str         R118: monospace lark_md fence
+Card-building helpers all live in `feishu/cards.py` (R136 consolidation):
+    simple_card(title, body, color)         shape constructor
+    beijing_stamp(now) -> str               R117: card-title timestamp suffix
+                                            (callers pass `ctx.now`)
+    fenced_block(text) -> str               R118: monospace lark_md fence
 """
 from __future__ import annotations
 
@@ -45,7 +46,7 @@ from typing import Callable
 
 from claudeteam.agents import identity
 from claudeteam.feishu import pane_state
-from claudeteam.feishu.cards import simple_card
+from claudeteam.feishu.cards import beijing_stamp, fenced_block, simple_card
 from claudeteam.runtime import tmux
 from claudeteam.store import memory
 from claudeteam.util import fmt_time_ms
@@ -85,16 +86,6 @@ _MAX_TMUX_LINES = 2000
 _REIDENTIFY_DELAY_S = 45.0   # rough upper bound for claude-code /compact
 
 
-def _beijing_stamp(ctx: SlashContext) -> str:
-    """Format `ctx.now()` as `YYYY-MM-DD HH:MM 北京时间` — the trailing
-    suffix every card title uses (R85 manager identity 沟通格式 rule).
-
-    Round-117: extracted from 5 card handlers (/team, /health, /usage,
-    /tmux, /recall) so a future "switch to UTC" / locale change is one
-    edit, and the suffix can't drift between handlers."""
-    return f"{ctx.now().strftime('%Y-%m-%d %H:%M')} 北京时间"
-
-
 def _is_lazy(cfg, agent: str) -> bool:
     """Probe whether `agent` is configured `lazy: true` in team.json.
 
@@ -108,18 +99,6 @@ def _is_lazy(cfg, agent: str) -> bool:
         return bool(cfg.agent_config(agent).get("lazy"))
     except Exception:
         return False
-
-
-def _fenced_block(text: str) -> str:
-    """Wrap `text` in a triple-backtick lark_md fence so monospace /
-    box-drawing / ANSI artefacts survive Feishu's lark_md collapsing
-    (which would otherwise eat indentation and merge consecutive spaces).
-
-    Round-118: extracted from 3 card handlers (/health, /usage, /tmux)
-    that all do the same `f"```\\n{out}\\n```"` wrap. Empty / whitespace-
-    only input still produces a valid fence so Feishu doesn't reject
-    the card."""
-    return f"```\n{text}\n```"
 
 
 def _default_agent(ctx: SlashContext) -> str:
@@ -235,7 +214,7 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
              else "yellow")
 
     return simple_card(
-        f"👥 /team — 员工实时状态 [{ctx.session}] {_beijing_stamp(ctx)}",
+        f"👥 /team — 员工实时状态 [{ctx.session}] {beijing_stamp(ctx.now)}",
         "\n".join(body_lines),
         color=color,
     )
@@ -257,8 +236,8 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     # notices something's off without reading the body.
     color = "yellow" if ("❌" in out or "⚠️" in out) else "green"
     return simple_card(
-        f"🩺 /health — 部署快照 {_beijing_stamp(ctx)}",
-        _fenced_block(out),
+        f"🩺 /health — 部署快照 {beijing_stamp(ctx.now)}",
+        fenced_block(out),
         color=color,
     )
 
@@ -277,8 +256,8 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
     view = view_arg or "daily"
     out = _shell(ctx, argv, timeout=120)
     return simple_card(
-        f"📊 /usage ({view}) — {_beijing_stamp(ctx)}",
-        _fenced_block(out),
+        f"📊 /usage ({view}) — {beijing_stamp(ctx.now)}",
+        fenced_block(out),
         color="blue",
     )
 
@@ -303,7 +282,7 @@ def _handle_tmux(args: str, ctx: SlashContext) -> str | dict:
     raw = tmux.capture_pane(target, lines=n_lines).rstrip() or "(窗口为空)"
     return simple_card(
         f"📺 /tmux {agent} — 最近 {n_lines} 行 [{ctx.session}]",
-        _fenced_block(raw),
+        fenced_block(raw),
         color="blue",
     )
 
@@ -407,7 +386,7 @@ def _handle_recall(args: str, ctx: SlashContext) -> str | dict:
     else:
         rows = memory.list_recent(agent, limit=n)
 
-    stamp = _beijing_stamp(ctx)
+    stamp = beijing_stamp(ctx.now)
     title_filter = f" / kind={kind_filter}" if kind_filter else ""
     if not rows:
         return simple_card(

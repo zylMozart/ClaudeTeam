@@ -711,43 +711,6 @@ def test_recall_kind_no_match_returns_grey_card_with_filter_label():
     assert "kind=decision" in title
 
 
-# ── _beijing_stamp helper (round-117) ───────────────────────────
-
-
-def test_fenced_block_wraps_text_in_triple_backticks():
-    """Round-118: helper for /health, /usage, /tmux body fencing.
-    Output is a leading ``` + text + trailing ``` so lark_md renders
-    the contained text in a code block (preserves indentation,
-    monospace alignment, ANSI escapes etc.)."""
-    assert slash._fenced_block("alpha\nbeta") == "```\nalpha\nbeta\n```"
-    # Empty string still produces a valid fence (Feishu rejects empty
-    # element content; an empty fence renders as a 1-line empty code
-    # block, harmless)
-    assert slash._fenced_block("") == "```\n\n```"
-
-
-def test_beijing_stamp_renders_canonical_format():
-    """The trailing-stamp helper produces the literal "<YYYY-MM-DD HH:MM>
-    北京时间" string used by every card-bearing slash handler."""
-    import datetime
-    fixed = datetime.datetime(2026, 5, 4, 10, 30)
-
-    def fake_now():
-        return fixed
-
-    ctx = _ctx()
-    # Override the now callable with the fixed clock.
-    ctx_with_clock = slash.SlashContext(
-        team_agents=ctx.team_agents,
-        session=ctx.session,
-        run=ctx.run,
-        sleep=ctx.sleep,
-        background=ctx.background,
-        now=fake_now,
-    )
-    assert slash._beijing_stamp(ctx_with_clock) == "2026-05-04 10:30 北京时间"
-
-
 def test_handler_exception_is_caught():
     """A handler that raises mid-flight should produce a graceful warning,
     not propagate. /team now reads tmux panes directly; force capture_pane

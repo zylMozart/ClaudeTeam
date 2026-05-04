@@ -4,9 +4,15 @@ Slash handlers can return a dict matching the Feishu v1 card schema and
 `deliver._apply_slash` will send it via `chat.send_card` (`--msg-type
 interactive`) instead of plain text.
 
-Two builders cover the common cases — both are pure: no I/O, no env reads.
+Builders cover the common cases — all are pure: no I/O, no env reads.
+Two top-level constructors (`simple_card`, `kv_card`) plus two small
+helpers (`beijing_stamp`, `fenced_block`) shared across slash handlers
+that produce timestamped / monospace card bodies.
 """
 from __future__ import annotations
+
+from datetime import datetime
+from typing import Callable
 
 
 # Lark template colors that Feishu's web/mobile app actually renders. These
@@ -56,3 +62,30 @@ def kv_card(title: str, rows: list[tuple[str, str]], *,
     else:
         body = "\n".join(f"**{k}**: {v}" for k, v in rows)
     return simple_card(title, body, color=color)
+
+
+def beijing_stamp(now: Callable[[], datetime] = datetime.now) -> str:
+    """Format `now()` as `YYYY-MM-DD HH:MM 北京时间` — the trailing
+    suffix every card title uses (R85 manager identity 沟通格式 rule).
+
+    Round-117: extracted from 5 slash card handlers. R136: lifted out
+    of `slash.py` into `cards.py` (canonical card-builder home) and
+    decoupled from SlashContext by taking a `now` callable directly.
+    Slash callers pass `ctx.now` at the call site; tests can pin a
+    fixed clock the same way.
+    """
+    return f"{now().strftime('%Y-%m-%d %H:%M')} 北京时间"
+
+
+def fenced_block(text: str) -> str:
+    """Wrap `text` in a triple-backtick lark_md fence so monospace /
+    box-drawing / ANSI artefacts survive Feishu's lark_md collapsing
+    (which would otherwise eat indentation and merge consecutive spaces).
+
+    Round-118: extracted from 3 card handlers (/health, /usage, /tmux)
+    that all do the same `f"```\\n{out}\\n```"` wrap. R136: moved from
+    `slash.py` to `cards.py` next to the other card builders. Empty /
+    whitespace-only input still produces a valid fence so Feishu doesn't
+    reject the card.
+    """
+    return f"```\n{text}\n```"
