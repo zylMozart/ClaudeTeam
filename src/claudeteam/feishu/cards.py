@@ -94,35 +94,42 @@ def fenced_block(text: str) -> str:
 def col_cell(content: str, weight: int = 1) -> dict:
     """Single column cell containing one markdown element.
 
-    Wraps `content` in `{tag:column, width:weighted, weight:N, elements:
-    [{tag:markdown, content}]}` — the v2-compatible column shape used
-    by `column_set_3` and `column_set_2` to build grid layouts.
-    """
+    Kept for backwards-compat with any external callers; production
+    rebuild code path no longer uses this directly — see column_set_2
+    / column_set_3 below for the inlined-markdown-row replacement."""
     return {"tag": "column", "width": "weighted", "weight": weight,
             "elements": [{"tag": "markdown", "content": content}]}
 
 
 def column_set_3(cells: list[str]) -> dict:
-    """3-column grid row. Pads with empty cells when fewer than 3 strings
-    are passed so the visual grid stays even (matches `feat/messaging-
-    fixes-block1`'s `_col_set_3`)."""
-    cols = [col_cell(c) for c in cells]
-    while len(cols) < 3:
-        cols.append(col_cell(" "))
-    return {"tag": "column_set", "flex_mode": "none",
-            "background_style": "default", "columns": cols}
+    """3-cell section rendered as one markdown element with each cell
+    its own paragraph (cells separated by `\\n\\n`).
+
+    R172.b: dropped the `tag:"column_set"` shape because Feishu's
+    current renderer collapses multi-column rows into stacked
+    paragraphs in both v1 and v2 schemas — boss flagged 2026-05-04
+    "对齐都做不好". /health host总览 cells are multi-line
+    (header + value + sub-text), so joining with paragraph breaks
+    keeps each cell visually distinct without trying to enforce a
+    horizontal grid that the renderer ignores anyway. Empty cells
+    are dropped so we don't end with a dangling blank.
+    """
+    parts = [c for c in cells if c.strip()]
+    return {"tag": "markdown",
+            "content": "\n\n".join(parts) if parts else " "}
 
 
-def column_set_2(left: str, right: str, *,
-                 left_weight: int = 2, right_weight: int = 3) -> dict:
-    """2-column row, weighted 2:3 by default (label : detail layout used
-    by main's /usage card). Left typically a `**bold label**`, right
-    the colored metric string."""
-    return {"tag": "column_set", "flex_mode": "none",
-            "background_style": "default", "columns": [
-                col_cell(left, weight=left_weight),
-                col_cell(right, weight=right_weight),
-            ]}
+def column_set_2(left: str, right: str, **_legacy_kwargs) -> dict:
+    """2-cell row rendered as a single markdown line — `<left>: <right>`.
+
+    Same R172.b rationale as `column_set_3`: column_set rendering is
+    broken in current Feishu, so we collapse to one line. The colon +
+    space separator keeps the label visually distinct from the value
+    while staying alignment-proof. `**Bold**` left labels still bold
+    naturally in markdown; the right cell can carry `<font color='…'>`
+    spans + monospace `\` markers.
+    """
+    return {"tag": "markdown", "content": f"{left}：{right}"}
 
 
 def load_color(pct: int) -> str:
@@ -146,29 +153,25 @@ def remaining_color(pct: float) -> str:
 
 
 def rich_card(title: str, elements: list, *, color: str = "blue") -> dict:
-    """Card v1 (legacy schema) with top-level `elements` + `config:
-    {wide_screen_mode}` — the shape `feat/messaging-fixes-block1` /
-    `main`'s `build_usage_card` uses, and the only one that lays out
-    `column_set` columns SIDE-BY-SIDE in the Feishu app.
+    """Card v2 with a pre-built `body.elements` list — for handlers
+    that need multi-section layouts (/usage, /health) that
+    `simple_card`'s single-element body can't express.
 
-    R172: dropped the v2 (`schema: "2.0"` + `body.elements`) shape we
-    used since R166. Boss flagged 2026-05-04: in v2 schema, every
-    `column_set` row collapses to a stacked label-then-value pair —
-    the "对齐都做不好" complaint. Side-by-side rendering only works
-    in v1, despite both schemas advertising column_set support.
-
-    `tag:markdown` elements still work inside v1 columns (verified
-    against main's live cards), so we keep the GFM-rich `markdown`
-    element + `<font color>` html on each cell. Fenced-block-only
-    cards (e.g. /tmux) keep using `simple_card` (still v2) because
-    they don't need column alignment.
+    R172.b: stays on v2 schema (`schema:"2.0"` + `body.elements`)
+    since column_set was dropped — every row is now a plain markdown
+    element, and v2 gives us GFM features (fenced blocks, nested
+    lists, `<font color>` HTML) that v1 silently degrades. R172.a
+    briefly flipped to v1 thinking column_set rendered side-by-side
+    in v1 but not v2; reality is neither schema renders column_set
+    side-by-side in current Feishu, so the schema-flip was useless
+    and we keep v2 for its other wins.
     """
     return {
-        "config": {"wide_screen_mode": True},
+        "schema": "2.0",
         "header": {
             "title": {"tag": "plain_text", "content": title},
             "template": _normalised_color(color),
         },
-        "elements": elements or [
-            {"tag": "markdown", "content": "(无内容)"}],
+        "body": {"elements": elements or [
+            {"tag": "markdown", "content": "(无内容)"}]},
     }

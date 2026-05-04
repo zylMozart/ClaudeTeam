@@ -94,23 +94,30 @@ def test_col_cell_wraps_content_in_weighted_column():
     assert cell["elements"][0]["content"] == "**hi**"
 
 
-def test_column_set_3_pads_to_three_cells():
+def test_column_set_3_joins_cells_with_paragraph_breaks():
+    """R172.b: column_set rendering is broken in current Feishu (both
+    v1 and v2 collapse it to stacked paragraphs anyway), so column_set_3
+    now returns a single markdown element with cells separated by `\\n\\n`
+    paragraph breaks. Empty/blank cells are dropped."""
     from claudeteam.feishu.cards import column_set_3
-    grid = column_set_3(["a"])
-    assert grid["tag"] == "column_set"
-    assert grid["flex_mode"] == "none"
-    assert len(grid["columns"]) == 3
-    # Padded cells contain a single space
-    assert grid["columns"][1]["elements"][0]["content"] == " "
-    assert grid["columns"][2]["elements"][0]["content"] == " "
+    row = column_set_3(["**CPU**\n0%", "", "**Disk**\n10%"])
+    assert row["tag"] == "markdown"
+    assert "**CPU**" in row["content"]
+    assert "**Disk**" in row["content"]
+    # Empty cell didn't leak as a stray separator
+    assert row["content"].count("\n\n") == 1
 
 
-def test_column_set_2_uses_2_3_weight_by_default():
+def test_column_set_2_joins_label_value_with_colon():
+    """R172.b: column_set_2 renders as one markdown line `<label>：<value>`
+    (full-width colon) so the bold-label + colored-value pair stays
+    on a single visual row."""
     from claudeteam.feishu.cards import column_set_2
-    row = column_set_2("**label**", "value")
-    assert len(row["columns"]) == 2
-    assert row["columns"][0]["weight"] == 2
-    assert row["columns"][1]["weight"] == 3
+    row = column_set_2("**Total**", "<font color='blue'>**$1.23**</font>")
+    assert row["tag"] == "markdown"
+    assert "**Total**" in row["content"]
+    assert "$1.23" in row["content"]
+    assert "：" in row["content"]
 
 
 def test_load_color_thresholds():
@@ -134,28 +141,27 @@ def test_remaining_color_inverse_thresholds():
     assert remaining_color(75) == "green"
 
 
-def test_rich_card_emits_v1_schema_with_top_level_elements():
-    """R172: rich_card flipped from v2 (`schema:"2.0"` + `body.elements`)
-    back to v1 (`config.wide_screen_mode` + top-level `elements`) so
-    column_set rows lay out side-by-side in the Feishu app — the boss-
-    flagged "对齐都做不好" was caused by v2 collapsing column_set
-    children into stacked paragraphs. simple_card stays v2 because
-    fenced-block-only cards (/tmux) don't need column alignment."""
+def test_rich_card_emits_v2_schema_with_body_elements():
+    """R172.b: rich_card stays on v2 (`schema:"2.0"` + `body.elements`).
+    R172.a briefly flipped to v1 thinking column_set rendered side-by-
+    side in v1 but not v2; reality is column_set is broken in BOTH
+    schemas in current Feishu, so we dropped column_set entirely
+    (cards.py column_set_2/3 now emit plain markdown rows) and kept
+    v2 for its GFM features (fenced blocks, nested lists, font color
+    HTML)."""
     from claudeteam.feishu.cards import rich_card
     elements = [{"tag": "markdown", "content": "hi"}]
     card = rich_card("Title", elements, color="purple")
-    assert card["config"]["wide_screen_mode"] is True
-    assert "schema" not in card  # v1 has no schema field
-    assert "body" not in card    # elements live at top level in v1
+    assert card["schema"] == "2.0"
     assert card["header"]["template"] == "purple"
     assert card["header"]["title"]["content"] == "Title"
-    assert card["elements"] == elements
+    assert card["body"]["elements"] == elements
 
 
 def test_rich_card_falls_back_to_placeholder_when_elements_empty():
     from claudeteam.feishu.cards import rich_card
     card = rich_card("Title", [], color="blue")
-    assert card["elements"][0]["content"] == "(无内容)"
+    assert card["body"]["elements"][0]["content"] == "(无内容)"
 
 
 def test_simple_card_accepts_purple_after_R166():

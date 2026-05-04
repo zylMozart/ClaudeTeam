@@ -35,7 +35,15 @@ RUN apt-get update \
         git \
         curl \
         ca-certificates \
+        procps \
     && rm -rf /var/lib/apt/lists/*
+# `procps` ships `ps` / `uptime` / `free`. Without it the slim image
+# has none of those binaries and `_agent_usage` (ps walk for per-agent
+# CPU+RSS) returns zero for every agent — boss saw "manager 0.0% / 0 B"
+# in /health card 2026-05-04 even though the panes were running.
+# /proc-direct fallbacks added for `_host_cpu` / `_host_mem`, but `ps`
+# is the cleanest path for per-pid CPU% (kernel-computed, no two-
+# snapshot delta required).
 
 # Pre-install lark-cli into npm's global prefix at build time so the
 # first `claudeteam router` invocation doesn't have to fetch+install

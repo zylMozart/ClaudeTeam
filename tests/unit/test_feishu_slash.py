@@ -7,15 +7,21 @@ from claudeteam.runtime import tmux
 
 
 def _elements(reply):
-    """R172: card-shape adapter. `simple_card` (still v2) returns
-    `reply["body"]["elements"]`; `rich_card` returned to v1 schema
-    (top-level `elements`) so column_set rows lay out side-by-side
-    in the Feishu app — the boss-flagged "对齐都做不好" was caused by
-    v2 collapsing column_set children to stacked paragraphs. Tests
-    use this helper so both card shapes work."""
+    """R172: card-shape adapter. Both simple_card and rich_card now
+    return v2 (`body.elements`). Helper kept for legacy tests + future-
+    proofing if we ever flip a builder back to v1."""
     if "elements" in reply:
         return reply["elements"]
     return reply.get("body", {}).get("elements", [])
+
+
+def _all_markdown(reply) -> str:
+    """Concatenate every `tag: markdown` element's content. R172.b:
+    column_set was dropped, so all card body content lives in plain
+    markdown elements — this helper lets tests assert on text
+    substrings without caring about element ordering or layout."""
+    return "\n".join(e.get("content", "") for e in _elements(reply)
+                     if e.get("tag") == "markdown")
 
 
 def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
@@ -43,17 +49,19 @@ def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
 
 
 def test_help_returns_card_listing_all_commands():
-    """Round-79: /help now returns a Feishu card dict (not text). The card's
-    body element is the same _HELP_TEXT block, so command-name search runs
-    against `elements[0]['text']['content']` instead of the bare reply.
-    Round-95: /recall added — must also appear."""
+    """R172.b: /help lists main's exact 9-command surface — `/recall`
+    and `/forget` were dropped per boss feedback (not in main, not
+    requested)."""
     reply = slash.dispatch("/help", _ctx())
     assert isinstance(reply, dict), f"/help should return a card dict, got {type(reply)}"
     assert reply["header"]["title"]["content"] == "🆘 ClaudeTeam 自定义斜杠命令"
     body = reply["body"]["elements"][0]["content"]
     for c in ("/help", "/team", "/health", "/usage", "/tmux",
-              "/send", "/compact", "/recall", "/stop", "/clear"):
+              "/send", "/compact", "/stop", "/clear"):
         assert c in body
+    # Dropped commands stay dropped
+    assert "/recall" not in body
+    assert "/forget" not in body
 
 
 # ── /team ────────────────────────────────────────────────────────
@@ -179,9 +187,12 @@ def _stub_server_load(monkey_data: dict):
                       run=None: monkey_data)
 
 
-def test_health_card_renders_host_section_with_column_set():
-    """R166: /health card has 🖥️ 主机总览 + column_set 3 (CPU/内存/磁盘)
-    + colored percentage spans. No more text dump."""
+def test_health_card_renders_host_section_with_cpu_mem_disk():
+    """R166/R172.b: /health card has 🖥️ 主机总览 with CPU + 内存 +
+    磁盘 metrics. Original R166 used `column_set 3`; R172.b dropped
+    column_set (Feishu's renderer collapsed it anyway) so cells now
+    render as paragraph-separated markdown — assertions look for the
+    label/value substrings rather than column structure."""
     data = {
         "host": {
             "cpu": {"load": (1.2, 0.8, 0.5), "cores": 8, "pct": 15},
@@ -199,19 +210,11 @@ def test_health_card_renders_host_section_with_column_set():
     assert reply["header"]["template"] == "purple"  # default no-alarm
     title = reply["header"]["title"]["content"]
     assert "/health" in title and "服务器负载" in title
-    # First element is the section heading, second is the column_set grid
-    elements = _elements(reply)
-    headings = [e for e in elements if e.get("tag") == "markdown"
-                and "**🖥" in e.get("content", "")]
-    assert headings, "missing 🖥️ 主机总览 heading"
-    col_sets = [e for e in elements if e.get("tag") == "column_set"]
-    assert col_sets, "missing column_set rows"
-    # First grid has 3 columns matching (CPU/内存/磁盘)
-    first_grid = col_sets[0]
-    assert len(first_grid["columns"]) == 3
-    # Each cell has a markdown element
-    for col in first_grid["columns"]:
-        assert col["elements"][0]["tag"] == "markdown"
+    blob = _all_markdown(reply)
+    assert "🖥️ 主机总览" in blob
+    assert "**CPU**" in blob and "1.20 / 8 核" in blob
+    assert "**内存**" in blob and "16.00 GB" in blob
+    assert "**磁盘**" in blob and "/" in blob
 
 
 def test_health_card_includes_alarm_section_when_alarms_present():
@@ -244,12 +247,8 @@ def test_health_card_falls_back_to_no_data_cells_when_host_empty():
     }
     with _stub_server_load(data):
         reply = slash.dispatch("/health", _ctx())
-    contents = " ".join(e.get("content", "")
-                        for col_set in _elements(reply)
-                        if col_set.get("tag") == "column_set"
-                        for col in col_set["columns"]
-                        for e in col["elements"])
-    assert contents.count("无数据") >= 3  # CPU + 内存 + 磁盘 all blank
+    blob = _all_markdown(reply)
+    assert blob.count("无数据") >= 3  # CPU + 内存 + 磁盘 all blank
 
 
 def test_health_card_emits_grey_footer():
@@ -313,20 +312,15 @@ def test_usage_card_emits_purple_header_when_ccusage_ok():
 
 
 def test_usage_card_extracts_total_from_ccusage_output():
-    """Total line gets surfaced as a column_set 2 row with the dollar
-    amount in blue. Boss reads the bottom-line cost at a glance instead
-    of scanning a multi-line table."""
+    """Total line surfaces with the dollar amount in blue. R172.b:
+    rendered as one markdown line per row instead of column_set."""
     payload = ('{"view":"daily","claude_code":{"ok":true,"rc":0,'
                '"output":"Date | Cost\\n2026-05-04 | $0.42\\nTotal: $1.23"},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    elements = _elements(reply)
-    col_sets = [e for e in elements if e.get("tag") == "column_set"]
-    assert col_sets, "missing column_set row"
-    # First row's right cell should contain the total
-    right_content = col_sets[0]["columns"][1]["elements"][0]["content"]
-    assert "$1.23" in right_content
-    assert "color='blue'" in right_content
+    blob = _all_markdown(reply)
+    assert "$1.23" in blob
+    assert "color='blue'" in blob
 
 
 def test_usage_card_summarises_ccusage_failure_to_one_line():
@@ -341,15 +335,12 @@ def test_usage_card_summarises_ccusage_failure_to_one_line():
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
     assert reply["header"]["template"] == "red"
-    elements = _elements(reply)
-    col_sets = [e for e in elements if e.get("tag") == "column_set"]
-    right_content = col_sets[0]["columns"][1]["elements"][0]["content"]
-    assert "color='red'" in right_content
-    assert "ccusage 失败" in right_content
-    # The actual error line surfaces
-    assert "No valid Claude data directories" in right_content
+    blob = _all_markdown(reply)
+    assert "color='red'" in blob
+    assert "ccusage 失败" in blob
+    assert "No valid Claude data directories" in blob
     # WARN noise does NOT surface
-    assert "EBADENGINE" not in right_content
+    assert "EBADENGINE" not in blob
 
 
 def test_usage_card_prefers_clean_error_line_over_source_excerpt():
@@ -357,9 +348,6 @@ def test_usage_card_prefers_clean_error_line_over_source_excerpt():
     source-code line BEFORE the clean `Error: …` line. The summariser
     used to grab the source line first — backtick-truncated and ugly.
     Two-pass logic now prefers the clean Error: prefix."""
-    # Use a single-line JSON payload with embedded \n so json.loads
-    # works; mimic real ccusage output: source-line with backtick first,
-    # then the clean Error: line.
     src_line = ('\\tif (paths.length === 0) throw new Error('
                 '`No valid Claude data directories found. Please ensure...`)')
     payload = (
@@ -369,35 +357,25 @@ def test_usage_card_prefers_clean_error_line_over_source_excerpt():
         'Error: No valid Claude data directories found"},'
         '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    elements = _elements(reply)
-    col_sets = [e for e in elements if e.get("tag") == "column_set"]
-    right_content = col_sets[0]["columns"][1]["elements"][0]["content"]
-    # The picked line is the clean Error: ... line, NOT the source-code
-    # line that contained `if (paths.length === 0)`. The backtick
-    # marker `\`` would crash card markdown if it leaked through.
-    assert "if (paths.length" not in right_content
-    assert "No valid Claude data directories" in right_content
+    blob = _all_markdown(reply)
+    assert "if (paths.length" not in blob
+    assert "No valid Claude data directories" in blob
 
 
 def test_usage_card_includes_other_cli_section_when_present():
     """`other_clis` from `claudeteam usage --json` (non-claude-code
-    agents) render as their own section with column_set 2 rows."""
+    agents) render as a 📦 其他 CLI section with one row per CLI."""
     payload = ('{"view":"daily","claude_code":null,'
                '"other_clis":['
                '{"cli":"codex-cli","note":"no upstream usage tool"},'
                '{"cli":"kimi-code","note":"no upstream usage tool"}'
                ']}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    contents = " ".join(e.get("content", "") for e in _elements(reply)
-                        if e.get("tag") == "markdown")
-    assert "📦 其他 CLI" in contents
-    col_sets = [e for e in _elements(reply)
-                if e.get("tag") == "column_set"]
-    # Two rows for two CLIs
-    cli_names = [cs["columns"][0]["elements"][0]["content"]
-                 for cs in col_sets]
-    assert "**codex-cli**" in cli_names
-    assert "**kimi-code**" in cli_names
+    blob = _all_markdown(reply)
+    assert "📦 其他 CLI" in blob
+    assert "**codex-cli**" in blob
+    assert "**kimi-code**" in blob
+    assert blob.count("no upstream usage tool") == 2
 
 
 def test_usage_card_renders_no_data_when_both_sections_empty():
@@ -405,33 +383,27 @@ def test_usage_card_renders_no_data_when_both_sections_empty():
     than an empty card body."""
     payload = '{"view":"daily","claude_code":null,"other_clis":[]}'
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    contents = " ".join(e.get("content", "") for e in _elements(reply)
-                        if e.get("tag") == "markdown")
-    assert "(无数据)" in contents
+    assert "(无数据)" in _all_markdown(reply)
 
 
 def test_usage_card_renders_codex_section_with_plan():
-    """R170: codex section surfaces plan + valid_until via column_set 2
-    rows. Heading is `🟦 Codex (ChatGPT OAuth)`."""
+    """R170: codex section surfaces plan + valid_until. R172.b: rows
+    render as `**Plan**：<value>` lines (column_set dropped)."""
     payload = ('{"view":"daily","claude_code":null,'
                '"codex":{"ok":true,"plan":"Pro",'
                '"email":"x@example.com",'
                '"valid_until":"2026-05-20T18:44:16+00:00"},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    contents = " ".join(e.get("content", "") for e in _elements(reply)
-                        if e.get("tag") == "markdown")
-    assert "🟦 Codex" in contents
-    col_sets = [e for e in _elements(reply)
-                if e.get("tag") == "column_set"]
-    rights = [cs["columns"][1]["elements"][0]["content"] for cs in col_sets]
-    assert any("Pro" in r for r in rights)
-    assert any("2026-05-20" in r for r in rights)
+    blob = _all_markdown(reply)
+    assert "🟦 Codex" in blob
+    assert "Pro" in blob
+    assert "2026-05-20" in blob
 
 
 def test_usage_card_renders_kimi_section_with_quota_metrics():
-    """R170: each kimi metric becomes a column_set 2 row with a
-    traffic-light remaining-percent on the right column."""
+    """R170: each kimi metric appears with a traffic-light
+    remaining-percent. R172.b: as one-line markdown rows."""
     payload = ('{"view":"daily","claude_code":null,'
                '"kimi":{"ok":true,"metrics":[{'
                '"label":"Weekly limit","used":2,"limit":10,'
@@ -439,15 +411,11 @@ def test_usage_card_renders_kimi_section_with_quota_metrics():
                '"reset_iso":"2026-05-08T00:00:00Z"}]},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    contents = " ".join(e.get("content", "") for e in _elements(reply)
-                        if e.get("tag") == "markdown")
-    assert "🟧 Kimi" in contents
-    col_sets = [e for e in _elements(reply)
-                if e.get("tag") == "column_set"]
-    rights = [cs["columns"][1]["elements"][0]["content"] for cs in col_sets]
-    weekly_row = next(r for r in rights if "剩余 80%" in r)
+    blob = _all_markdown(reply)
+    assert "🟧 Kimi" in blob
+    assert "剩余 80%" in blob
     # 80% remaining → green
-    assert "color='green'" in weekly_row
+    assert "color='green'" in blob
 
 
 def test_usage_card_marks_header_red_when_codex_or_kimi_failed():
@@ -678,257 +646,6 @@ def test_unknown_slash_returns_help_hint():
     assert "未知斜杠命令" in reply
     assert "/help" in reply
 
-
-# ── /recall (round-95) ──────────────────────────────────────────
-
-
-def test_recall_no_arg_returns_usage_text():
-    """Empty `/recall` is a hint, not an error — show usage as plain
-    text (str return) so it threads back as a Feishu reply, not a card."""
-    reply = slash.dispatch("/recall", _ctx())
-    assert isinstance(reply, str)
-    assert "用法: /recall" in reply
-
-
-def test_recall_unknown_agent_returns_warning():
-    reply = slash.dispatch("/recall ghost", _ctx())
-    # _bad_agent emits a Chinese warning when name not in agent_set
-    assert isinstance(reply, str)
-    assert "未知 agent" in reply
-
-
-def test_recall_with_no_memory_returns_grey_card():
-    """Empty memory: card with grey template + helpful nudge to write one.
-    Avoid yellow / red because no memory is the default state on a fresh
-    deploy, not an alarm."""
-    from helpers import isolated_env
-    with isolated_env():
-        reply = slash.dispatch("/recall manager", _ctx())
-    assert isinstance(reply, dict)
-    assert reply["header"]["template"] == "grey"
-    assert "无记忆" in reply["header"]["title"]["content"]
-    body = reply["body"]["elements"][0]["content"]
-    assert "claudeteam remember" in body  # nudge
-
-
-def test_recall_renders_recent_entries_as_card():
-    """Populated memory: card with title `/recall <agent> — 最近 N 条`,
-    body lists `[ts] [kind] content (ref=X)` per entry. Default N = 10."""
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "task_assigned", "fix login", ref="om_1")
-        memory.append("manager", "task_completed", "fix login", ref="om_1")
-        reply = slash.dispatch("/recall manager", _ctx())
-    assert isinstance(reply, dict)
-    title = reply["header"]["title"]["content"]
-    assert "/recall manager" in title
-    assert "最近 2 条" in title
-    body = reply["body"]["elements"][0]["content"]
-    assert "[task_assigned]" in body
-    assert "[task_completed]" in body
-    assert "fix login" in body
-    assert "(ref=om_1)" in body
-
-
-def test_recall_explicit_limit_caps_at_max():
-    """`/recall agent N` honours N; over the cap (50) it gets clamped."""
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        for i in range(10):
-            memory.append("worker_cc", "note", f"i={i}")
-        reply = slash.dispatch("/recall worker_cc 3", _ctx())
-    body = reply["body"]["elements"][0]["content"]
-    # Only last 3 entries (i=7, 8, 9)
-    for i in (7, 8, 9):
-        assert f"i={i}" in body
-    for i in (0, 1, 2, 3, 4, 5, 6):
-        assert f"i={i}" not in body
-
-
-def test_recall_invalid_limit_returns_warning():
-    reply = slash.dispatch("/recall manager not_a_number", _ctx())
-    assert isinstance(reply, str)
-    assert "N 必须是正整数" in reply
-
-
-# ── /recall --kind filter (round-108) ────────────────────────────
-
-
-def test_recall_kind_filter_narrows_results():
-    """Round-108: /recall --kind K filters to entries matching that kind.
-    Title carries `kind=K` so boss sees what was queried."""
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "decision", "use bcrypt")
-        memory.append("manager", "learning", "auth path /auth")
-        memory.append("manager", "decision", "rotate keys monthly")
-        reply = slash.dispatch("/recall manager --kind decision", _ctx())
-    assert isinstance(reply, dict)
-    title = reply["header"]["title"]["content"]
-    assert "kind=decision" in title
-    body = reply["body"]["elements"][0]["content"]
-    assert "use bcrypt" in body
-    assert "rotate keys monthly" in body
-    assert "auth path" not in body
-
-
-def test_recall_kind_filter_argument_order_flexible():
-    """Both `worker_cc --kind blocker 5` and `--kind blocker worker_cc 5`
-    work — flag position shouldn't matter."""
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("worker_cc", "blocker", "missing PAT")
-        for layout in (
-            "/recall worker_cc --kind blocker",
-            "/recall --kind blocker worker_cc",
-            "/recall worker_cc 5 --kind blocker",
-        ):
-            reply = slash.dispatch(layout, _ctx())
-            assert isinstance(reply, dict), f"layout={layout!r} → {type(reply)}"
-            body = reply["body"]["elements"][0]["content"]
-            assert "missing PAT" in body, f"layout={layout!r}"
-
-
-def test_recall_kind_with_no_value_returns_warning():
-    """`--kind` with no following token → warning, not silent default."""
-    reply = slash.dispatch("/recall manager --kind", _ctx())
-    assert isinstance(reply, str)
-    assert "--kind needs a value" in reply
-
-
-def test_recall_kind_unknown_inline_notes_in_card():
-    """Unconventional kind: card still renders (free-form entries DO
-    exist) but body shows a typo-guard line with KNOWN_KINDS list."""
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "fyi", "non-canonical entry")
-        reply = slash.dispatch("/recall manager --kind fyi", _ctx())
-    assert isinstance(reply, dict)
-    body = reply["body"]["elements"][0]["content"]
-    assert "fyi" in body
-    # KNOWN_KINDS hint visible
-    assert "decision" in body  # one of KNOWN_KINDS list rendering
-    assert "约定" in body or "kind=" in body
-
-
-# ── /forget (round-112) ─────────────────────────────────────────
-
-
-def test_forget_no_args_returns_usage_text():
-    reply = slash.dispatch("/forget", _ctx())
-    assert isinstance(reply, str)
-    assert "用法: /forget" in reply
-    # Convention list visible so operator sees what kinds exist
-    for k in ("decision", "blocker", "learning", "note"):
-        assert k in reply
-
-
-def test_forget_unknown_agent_returns_warning():
-    reply = slash.dispatch("/forget ghost --yes", _ctx())
-    assert isinstance(reply, str)
-    assert "未知 agent" in reply
-
-
-def test_forget_without_yes_returns_grey_confirm_card():
-    """Round-112 safety gate: /forget without --yes never wipes; shows
-    a grey confirm card with the exact reissue string."""
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "decision", "important")
-        reply = slash.dispatch("/forget manager", _ctx())
-    assert isinstance(reply, dict)
-    assert reply["header"]["template"] == "grey"
-    assert "确认前不会执行" in reply["header"]["title"]["content"]
-    body = reply["body"]["elements"][0]["content"]
-    assert "/forget manager --yes" in body
-    # Memory NOT touched
-    with isolated_env():
-        # (re-isolate; previous block had its own env)
-        pass
-
-
-def test_forget_without_yes_does_not_mutate_memory():
-    """Pinned separately: confirm-card path is read-only."""
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "decision", "x")
-        slash.dispatch("/forget manager", _ctx())
-        slash.dispatch("/forget manager --kind decision", _ctx())
-        assert len(memory.list_recent("manager")) == 1
-
-
-def test_forget_yes_wipes_all_returns_red_card():
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "decision", "a")
-        memory.append("manager", "note", "b")
-        reply = slash.dispatch("/forget manager --yes", _ctx())
-    assert isinstance(reply, dict)
-    assert reply["header"]["template"] == "red"
-    body = reply["body"]["elements"][0]["content"]
-    assert "已清掉" in body and "2" in body
-
-
-def test_forget_yes_with_kind_drops_only_slice():
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "decision", "a")
-        memory.append("manager", "decision", "b")
-        memory.append("manager", "note", "c")
-        reply = slash.dispatch("/forget manager --kind decision --yes",
-                               _ctx())
-        assert reply["header"]["template"] == "red"
-        body = reply["body"]["elements"][0]["content"]
-        assert "2" in body and "decision" in body
-        # `note` survived
-        rows = memory.list_recent("manager")
-        assert [r["kind"] for r in rows] == ["note"]
-
-
-def test_forget_yes_no_match_returns_grey_card():
-    """Empty-match wipe is a no-op — grey card, no claims of removal."""
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "note", "x")
-        reply = slash.dispatch("/forget manager --kind decision --yes",
-                               _ctx())
-    assert reply["header"]["template"] == "grey"
-    assert "无事可做" in reply["body"]["elements"][0]["content"]
-
-
-def test_forget_kind_no_value_returns_warning():
-    reply = slash.dispatch("/forget manager --kind", _ctx())
-    assert isinstance(reply, str)
-    assert "--kind needs a value" in reply
-
-
-def test_help_text_now_advertises_forget():
-    """Round-112: /help card body must list /forget so boss can discover
-    it without grepping source."""
-    reply = slash.dispatch("/help", _ctx())
-    body = reply["body"]["elements"][0]["content"]
-    assert "/forget" in body
-
-
-def test_recall_kind_no_match_returns_grey_card_with_filter_label():
-    from helpers import isolated_env
-    from claudeteam.store import memory
-    with isolated_env():
-        memory.append("manager", "note", "only a note")
-        reply = slash.dispatch("/recall manager --kind decision", _ctx())
-    assert reply["header"]["template"] == "grey"
-    title = reply["header"]["title"]["content"]
-    assert "kind=decision" in title
 
 
 def test_handler_exception_is_caught():
