@@ -262,6 +262,44 @@ def test_kinds_sorted_returns_alphabetical_list():
     assert isinstance(s, list)
 
 
+# ── Round-156: warn_unknown_kind ─────────────────────────────────
+
+
+def test_warn_unknown_kind_no_op_for_known():
+    """Round-156 contract: known kind = silence, no stderr noise."""
+    import contextlib, io
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        memory.warn_unknown_kind("decision")
+    assert err.getvalue() == ""
+
+
+def test_warn_unknown_kind_no_op_for_empty():
+    """Empty kind = "no filter intent" — pass-through, no warn."""
+    import contextlib, io
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        memory.warn_unknown_kind("")
+    assert err.getvalue() == ""
+
+
+def test_warn_unknown_kind_nudges_for_unconventional():
+    """Unconventional kind: stderr warn names the kind + lists the
+    convention so a typo of a real kind is obvious. Doesn't reject —
+    caller decides whether to proceed (CLI does, by design)."""
+    import contextlib, io
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        memory.warn_unknown_kind("decsion")  # typo of "decision"
+    msg = err.getvalue()
+    assert "'decsion'" in msg
+    assert "not in known kinds" in msg
+    # Convention list should be in the warn so operator can see what
+    # they meant
+    for kind in memory.KNOWN_KINDS:
+        assert kind in msg
+
+
 def test_append_warns_on_unknown_kind_but_still_writes():
     """Soft validation: unknown kind prints a stderr warning but the
     entry IS persisted. Free-form is sometimes the right call (a

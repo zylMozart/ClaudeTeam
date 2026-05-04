@@ -82,6 +82,25 @@ def kinds_sorted() -> list[str]:
     return sorted(KNOWN_KINDS)
 
 
+def warn_unknown_kind(kind: str) -> None:
+    """If `kind` is non-empty and not in KNOWN_KINDS, emit a one-line
+    stderr nudge with the convention list. No-op for empty / known
+    kinds.
+
+    Round-156: extracted from `commands/recall` + `commands/forget`,
+    which inlined the same `warn(f"⚠️ --kind {kind!r} not in known
+    kinds ({sorted(KNOWN_KINDS)}); proceeding anyway")` block. The
+    slash-card siblings (`feishu/slash._handle_recall/_handle_forget`)
+    don't use this — they embed the warning into a card body string
+    with different formatting per command, so they keep their
+    inline branches.
+    """
+    if kind and kind not in KNOWN_KINDS:
+        from claudeteam.util import warn
+        warn(f"⚠️  --kind {kind!r} not in known kinds "
+             f"({sorted(KNOWN_KINDS)}); proceeding anyway")
+
+
 def _agent_dir(agent: str):
     return paths.facts_dir() / agent
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from claudeteam.store import memory
 from claudeteam.util import (
-    error_exit, maybe_print_help, pop_bool_flag, pop_flag, usage_error, warn,
+    error_exit, maybe_print_help, pop_bool_flag, pop_flag, usage_error,
 )
 
 
@@ -47,9 +47,7 @@ def main(argv: list[str]) -> int:
             f"run `{recall_hint}` first to verify what you're about to "
             f"drop, then re-run with --yes")
 
-    if kind and kind not in memory.KNOWN_KINDS:
-        warn(f"⚠️  --kind {kind!r} not in known kinds "
-             f"({sorted(memory.KNOWN_KINDS)}); proceeding anyway")
+    memory.warn_unknown_kind(kind)
 
     if kind:
         n = memory.clear_kind(agent, kind)

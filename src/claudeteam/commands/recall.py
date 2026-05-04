@@ -23,7 +23,7 @@ from __future__ import annotations
 from claudeteam.store import memory
 from claudeteam.util import (
     error_exit, fmt_time_ms, maybe_print_help, pop_bool_flag, pop_flag,
-    print_json, usage_error, warn,
+    print_json, usage_error,
 )
 
 
@@ -53,13 +53,10 @@ def main(argv: list[str]) -> int:
         return usage_error(USAGE)
     agent = rest[0]
 
-    if kind_filter and kind_filter not in memory.KNOWN_KINDS:
-        # Soft warn — proceed but tell the operator the filter is
-        # unconventional. 0 results may still be the right answer
-        # (the agent might have written a `fyi`-kind entry). Hint at
-        # the convention so a typo of a real kind is obvious.
-        warn(f"⚠️  --kind {kind_filter!r} not in known kinds "
-             f"({sorted(memory.KNOWN_KINDS)}); proceeding anyway")
+    # Soft warn for unknown kinds — operator's filter could be
+    # intentional (`fyi`-kind entry) so we proceed; the warning just
+    # nudges them toward the convention if it was a typo.
+    memory.warn_unknown_kind(kind_filter)
 
     rows = memory.list_recent_filtered(agent, kind=kind_filter, limit=limit)
 
