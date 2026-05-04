@@ -73,6 +73,26 @@ RUN npm install --silent --global @larksuite/cli@latest \
 RUN npm install --silent --global @anthropic-ai/claude-code \
     && claude --version
 
+# R172.b: write claude's global silent-launch settings so the
+# `claude --dangerously-skip-permissions` invocation in spawn_cmd
+# never pops the "Yes, I accept" dialog and never asks per-tool
+# permission. Boss-provided 2026-05-04 (effect: 启动不弹确认、
+# 运行中不弹权限、不弹问卷、不弹更新).
+#
+# `/root/.claude/.credentials.json` is bind-mounted from host RW for
+# OAuth state, so this file gets written first to a path the bind
+# mount doesn't shadow. ~/.claude/settings.json is OUTSIDE the
+# .credentials.json bind path, so this works.
+RUN mkdir -p /root/.claude \
+    && printf '%s\n' \
+       '{' \
+       '  "skipDangerousModePermissionPrompt": true,' \
+       '  "hasCompletedOnboarding": true,' \
+       '  "permissions": {' \
+       '    "allow": ["Bash()", "Edit()", "Read()", "Write()", "Edit(.claude/)", "Write(.claude/)"]' \
+       '  }' \
+       '}' > /root/.claude/settings.json
+
 # R170: install Codex CLI (OpenAI) + Kimi CLI (Moonshot AI). Same
 # pattern as claude-code: install the binaries here, mount host's
 # auth state at runtime via docker-compose volumes so container

@@ -49,42 +49,16 @@ def is_rate_limited(target: tmux.Target, adapter: CliAdapter, *,
     return _has_marker(target, adapter.rate_limit_markers(), capture)
 
 
-# Markers for claude's first-launch confirmation dialog. claude with
-# --dangerously-skip-permissions still pops "Yes, I accept" once per
-# fresh ~/.claude.json setup; in container deploys the bind-mounted
-# .claude.json from host already has hasAcknowledgedBypassPermissionsMode
-# but claude apparently re-checks per-session in some builds, so the
-# dialog still surfaces and blocks the ready marker. Auto-dismiss.
-_CLAUDE_BYPASS_DIALOG_MARKERS = ("Yes, I accept", "Bypass Permissions mode")
-
-
 def _poll_until_ready(target: tmux.Target, adapter: CliAdapter, *,
                       timeout_s: float, poll_interval_s: float,
                       capture: Callable, sleep: Callable, now: Callable) -> bool:
     """Loop `is_ready` checks until a ready marker shows up or `timeout_s`
     elapses. Pure poll — no spawn, no side effects, no defaulting (caller
-    fills in collaborators).
-
-    R172.b: when the pane shows claude's "Yes, I accept" dialog (one-time
-    bypass-permissions confirmation), auto-send `2` + Enter to dismiss it.
-    Without this the dialog blocks `bypass permissions on` from ever
-    appearing → wait_until_ready times out → identity init never injects
-    → /team reports agents as "awaiting permission" forever (boss saw
-    this 2026-05-04). Captures the pane ONCE per poll iteration and reuses
-    the text for both the ready-marker scan and the dialog scan, so the
-    extra check costs zero capture calls."""
-    ready_markers = adapter.ready_markers()
+    fills in collaborators)."""
     deadline = now() + timeout_s
-    dismissed = False
     while now() < deadline:
-        text = capture(target, lines=80)
-        if any(m in text for m in ready_markers):
+        if is_ready(target, adapter, capture=capture):
             return True
-        if (not dismissed
-                and any(m in text for m in _CLAUDE_BYPASS_DIALOG_MARKERS)):
-            tmux.send_keys(target, "2")
-            tmux.send_keys(target, "Enter")
-            dismissed = True
         sleep(poll_interval_s)
     return False
 
