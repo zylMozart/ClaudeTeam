@@ -19,7 +19,7 @@ import json
 import shutil
 from dataclasses import dataclass, field
 
-from claudeteam.agents import adapter_for_agent
+from claudeteam.agents import get_adapter
 from claudeteam.feishu import catchup
 from claudeteam.runtime import config, paths, tmux, watchdog
 from claudeteam.store import local_facts
@@ -153,7 +153,11 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
         cfg = agents_dict.get(agent, {})
         cli = cfg.get("cli", "claude-code")
         try:
-            adapter = adapter_for_agent(agent)
+            # R152: resolve adapter from the cli we already have, not via
+            # `adapter_for_agent(agent)` which re-reads team.json. R145
+            # only fixed the explicit config.agent_cli / agent_config
+            # calls in this loop; this implicit one slipped through.
+            adapter = get_adapter(cli)
             text = tmux.capture_pane(target, lines=80)
             if any(m in text for m in adapter.ready_markers()):
                 rep.ok(f"  {agent}: pane ready ({cli}){hb_suffix}")
