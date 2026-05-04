@@ -4,8 +4,21 @@ Separated from `router.classify_event` so the routing decision stays a
 pure function and the side-effecting "apply" step is the only place that
 touches the store and tmux.
 
+`apply` branches on `decision.action`:
+
+  DROP       no-op (`DeliveryReport(skipped=True)`)
+  SLASH      `_apply_slash`: dispatch via `feishu/slash.dispatch` →
+             reply is `str` or `dict` (R79 cards). dict → `chat.send_card`,
+             str → `chat.send_text`. Pane never touched, no LLM runs.
+  BROADCAST  same as ROUTE but targets are all non-sender agents
+  ROUTE      per-target: `_write_inbox` (always; flock-serialised) +
+             `_inject_to_pane` (best-effort; skipped when `wake.is_rate_limited`
+             returns True so the inbox row stays the canonical record).
+
 Returns a `DeliveryReport` so callers can log / surface partial-success
-without inspecting hand-rolled tuples.
+without inspecting hand-rolled tuples. Lists in the report:
+  written / injected / failed_inject / rate_limited (per agent),
+  skipped (DROP), slash_reply (SLASH text-form replies only).
 """
 from __future__ import annotations
 

@@ -7,6 +7,18 @@ identity init prompt, and updates the agent's status row. Both
 (single agent) call into this so the spawn-and-init contract lives in
 one place.
 
+Returns one of five outcome strings (callers render differently):
+  LAZY            agent has `lazy: true` in team.json; no spawn attempted,
+                  status set to 待命
+  READY           CLI spawned + ready marker seen + identity init injected
+  READY_NO_INIT   CLI spawned but ready marker didn't appear in 20s;
+                  identity init skipped (caller surfaces a warning)
+  SPAWN_FAILED    `tmux.spawn_agent` returned False (tmux send-keys failed)
+  CONFIG_ERROR    R61: bad `cli` value in team.json (typo, dropped adapter)
+                  caught as KeyError on adapter lookup; caller logs +
+                  skips this agent, keeps going for the rest of the team
+                  rather than aborting the whole `claudeteam start`.
+
 Also home for `pane_env_prefix()` — the shell env-var prefix prepended
 to every spawn_cmd so worker agents inherit `CLAUDETEAM_STATE_DIR` and
 the Feishu env into their `claudeteam say` shell-outs.
