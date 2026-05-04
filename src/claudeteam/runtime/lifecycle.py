@@ -108,11 +108,22 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         import sys
         print(f"  ⚠️ {agent}: agent {agent!r} not in team.json", file=sys.stderr)
         return CONFIG_ERROR
-    identity.write(agent)
+    cli = cfg.get("cli", "claude-code")
+    # Inline agent_model resolution: per-agent override → env var →
+    # team default → "opus". Mirrors `config.agent_model` but uses the
+    # already-loaded `team` dict for the default_model fallback.
+    model = (cfg.get("model")
+             or env_str("CLAUDETEAM_DEFAULT_MODEL")
+             or team.get("default_model", "opus"))
+    # R155: pass resolved fields to identity.write so its internal
+    # `render()` skips its own `config.agent_config(agent)` fallback —
+    # one more team.json read removed from the per-agent boot path.
+    # `role` defaulted to `agent` matches render's cfg.get("role") or
+    # agent fallback, so the rendered file is byte-identical.
+    identity.write(agent, role=cfg.get("role") or agent, cli=cli, model=model)
     if cfg.get("lazy"):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
         return LAZY
-    cli = cfg.get("cli", "claude-code")
     if cli == "codex-cli":
         ensure_workdir_trusted(Path.cwd())
     try:
@@ -124,12 +135,6 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         import sys
         print(f"  ⚠️ {agent}: {e}", file=sys.stderr)
         return CONFIG_ERROR
-    # Inline agent_model resolution: per-agent override → env var →
-    # team default → "opus". Mirrors `config.agent_model` but uses the
-    # already-loaded `team` dict for the default_model fallback.
-    model = (cfg.get("model")
-             or env_str("CLAUDETEAM_DEFAULT_MODEL")
-             or team.get("default_model", "opus"))
     cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, model)}"
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED
