@@ -257,45 +257,132 @@ def test_health_card_emits_v2_schema_with_grey_footer():
     assert "color='grey'" in last["content"]
 
 
-# ── /usage ───────────────────────────────────────────────────────
+# ── /usage (R167: rich card with column_set 2 + ccusage summary) ─
 
 
-def test_usage_no_view_shells_with_just_subcommand():
+def _usage_run(json_payload: str):
+    """Stub `ctx.run` to return JSON of `claudeteam usage --json`."""
+    return lambda argv, **kw: type("R", (), {
+        "returncode": 0, "stdout": json_payload, "stderr": ""})()
+
+
+def test_usage_no_view_shells_claudeteam_usage_json():
+    """R167: handler shells out with `--json` so the card builder gets
+    structured data, not raw text."""
     captured = {}
     fake_run = lambda argv, **kw: (captured.setdefault("argv", list(argv))
                                    or type("R", (), {"returncode": 0,
-                                                     "stdout": "x", "stderr": ""})())
+                                                     "stdout": '{}', "stderr": ""})())
     slash.dispatch("/usage", _ctx(run=fake_run))
-    assert captured["argv"] == ["claudeteam", "usage"]
+    assert captured["argv"][:3] == ["claudeteam", "usage", "--json"]
 
 
-def test_usage_view_threads_through_as_flag():
+def test_usage_view_threads_through_view_flag():
     captured = {}
     fake_run = lambda argv, **kw: (captured.setdefault("argv", list(argv))
                                    or type("R", (), {"returncode": 0,
-                                                     "stdout": "x", "stderr": ""})())
+                                                     "stdout": '{}', "stderr": ""})())
     slash.dispatch("/usage daily", _ctx(run=fake_run))
-    assert captured["argv"] == ["claudeteam", "usage", "--view", "daily"]
+    assert captured["argv"] == ["claudeteam", "usage", "--json",
+                                 "--view", "daily"]
 
 
-def test_usage_returns_card_with_plain_body():
-    """Round-115: /usage replies as a blue card matching /team /health
-    style. R164: body is plain markdown, NOT fenced — only /tmux gets
-    the code-block treatment per boss-flagged convention."""
-    fake_run = lambda argv, **kw: type("R", (), {
-        "returncode": 0,
-        "stdout": "Total: $0.42  in: 1.2M  out: 0.4M\n",
-        "stderr": "",
-    })()
-    reply = slash.dispatch("/usage", _ctx(run=fake_run))
+def test_usage_card_emits_purple_header_when_ccusage_ok():
+    """R167: matches main's /usage card branding — purple header.
+    No more blue / plain-body / fenced fallback."""
+    payload = ('{"view":"daily","claude_code":{"ok":true,"rc":0,'
+               '"output":"Date | Cost\\n2026-05-04 | $0.42\\nTotal: $1.23"},'
+               '"other_clis":[]}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
     assert isinstance(reply, dict)
-    assert reply["header"]["template"] == "blue"
+    assert reply["schema"] == "2.0"
+    assert reply["header"]["template"] == "purple"
     title = reply["header"]["title"]["content"]
-    assert "/usage" in title
-    assert "(daily)" in title  # default view label
-    body = reply["body"]["elements"][0]["content"]
-    assert "```" not in body  # R164: no fence wrap
-    assert "Total: $0.42" in body
+    assert "/usage" in title and "(daily)" in title
+
+
+def test_usage_card_extracts_total_from_ccusage_output():
+    """Total line gets surfaced as a column_set 2 row with the dollar
+    amount in blue. Boss reads the bottom-line cost at a glance instead
+    of scanning a multi-line table."""
+    payload = ('{"view":"daily","claude_code":{"ok":true,"rc":0,'
+               '"output":"Date | Cost\\n2026-05-04 | $0.42\\nTotal: $1.23"},'
+               '"other_clis":[]}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    elements = reply["body"]["elements"]
+    col_sets = [e for e in elements if e.get("tag") == "column_set"]
+    assert col_sets, "missing column_set row"
+    # First row's right cell should contain the total
+    right_content = col_sets[0]["columns"][1]["elements"][0]["content"]
+    assert "$1.23" in right_content
+    assert "color='blue'" in right_content
+
+
+def test_usage_card_summarises_ccusage_failure_to_one_line():
+    """ccusage's npm WARN + Node stack trace gets boiled down to one
+    operator-readable line in red — boss flagged the raw 30-line dump
+    as ugly. Header flips red so the failure is visible at glance."""
+    payload = ('{"view":"daily","claude_code":{"ok":false,"rc":1,'
+               '"output":"npm WARN EBADENGINE Unsupported engine\\n'
+               'npm WARN ...\\n'
+               'Error: No valid Claude data directories found\\n'
+               '   at getClaudePaths\\n"},'
+               '"other_clis":[]}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    assert reply["header"]["template"] == "red"
+    elements = reply["body"]["elements"]
+    col_sets = [e for e in elements if e.get("tag") == "column_set"]
+    right_content = col_sets[0]["columns"][1]["elements"][0]["content"]
+    assert "color='red'" in right_content
+    assert "ccusage 失败" in right_content
+    # The actual error line surfaces
+    assert "No valid Claude data directories" in right_content
+    # WARN noise does NOT surface
+    assert "EBADENGINE" not in right_content
+
+
+def test_usage_card_includes_other_cli_section_when_present():
+    """`other_clis` from `claudeteam usage --json` (non-claude-code
+    agents) render as their own section with column_set 2 rows."""
+    payload = ('{"view":"daily","claude_code":null,'
+               '"other_clis":['
+               '{"cli":"codex-cli","note":"no upstream usage tool"},'
+               '{"cli":"kimi-code","note":"no upstream usage tool"}'
+               ']}')
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+                        if e.get("tag") == "markdown")
+    assert "📦 其他 CLI" in contents
+    col_sets = [e for e in reply["body"]["elements"]
+                if e.get("tag") == "column_set"]
+    # Two rows for two CLIs
+    cli_names = [cs["columns"][0]["elements"][0]["content"]
+                 for cs in col_sets]
+    assert "**codex-cli**" in cli_names
+    assert "**kimi-code**" in cli_names
+
+
+def test_usage_card_renders_no_data_when_both_sections_empty():
+    """No claude-code config + no other CLIs → render `(无数据)` rather
+    than an empty card body."""
+    payload = '{"view":"daily","claude_code":null,"other_clis":[]}'
+    reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
+    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+                        if e.get("tag") == "markdown")
+    assert "(无数据)" in contents
+
+
+def test_usage_card_handles_invalid_json_gracefully():
+    """Shell-out returned non-JSON (e.g. claudeteam usage crashed) →
+    fall back to empty data; render the no-data placeholder + footer
+    instead of crashing."""
+    bad_run = lambda argv, **kw: type("R", (), {
+        "returncode": 0, "stdout": "not json {[", "stderr": ""})()
+    reply = slash.dispatch("/usage", _ctx(run=bad_run))
+    assert isinstance(reply, dict)
+    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+                        if e.get("tag") == "markdown")
+    assert "(无数据)" in contents
 
 
 # ── /tmux ────────────────────────────────────────────────────────

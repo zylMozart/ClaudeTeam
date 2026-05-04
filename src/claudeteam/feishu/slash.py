@@ -60,8 +60,8 @@ from typing import Callable
 from claudeteam.agents import identity
 from claudeteam.feishu import pane_state
 from claudeteam.feishu.cards import (
-    beijing_stamp, column_set_3, fenced_block, load_color, rich_card,
-    simple_card,
+    beijing_stamp, column_set_2, column_set_3, fenced_block, load_color,
+    rich_card, simple_card,
 )
 from claudeteam.runtime import tmux
 from claudeteam.store import memory
@@ -407,24 +407,149 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     )
 
 
-def _handle_usage(args: str, ctx: SlashContext) -> dict:
-    """Run `claudeteam usage` and wrap its output in a card.
+_CCUSAGE_TOTAL_RE = re.compile(
+    r"(?:Total|总计|合计)\s*:?\s*\$?\s*([\d.]+)", re.IGNORECASE)
+_CCUSAGE_DOLLAR_LINE_RE = re.compile(r"\$\s*([\d.]+)")
+# Priority-ordered hint phrases. The summariser walks this in order and
+# returns the first matching LINE — so a real Error: line wins over
+# the npm WARN noise that typically precedes it.
+_CCUSAGE_ERROR_HINTS = (
+    "No valid Claude data directories found",
+    "Cannot find module",
+    "MODULE_NOT_FOUND",
+    "Error:",
+    "npm error",
+    "Unsupported engine",
+)
 
-    Round-115: was plain text; now matches /team /health card style.
-    R164: dropped fenced_block wrap (only /tmux gets the code-block
-    treatment per boss convention). Output is rendered as plain v2
-    markdown.
+
+def _extract_ccusage_summary(output: str) -> dict | None:
+    """Pull a small structured summary out of ccusage stdout.
+
+    ccusage prints either a table (daily/monthly view) or a single
+    Total line. Either way we want to render one or two compact metric
+    rows in the card body, not a 30-line code-block dump.
+
+    Returns `{total: "$X.YZ"}` or None if no money-shaped pattern was
+    found.
+    """
+    if not output:
+        return None
+    m = _CCUSAGE_TOTAL_RE.search(output)
+    if m:
+        return {"total": f"${m.group(1)}"}
+    # Fallback: grab the LAST `$X.YZ` token in the output (often the
+    # rightmost cell of the totals row).
+    matches = _CCUSAGE_DOLLAR_LINE_RE.findall(output)
+    if matches:
+        return {"total": f"${matches[-1]}"}
+    return None
+
+
+def _summarise_ccusage_error(output: str) -> str:
+    """Boil ccusage's multi-line failure (npm WARN ... + Node stack
+    trace) down to one operator-readable line. Keeps the actual error
+    message and drops the surrounding noise.
+
+    Walks `_CCUSAGE_ERROR_HINTS` in priority order so a real
+    `Error: No valid Claude data directories found` wins over the
+    `npm WARN EBADENGINE Unsupported engine` noise that typically
+    precedes it.
+    """
+    if not output:
+        return "ccusage 无输出"
+    low = output.lower()
+    for hint in _CCUSAGE_ERROR_HINTS:
+        if hint.lower() in low:
+            for line in output.splitlines():
+                if hint.lower() in line.lower():
+                    return line.strip()[:200]
+    # Fallback: first non-WARN line under 200 chars
+    for line in output.splitlines():
+        s = line.strip()
+        if s and not s.lower().startswith(("npm warn", "warning:")):
+            return s[:200]
+    return output.splitlines()[0].strip()[:200] if output.strip() else "(空)"
+
+
+def _handle_usage(args: str, ctx: SlashContext) -> dict:
+    """`/usage [view]` — token / credit consumption snapshot card.
+
+    R167: ports `feat/messaging-fixes-block1` / `main` shape — purple
+    header, **📊 Claude Code (ccusage)** section with column_set 2
+    (label / colored metric), **📦 其他 CLI** section listing
+    codex/kimi/qwen/gemini per-cli notes (since rebuild has no usage
+    adapter for those — main's `inspect_cli` lives outside this
+    branch). ccusage failures are condensed to a one-line red font
+    summary instead of dumping 30 lines of npm WARN.
+
+    Was R164: plain text dump of `claudeteam usage` shell-out — boss
+    flagged as "破衣服" vs /health's "西装"; this matches the latter
+    so they look consistent in chat.
     """
     view_arg = args.strip().split()[0] if args.strip() else ""
-    argv = ["claudeteam", "usage"]
+    argv = ["claudeteam", "usage", "--json"]
     if view_arg:
         argv += ["--view", view_arg]
     view = view_arg or "daily"
-    out = _shell(ctx, argv, timeout=120)
-    return simple_card(
-        f"📊 /usage ({view}) — {beijing_stamp(ctx.now)}",
-        out,
-        color="blue",
+    raw = _shell(ctx, argv, timeout=120)
+    try:
+        import json as _json
+        data = _json.loads(raw)
+    except (ValueError, TypeError):
+        data = {"view": view, "claude_code": None, "other_clis": []}
+
+    elements: list = []
+    cc = data.get("claude_code")
+    if cc is not None:
+        elements.append({"tag": "markdown",
+                          "content": "**📊 Claude Code (ccusage)**"})
+        if cc.get("ok"):
+            summary = _extract_ccusage_summary(cc.get("output", ""))
+            if summary:
+                elements.append(column_set_2(
+                    "**Total**",
+                    f"<font color='blue'>**{summary['total']}**</font> "
+                    f"· view `{view}`"))
+            else:
+                elements.append(column_set_2(
+                    "**Status**",
+                    f"<font color='grey'>ccusage 跑通但没匹配到金额行</font>"))
+        else:
+            err_brief = _summarise_ccusage_error(cc.get("output", ""))
+            elements.append(column_set_2(
+                "**Status**",
+                f"<font color='red'>ccusage 失败</font> · {err_brief}"))
+        elements.append({"tag": "hr"})
+
+    other = data.get("other_clis") or []
+    if other:
+        elements.append({"tag": "markdown",
+                          "content": "**📦 其他 CLI**"})
+        for row in other:
+            elements.append(column_set_2(
+                f"**{row['cli']}**",
+                f"<font color='grey'>{row['note']}</font>"))
+        elements.append({"tag": "hr"})
+
+    if not cc and not other:
+        elements.append({"tag": "markdown",
+                          "content": "<font color='grey'>(无数据)</font>"})
+
+    if elements and elements[-1].get("tag") == "hr":
+        elements.pop()
+
+    elements.append({"tag": "markdown",
+                      "content": (f"<font color='grey'>采集 "
+                                   f"{beijing_stamp(ctx.now)} · "
+                                   f"data source `claudeteam usage --json`"
+                                   f"</font>")})
+
+    color = "red" if (cc and not cc.get("ok")) else "purple"
+    return rich_card(
+        f"📊 /usage ({view}) — 额度快照 {beijing_stamp(ctx.now)}",
+        elements,
+        color=color,
     )
 
 
