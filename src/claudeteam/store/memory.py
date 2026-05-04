@@ -34,6 +34,9 @@ API surface:
   `clear_kind(agent, kind)`                   → drop one slice (R111)
   `render_for_prompt(agent, *, limit=20)`     → markdown for init prompt
   `all_agents_with_memory()`                  → iterator for health audit
+                                                 (R132: wired into
+                                                 `claudeteam health`'s
+                                                 memory: section)
 """
 from __future__ import annotations
 
