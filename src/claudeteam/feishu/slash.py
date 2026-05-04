@@ -241,6 +241,65 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     )
 
 
+_HEALTH_SECTION_EMOJI = {
+    "paths": "🗂",
+    "config": "⚙️",
+    "binaries": "📦",
+    "env": "🌐",
+    "tmux": "🖥",
+    "daemons": "🛡",
+    "router state": "📡",
+    "memory": "🧠",
+}
+
+
+def _format_health_card_body(raw: str) -> str:
+    """Turn the raw `claudeteam health` text output into structured v2
+    markdown for the card body. Sections are detected by lines with no
+    leading space ending in `:` (matches `HealthReport.section()`); each
+    section gets a bold `**emoji name**` heading; rows below it become
+    bullet lines; sections separated by `---` horizontal rules.
+
+    R165: replaces the prior plain-text dump with a layout closer to
+    `feat/messaging-fixes-block1`'s rich card. Doesn't yet collect host
+    CPU / container / agent metrics (no underlying data source on this
+    branch), but the section split alone gives boss the "easier to scan
+    in chat" rendering they asked for.
+
+    Falls back to the raw output for any line that doesn't fit the
+    expected shape so we don't lose information.
+    """
+    if not raw:
+        return " "
+    sections: list[tuple[str, list[str]]] = []
+    current: tuple[str, list[str]] | None = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Section heading: top-level, ends with ':' (e.g. "tmux:")
+        if not line.startswith(" ") and line.rstrip().endswith(":"):
+            name = line.rstrip()[:-1]
+            current = (name, [])
+            sections.append(current)
+            continue
+        # Body row inside a section
+        if current is None:
+            current = ("", [])
+            sections.append(current)
+        current[1].append(stripped)
+    out_lines: list[str] = []
+    for i, (name, rows) in enumerate(sections):
+        if i:
+            out_lines.append("---")
+        if name:
+            emoji = _HEALTH_SECTION_EMOJI.get(name, "▫")
+            out_lines.append(f"**{emoji} {name}**")
+        for row in rows:
+            out_lines.append(f"- {row}")
+    return "\n".join(out_lines) if out_lines else " "
+
+
 def _handle_health(args: str, ctx: SlashContext) -> dict:
     """Run `claudeteam health` and wrap its text output in a card.
 
@@ -249,11 +308,11 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     report's `_BAD` marker is `❌`), `yellow` when one or more `❌` lines
     are present.
 
-    R164: dropped the `fenced_block` wrap. Boss-flagged convention:
-    only `/tmux` should render its body as a code block; `/health`
-    and `/usage` read better as plain markdown text in chat. Health
-    output's leading-space indentation is purely decorative and
-    Feishu's v2 markdown handles the multi-line glyph list cleanly.
+    R165: body is now structured — each `claudeteam health` section
+    becomes a bold heading with an emoji, rows become bullet items,
+    `---` between sections. Closer in feel to `feat/messaging-fixes-
+    block1`'s rich /health card without porting that branch's full
+    host-metrics collector (separate work).
     """
     out = _shell(ctx, ["claudeteam", "health"], timeout=60)
     # Health uses ❌ for hard fails and ⚠️ for warnings (see health.py
@@ -262,7 +321,7 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     color = "yellow" if ("❌" in out or "⚠️" in out) else "green"
     return simple_card(
         f"🩺 /health — 部署快照 {beijing_stamp(ctx.now)}",
-        out,
+        _format_health_card_body(out),
         color=color,
     )
 
