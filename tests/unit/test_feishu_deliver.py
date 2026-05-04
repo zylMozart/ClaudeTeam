@@ -319,7 +319,7 @@ def test_slash_logs_warning_when_chat_send_returns_none():
                        profile="prod")
     # send_card was called (slash dispatched + tried to post a card)
     assert len(chat_send_card_calls) == 1
-    body = chat_send_card_calls[0]["card"]["elements"][0]["text"]["content"]
+    body = chat_send_card_calls[0]["card"]["body"]["elements"][0]["content"]
     assert "/help" in body or "🆘" in body
     # Warning was logged so operator can grep the daemon log
     log = out.getvalue()

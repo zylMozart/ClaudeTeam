@@ -32,9 +32,11 @@ def _fake_chat_send():
         return {"message_id": "om_fake"}
 
     def fake_card(chat_id, card, **kw):
+        # R159: card v2 shape — body lives at `body.elements[0].content`
+        # (was `elements[0].text.content` in v1).
         body = ""
         try:
-            body = card["elements"][0]["text"]["content"]
+            body = card["body"]["elements"][0]["content"]
         except (KeyError, IndexError, TypeError):
             pass
         state["posts"].append({"chat_id": chat_id, "card": card,

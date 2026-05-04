@@ -6,17 +6,20 @@ from claudeteam.feishu.cards import (
 )
 
 
-def test_simple_card_emits_v1_schema_shape():
+def test_simple_card_emits_v2_schema_shape():
+    """R159: card v2 schema — `schema:"2.0"`, `body.elements` list with a
+    single `tag:"markdown"` element. v1's `config.wide_screen_mode` and
+    nested `text.tag:"lark_md"` are gone; v2's markdown element renders
+    fenced code blocks + nested lists which v1 silently dropped."""
     card = simple_card("Hello", "**bold** body")
-    assert card["config"] == {"wide_screen_mode": True}
+    assert card["schema"] == "2.0"
     assert card["header"]["title"]["content"] == "Hello"
     assert card["header"]["title"]["tag"] == "plain_text"
     assert card["header"]["template"] == "blue"  # default
-    elements = card["elements"]
+    elements = card["body"]["elements"]
     assert len(elements) == 1
-    assert elements[0]["tag"] == "div"
-    assert elements[0]["text"]["tag"] == "lark_md"
-    assert elements[0]["text"]["content"] == "**bold** body"
+    assert elements[0]["tag"] == "markdown"
+    assert elements[0]["content"] == "**bold** body"
 
 
 def test_simple_card_accepts_color_override():
@@ -34,7 +37,7 @@ def test_simple_card_empty_body_becomes_space():
     """Feishu rejects elements with empty content; coerce to a single space
     so the card schema still validates instead of failing the send."""
     card = simple_card("Title", "")
-    assert card["elements"][0]["text"]["content"] == " "
+    assert card["body"]["elements"][0]["content"] == " "
 
 
 # ── beijing_stamp helper (R117 / R136-relocated) ─────────────────
@@ -62,10 +65,11 @@ def test_beijing_stamp_default_now_is_datetime_now():
 
 
 def test_fenced_block_wraps_text_in_triple_backticks():
-    """Helper for /health, /usage, /tmux body fencing. Output is a
-    leading ``` + text + trailing ``` so lark_md renders the contained
-    text in a code block (preserves indentation, monospace alignment,
-    ANSI escapes etc.)."""
+    """Helper for /health, /usage, /tmux body fencing. R159: card v2's
+    `markdown` element renders the standard GFM fenced block (triple
+    backticks) as a real code block — pre-R159 cards used `lark_md`
+    which silently dropped the fence to literal backtick text. Output
+    shape is unchanged; just the surrounding card schema swapped."""
     assert fenced_block("alpha\nbeta") == "```\nalpha\nbeta\n```"
     # Empty string still produces a valid fence (Feishu rejects empty
     # element content; an empty fence renders as a 1-line empty code

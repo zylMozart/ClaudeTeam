@@ -38,7 +38,7 @@ def test_help_returns_card_listing_all_commands():
     reply = slash.dispatch("/help", _ctx())
     assert isinstance(reply, dict), f"/help should return a card dict, got {type(reply)}"
     assert reply["header"]["title"]["content"] == "🆘 ClaudeTeam 自定义斜杠命令"
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     for c in ("/help", "/team", "/health", "/usage", "/tmux",
               "/send", "/compact", "/recall", "/stop", "/clear"):
         assert c in body
@@ -67,7 +67,7 @@ def test_team_classifies_each_pane_state_with_emoji():
     assert isinstance(reply, dict)
     title = reply["header"]["title"]["content"]
     assert "/team" in title and "员工实时状态" in title
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "💤" in body and "manager" in body         # bypass marker → idle
     assert "🔄" in body and "worker_cc" in body       # esc to interrupt → working
     assert "🔘" in body and "worker_codex" in body    # tail-fallback
@@ -103,7 +103,7 @@ def test_team_card_keeps_green_when_only_unhealthy_is_lazy():
                                _ctx(agents=("manager", "worker_lazy"),
                                     lazy_agents={"worker_lazy"}))
     assert reply["header"]["template"] == "green"
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     # Lazy worker shown with ⏸ glyph (not 🛑) and a "lazy" hint
     assert "⏸" in body
     assert "worker_lazy" in body
@@ -130,7 +130,7 @@ def test_team_card_still_yellow_for_truly_dead_pane():
         reply = slash.dispatch("/team",
                                _ctx(agents=("manager", "worker_cc")))
     assert reply["header"]["template"] == "yellow"
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "🛑" in body  # honest failure glyph kept
 
 
@@ -167,7 +167,7 @@ def test_health_shells_to_claudeteam_health_and_returns_card():
     assert captured["argv"] == ["claudeteam", "health"]
     assert isinstance(reply, dict)
     assert "/health" in reply["header"]["title"]["content"]
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "✅ all green" in body
     # No ❌ in the output → green template
     assert reply["header"]["template"] == "green"
@@ -182,7 +182,7 @@ def test_health_card_is_yellow_when_output_contains_red_or_warn_glyph():
                               "stderr": ""})()
     reply = slash.dispatch("/health", _ctx(run=fake_run_bad))
     assert reply["header"]["template"] == "yellow"
-    assert "❌" in reply["elements"][0]["text"]["content"]
+    assert "❌" in reply["body"]["elements"][0]["content"]
 
     def fake_run_warn(argv, **kwargs):
         return type("R", (), {"returncode": 0,
@@ -228,7 +228,7 @@ def test_usage_returns_card_with_fenced_body():
     title = reply["header"]["title"]["content"]
     assert "/usage" in title
     assert "(daily)" in title  # default view label
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "```" in body  # fenced
     assert "Total: $0.42" in body
 
@@ -254,7 +254,7 @@ def test_tmux_captures_specified_pane():
     title = reply["header"]["title"]["content"]
     assert "/tmux worker_cc" in title
     assert "ClaudeTeam" in title  # session shown in brackets
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "```" in body  # fenced
     assert "line1\nline2\nline3" in body
 
@@ -467,7 +467,7 @@ def test_recall_with_no_memory_returns_grey_card():
     assert isinstance(reply, dict)
     assert reply["header"]["template"] == "grey"
     assert "无记忆" in reply["header"]["title"]["content"]
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "claudeteam remember" in body  # nudge
 
 
@@ -484,7 +484,7 @@ def test_recall_renders_recent_entries_as_card():
     title = reply["header"]["title"]["content"]
     assert "/recall manager" in title
     assert "最近 2 条" in title
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "[task_assigned]" in body
     assert "[task_completed]" in body
     assert "fix login" in body
@@ -499,7 +499,7 @@ def test_recall_explicit_limit_caps_at_max():
         for i in range(10):
             memory.append("worker_cc", "note", f"i={i}")
         reply = slash.dispatch("/recall worker_cc 3", _ctx())
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     # Only last 3 entries (i=7, 8, 9)
     for i in (7, 8, 9):
         assert f"i={i}" in body
@@ -529,7 +529,7 @@ def test_recall_kind_filter_narrows_results():
     assert isinstance(reply, dict)
     title = reply["header"]["title"]["content"]
     assert "kind=decision" in title
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "use bcrypt" in body
     assert "rotate keys monthly" in body
     assert "auth path" not in body
@@ -549,7 +549,7 @@ def test_recall_kind_filter_argument_order_flexible():
         ):
             reply = slash.dispatch(layout, _ctx())
             assert isinstance(reply, dict), f"layout={layout!r} → {type(reply)}"
-            body = reply["elements"][0]["text"]["content"]
+            body = reply["body"]["elements"][0]["content"]
             assert "missing PAT" in body, f"layout={layout!r}"
 
 
@@ -569,7 +569,7 @@ def test_recall_kind_unknown_inline_notes_in_card():
         memory.append("manager", "fyi", "non-canonical entry")
         reply = slash.dispatch("/recall manager --kind fyi", _ctx())
     assert isinstance(reply, dict)
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "fyi" in body
     # KNOWN_KINDS hint visible
     assert "decision" in body  # one of KNOWN_KINDS list rendering
@@ -605,7 +605,7 @@ def test_forget_without_yes_returns_grey_confirm_card():
     assert isinstance(reply, dict)
     assert reply["header"]["template"] == "grey"
     assert "确认前不会执行" in reply["header"]["title"]["content"]
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "/forget manager --yes" in body
     # Memory NOT touched
     with isolated_env():
@@ -633,7 +633,7 @@ def test_forget_yes_wipes_all_returns_red_card():
         reply = slash.dispatch("/forget manager --yes", _ctx())
     assert isinstance(reply, dict)
     assert reply["header"]["template"] == "red"
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "已清掉" in body and "2" in body
 
 
@@ -647,7 +647,7 @@ def test_forget_yes_with_kind_drops_only_slice():
         reply = slash.dispatch("/forget manager --kind decision --yes",
                                _ctx())
         assert reply["header"]["template"] == "red"
-        body = reply["elements"][0]["text"]["content"]
+        body = reply["body"]["elements"][0]["content"]
         assert "2" in body and "decision" in body
         # `note` survived
         rows = memory.list_recent("manager")
@@ -663,7 +663,7 @@ def test_forget_yes_no_match_returns_grey_card():
         reply = slash.dispatch("/forget manager --kind decision --yes",
                                _ctx())
     assert reply["header"]["template"] == "grey"
-    assert "无事可做" in reply["elements"][0]["text"]["content"]
+    assert "无事可做" in reply["body"]["elements"][0]["content"]
 
 
 def test_forget_kind_no_value_returns_warning():
@@ -676,7 +676,7 @@ def test_help_text_now_advertises_forget():
     """Round-112: /help card body must list /forget so boss can discover
     it without grepping source."""
     reply = slash.dispatch("/help", _ctx())
-    body = reply["elements"][0]["text"]["content"]
+    body = reply["body"]["elements"][0]["content"]
     assert "/forget" in body
 
 

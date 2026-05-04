@@ -148,7 +148,7 @@ def test_say_card_flag_sends_card_not_text():
     card = st["card_calls"][0]["card"]
     # Title carries the [agent] attribution that the text path did inline
     assert card["header"]["title"]["content"] == "[manager]"
-    body = card["elements"][0]["text"]["content"]
+    body = card["body"]["elements"][0]["content"]
     assert "重要决策已落地" in body
     # manager → blue template per _color_for
     assert card["header"]["template"] == "blue"

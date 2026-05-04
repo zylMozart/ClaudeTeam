@@ -1,12 +1,21 @@
 """Feishu interactive card builders.
 
-Slash handlers can return a dict matching the Feishu v1 card schema and
-`deliver._apply_slash` will send it via `chat.send_card` (`--msg-type
-interactive`) instead of plain text.
+Slash handlers can return a dict matching the Feishu **card v2** schema
+and `deliver._apply_slash` will send it via `chat.send_card`
+(`--msg-type interactive`) instead of plain text.
 
 Builders are pure: no I/O, no env reads. One constructor (`simple_card`)
 plus two helpers (`beijing_stamp`, `fenced_block`) shared across slash
 handlers that produce timestamped / monospace card bodies.
+
+R159: migrated from card v1 (`elements: [{tag:"div", text:{tag:"lark_md",
+content:...}}]`) to card v2 (`body: {elements: [{tag:"markdown",
+content:...}]}`). The v1 `lark_md` text tag did NOT render fenced code
+blocks (`\`\`\`...\`\`\``) — three-backticks showed up as literal text.
+v2's dedicated `markdown` element renders the full GFM subset including
+fenced blocks AND nested lists, validated live in the test_a chat
+(message D `om_x100b50b5131ed13cb229d7c5f1c16b0` for fenced, E
+`om_x100b50b52c50fcb0b2ad0b2268f202d` for nested list + trailing text).
 
 (R79 also shipped `kv_card` for `**key**: value` listings; R137
 removed it — never had a production caller. Add back if a future
@@ -31,23 +40,23 @@ def _normalised_color(color: str) -> str:
 
 
 def simple_card(title: str, body: str, *, color: str = "blue") -> dict:
-    """Single-section card: header + one markdown body element.
+    """Single-section card v2: header + one markdown body element.
 
-    `body` is rendered through Feishu's `lark_md` element, which accepts a
-    GFM subset (bold, italic, links, code spans, line breaks). No tables,
-    no fenced-with-language code blocks. Empty `body` becomes a single
-    space so the element validates.
+    `body` is rendered through Feishu's card v2 `markdown` element, which
+    supports a fuller GFM subset than v1's `lark_md` text tag — including
+    **fenced code blocks** (triple backticks) and **nested lists**, both
+    of which v1 silently degraded to literal text. Empty `body` becomes
+    a single space so the element validates.
     """
     return {
-        "config": {"wide_screen_mode": True},
+        "schema": "2.0",
         "header": {
-            "title": {"tag": "plain_text", "content": title},
+            "title": {"content": title, "tag": "plain_text"},
             "template": _normalised_color(color),
         },
-        "elements": [{
-            "tag": "div",
-            "text": {"tag": "lark_md", "content": body or " "},
-        }],
+        "body": {
+            "elements": [{"tag": "markdown", "content": body or " "}],
+        },
     }
 
 
