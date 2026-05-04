@@ -114,6 +114,26 @@ def _bad_agent(agent: str, ctx: SlashContext) -> str | None:
     return None
 
 
+def _pop_kind_arg(parts: list[str], cmd: str) -> tuple[list[str], str, str | None]:
+    """Strip an optional `--kind K` pair from `parts`.
+
+    Round-138: `/recall` and `/forget` both accept `--kind K` anywhere in
+    the arg list. The extraction is identical 7-line state mutation —
+    pulled here so each handler stays a one-liner. Returns
+    `(remaining_parts, kind_or_empty, error_or_None)`. `error` is set
+    only when `--kind` appeared without a following value; handlers
+    return it directly. `cmd` only feeds the error string so the
+    warning still names the slash command (e.g. `/recall: --kind …`).
+    """
+    if "--kind" not in parts:
+        return parts, "", None
+    idx = parts.index("--kind")
+    if idx + 1 >= len(parts):
+        return parts, "", f"⚠️ {cmd}: --kind needs a value (e.g. --kind decision)"
+    kind = parts[idx + 1]
+    return parts[:idx] + parts[idx + 2:], kind, None
+
+
 def _shell(ctx: SlashContext, argv: list[str], timeout: int = 30) -> str:
     """Run a shell command via ctx.run, return stdout (or stderr on failure)."""
     try:
@@ -353,14 +373,10 @@ def _handle_recall(args: str, ctx: SlashContext) -> str | dict:
 
     # Pull --kind out before positional parsing so order doesn't matter
     # (`--kind blocker worker_cc 5` and `worker_cc 5 --kind blocker`
-    # both work).
-    kind_filter = ""
-    if "--kind" in parts:
-        idx = parts.index("--kind")
-        if idx + 1 >= len(parts):
-            return "⚠️ /recall: --kind needs a value (e.g. --kind decision)"
-        kind_filter = parts[idx + 1]
-        parts = parts[:idx] + parts[idx + 2:]
+    # both work). R138: shared with /forget.
+    parts, kind_filter, err = _pop_kind_arg(parts, "/recall")
+    if err:
+        return err
 
     if not parts:
         return "用法: /recall <agent> [N] [--kind K]"
@@ -435,13 +451,9 @@ def _handle_forget(args: str, ctx: SlashContext) -> str | dict:
     yes = "--yes" in parts
     if yes:
         parts = [p for p in parts if p != "--yes"]
-    kind = ""
-    if "--kind" in parts:
-        idx = parts.index("--kind")
-        if idx + 1 >= len(parts):
-            return "⚠️ /forget: --kind needs a value (e.g. --kind decision)"
-        kind = parts[idx + 1]
-        parts = parts[:idx] + parts[idx + 2:]
+    parts, kind, err = _pop_kind_arg(parts, "/forget")
+    if err:
+        return err
 
     if not parts:
         return "用法: /forget <agent> [--kind K] --yes"
