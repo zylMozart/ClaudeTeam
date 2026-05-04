@@ -95,6 +95,21 @@ def _beijing_stamp(ctx: SlashContext) -> str:
     return f"{ctx.now().strftime('%Y-%m-%d %H:%M')} 北京时间"
 
 
+def _is_lazy(cfg, agent: str) -> bool:
+    """Probe whether `agent` is configured `lazy: true` in team.json.
+
+    Round-129: used by `_handle_team` to distinguish "agent's CLI down
+    because the boss never sent a first message" (lazy, expected) from
+    "agent's CLI died unexpectedly" (alarm). Returns False on any
+    config lookup error — a missing-from-team.json agent is "not lazy"
+    by default, so it'll still flag as unhealthy if its pane is dead.
+    """
+    try:
+        return bool(cfg.agent_config(agent).get("lazy"))
+    except Exception:
+        return False
+
+
 def _fenced_block(text: str) -> str:
     """Wrap `text` in a triple-backtick lark_md fence so monospace /
     box-drawing / ANSI artefacts survive Feishu's lark_md collapsing
@@ -165,7 +180,23 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
 
     Color is `green` when no agent is in a warning/down state, `yellow`
     when at least one is, so the boss can scan group chat at a glance.
+
+    Round-129: lazy agents (`team.json` `"lazy": true`) get the ⏸
+    glyph instead of 🛑 — lazy is BY DESIGN, not a failure. R128 smoke
+    caught the wart: yellow team header for a worker that's just
+    waiting for its first message looks like an alarm.
     """
+    # Pull team config once so we can tell which agents are intentionally
+    # lazy. Falls back gracefully if config raises (unknown agent in
+    # ctx.team_agents that isn't in team.json — shouldn't happen, but
+    # don't crash the card render).
+    try:
+        from claudeteam.runtime import config as _cfg
+        lazy_agents = {a for a in ctx.team_agents
+                       if _is_lazy(_cfg, a)}
+    except Exception:
+        lazy_agents = set()
+
     rows = []
     tally: Counter[str] = Counter()
     for agent in ctx.team_agents:
@@ -175,6 +206,14 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
         except Exception:
             buf = ""
         emoji, brief = pane_state.parse(buf)
+        # Recognise lazy state: pane_state.parse returns 🛑 (Linux bash
+        # prompt regex match) or 🔘 (tail-fallback / macOS shell with %
+        # prompt) for "no CLI". Either is fine for an agent team.json
+        # marks `lazy: true` — flip to ⏸ so the team-color check below
+        # doesn't go yellow. R128 / R129 caught this on macOS host.
+        if emoji in ("🛑", "🔘") and agent in lazy_agents:
+            emoji = "⏸"
+            brief = "lazy (waiting for first message)"
         rows.append((agent, emoji, brief))
         tally[emoji] += 1
 
@@ -190,8 +229,8 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     body_lines.append(f"**汇总**: {total} agents · {summary}")
 
     # Yellow if any agent looks unhappy (⚠️ awaiting permission, 🛑 CLI down,
-    # ❌ etc.), green otherwise. 💤 idle / 🔄 working are healthy.
-    healthy_glyphs = ("💤", "🔄")
+    # ❌ etc.), green otherwise. 💤 idle / 🔄 working / ⏸ lazy are healthy.
+    healthy_glyphs = ("💤", "🔄", "⏸")
     color = ("green" if all(e in healthy_glyphs for e in tally)
              else "yellow")
 

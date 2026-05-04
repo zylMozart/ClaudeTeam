@@ -99,6 +99,61 @@ def test_team_classifies_each_pane_state_with_emoji():
     assert "3 agents" in body
 
 
+_BASH_PROMPT = "root@abc123:/app# "  # matches pane_state._BASH_PROMPT_RE
+
+
+def test_team_card_keeps_green_when_only_unhealthy_is_lazy():
+    """Round-129: an agent configured `lazy: true` showing 🛑 because
+    its CLI hasn't spawned yet is NOT a failure — flag it ⏸ and keep
+    the team header green. R128 smoke surfaced the false-positive."""
+    from helpers import isolated_env
+    pane_buffers = {
+        "manager":     "...\n⏵⏵ bypass permissions on\n",
+        "worker_lazy": _BASH_PROMPT,  # → 🛑 pane_state, but lazy = expected
+    }
+
+    def fake_capture(target, lines=80):
+        return pane_buffers.get(target.window, "")
+
+    team = {"session": "ClaudeTeam", "agents": {
+        "manager": {"cli": "claude-code"},
+        "worker_lazy": {"cli": "kimi-code", "lazy": True},
+    }}
+    with isolated_env(team=team), tmux_patch(capture_pane=fake_capture):
+        reply = slash.dispatch("/team",
+                               _ctx(agents=("manager", "worker_lazy")))
+    assert reply["header"]["template"] == "green"
+    body = reply["elements"][0]["text"]["content"]
+    # Lazy worker shown with ⏸ glyph (not 🛑) and a "lazy" hint
+    assert "⏸" in body
+    assert "worker_lazy" in body
+    assert "lazy" in body.lower()
+
+
+def test_team_card_still_yellow_for_truly_dead_pane():
+    """The lazy exception must NOT shadow real failures. A non-lazy
+    agent whose CLI is actually dead (🛑) still flips to yellow."""
+    from helpers import isolated_env
+    pane_buffers = {
+        "manager": "...\n⏵⏵ bypass permissions on\n",
+        "worker_cc": _BASH_PROMPT,  # NOT lazy in team.json → real failure
+    }
+
+    def fake_capture(target, lines=80):
+        return pane_buffers.get(target.window, "")
+
+    team = {"session": "ClaudeTeam", "agents": {
+        "manager": {"cli": "claude-code"},
+        "worker_cc": {"cli": "claude-code"},  # no lazy
+    }}
+    with isolated_env(team=team), tmux_patch(capture_pane=fake_capture):
+        reply = slash.dispatch("/team",
+                               _ctx(agents=("manager", "worker_cc")))
+    assert reply["header"]["template"] == "yellow"
+    body = reply["elements"][0]["text"]["content"]
+    assert "🛑" in body  # honest failure glyph kept
+
+
 def test_team_card_color_yellow_when_any_agent_unhealthy():
     """Health colour shortcut: green when every agent is in a healthy
     state (💤/🔄), yellow as soon as one shows ⚠️/🛑/❌. Lets boss
