@@ -141,6 +141,39 @@ def test_health_info_when_cursor_empty():
         assert "first inbound event" in out
 
 
+# ── memory section (round-132) ──────────────────────────────────
+
+
+def test_health_memory_section_info_when_no_entries():
+    """Round-132: the memory section is informational. No agent has
+    written entries yet → an `ℹ️` line saying so. Section header
+    visible regardless."""
+    team = {"session": "S", "agents": {"manager": {}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), \
+            _stub_tmux(session_alive=True, panes_with_cli=["manager"]):
+        rc, out, _ = run_cli(["health"])
+        assert rc == 0
+        assert "memory:" in out
+        assert "no agent has written entries yet" in out
+
+
+def test_health_memory_section_lists_agents_with_entries():
+    """When agents have written memory, list them inline (one-liner if
+    ≤5 agents). Doesn't change the rc — informational only."""
+    from claudeteam.store import memory
+    team = {"session": "S",
+            "agents": {"manager": {}, "worker_cc": {}}}
+    with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), \
+            _stub_tmux(session_alive=True,
+                       panes_with_cli=["manager", "worker_cc"]):
+        memory.append("manager", "decision", "x")
+        memory.append("worker_cc", "note", "y")
+        rc, out, _ = run_cli(["health"])
+        assert rc == 0
+        assert "memory: 2 agent(s) with entries" in out
+        assert "manager" in out and "worker_cc" in out
+
+
 # ── binaries / env ──────────────────────────────────────────────
 
 

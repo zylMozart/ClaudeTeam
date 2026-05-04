@@ -206,6 +206,26 @@ def _check_cursor(rep: HealthReport) -> None:
         rep.info("router cursor: empty (advances on first inbound event)")
 
 
+def _check_memory(rep: HealthReport) -> None:
+    """Round-132: list agents that have written memory entries. Empty
+    is normal on a fresh deploy; informational only. Surfaces
+    persisted state that would otherwise need a `find facts/ -name
+    memory.jsonl` to discover."""
+    from claudeteam.store import memory
+    agents = sorted(memory.all_agents_with_memory())
+    if not agents:
+        rep.info("memory: no agent has written entries yet")
+        return
+    # One-liner if few agents; line-per-agent if many (>5)
+    if len(agents) <= 5:
+        rep.info(f"memory: {len(agents)} agent(s) with entries — "
+                 f"{', '.join(agents)}")
+    else:
+        rep.info(f"memory: {len(agents)} agent(s) with entries:")
+        for a in agents:
+            rep.note(f"  - {a}")
+
+
 def _build_report() -> HealthReport:
     """Run every check and return the populated HealthReport. Pure
     enumeration — main() picks the renderer (text or JSON) and the
@@ -250,6 +270,10 @@ def _build_report() -> HealthReport:
 
     rep.section("router state:")
     _check_cursor(rep)
+    rep.blank()
+
+    rep.section("memory:")
+    _check_memory(rep)
 
     return rep
 
