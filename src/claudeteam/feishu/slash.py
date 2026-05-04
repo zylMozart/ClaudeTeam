@@ -247,9 +247,13 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     Round-81: was a plain text reply; now a card. Color signals overall
     state — `green` when no `❌` glyph appears in the output (the health
     report's `_BAD` marker is `❌`), `yellow` when one or more `❌` lines
-    are present. Body fences the raw health text in a code block so
-    indentation + glyph alignment carry through Feishu's lark_md
-    rendering without getting collapsed.
+    are present.
+
+    R164: dropped the `fenced_block` wrap. Boss-flagged convention:
+    only `/tmux` should render its body as a code block; `/health`
+    and `/usage` read better as plain markdown text in chat. Health
+    output's leading-space indentation is purely decorative and
+    Feishu's v2 markdown handles the multi-line glyph list cleanly.
     """
     out = _shell(ctx, ["claudeteam", "health"], timeout=60)
     # Health uses ❌ for hard fails and ⚠️ for warnings (see health.py
@@ -258,7 +262,7 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     color = "yellow" if ("❌" in out or "⚠️" in out) else "green"
     return simple_card(
         f"🩺 /health — 部署快照 {beijing_stamp(ctx.now)}",
-        fenced_block(out),
+        out,
         color=color,
     )
 
@@ -267,8 +271,9 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
     """Run `claudeteam usage` and wrap its output in a card.
 
     Round-115: was plain text; now matches /team /health card style.
-    Body fences raw output so the table-formatted ccusage rows
-    (totals / per-day breakdown) survive Feishu's lark_md collapsing.
+    R164: dropped fenced_block wrap (only /tmux gets the code-block
+    treatment per boss convention). Output is rendered as plain v2
+    markdown.
     """
     view_arg = args.strip().split()[0] if args.strip() else ""
     argv = ["claudeteam", "usage"]
@@ -278,7 +283,7 @@ def _handle_usage(args: str, ctx: SlashContext) -> dict:
     out = _shell(ctx, argv, timeout=120)
     return simple_card(
         f"📊 /usage ({view}) — {beijing_stamp(ctx.now)}",
-        fenced_block(out),
+        out,
         color="blue",
     )
 

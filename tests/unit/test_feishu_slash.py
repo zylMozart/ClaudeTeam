@@ -213,10 +213,10 @@ def test_usage_view_threads_through_as_flag():
     assert captured["argv"] == ["claudeteam", "usage", "--view", "daily"]
 
 
-def test_usage_returns_card_with_fenced_body():
+def test_usage_returns_card_with_plain_body():
     """Round-115: /usage replies as a blue card matching /team /health
-    style. Body is fence-wrapped so ccusage's table layout survives
-    Feishu's lark_md rendering."""
+    style. R164: body is plain markdown, NOT fenced — only /tmux gets
+    the code-block treatment per boss-flagged convention."""
     fake_run = lambda argv, **kw: type("R", (), {
         "returncode": 0,
         "stdout": "Total: $0.42  in: 1.2M  out: 0.4M\n",
@@ -229,7 +229,7 @@ def test_usage_returns_card_with_fenced_body():
     assert "/usage" in title
     assert "(daily)" in title  # default view label
     body = reply["body"]["elements"][0]["content"]
-    assert "```" in body  # fenced
+    assert "```" not in body  # R164: no fence wrap
     assert "Total: $0.42" in body
 
 
