@@ -105,7 +105,15 @@ def _inject_to_pane(agent: str, decision: Decision,
         if wake.is_rate_limited(target, adapter):
             print(f"  ⏸  {agent} rate-limited; inbox row kept, inject skipped")
             return "rate_limited"
-        if wake_fn is not None:
+        # R149: pre-check is_ready so we can skip _build_wake_args when
+        # the pane is already awake (the common case after first wake).
+        # `**_build_wake_args(...)` is evaluated at call time and pulls
+        # `config.agent_model` (disk read) + `identity.init_prompt`
+        # (memory file read) — both wasted when wake_fn would just
+        # early-return True. wake_if_dormant still does its own is_ready
+        # check internally, which is a redundant capture only on the
+        # cold path; the happy path saves the two reads.
+        if wake_fn is not None and not wake.is_ready(target, adapter):
             if not wake_fn(target, adapter, **_build_wake_args(agent, adapter)):
                 print(f"  ⚠️ {agent} pane not ready; injecting anyway")
         ok = deps.tmux_inject(target, decision.text, submit_keys=adapter.submit_keys())
