@@ -101,6 +101,19 @@ def _ensure_claude_agent_home(agent: str) -> None:
             projects_link.symlink_to(projects_target)
         except OSError:
             pass
+    # Seed ~/.claude.json from host's read-only mount once. Without
+    # `userID` + `oauthAccount` keys claude pops the OAuth login
+    # dialog (the credentials.json alone isn't enough — claude checks
+    # ~/.claude.json for "you've completed login" state). After the
+    # initial copy, the per-agent file is writable so claude can
+    # update its own session counters without affecting other agents.
+    claude_json = home / ".claude.json"
+    host_claude_json = Path("/root/host-claude.json")
+    if host_claude_json.exists() and not claude_json.exists():
+        try:
+            claude_json.write_bytes(host_claude_json.read_bytes())
+        except OSError:
+            pass
 
 
 def pane_env_prefix() -> str:

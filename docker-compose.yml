@@ -40,15 +40,14 @@ services:
       # itself on use; volume is RW so the refresh persists back to
       # host. Same OAuth account works for both host and container.
       - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json
-      # R172.b: do NOT mount ${HOME}/.claude.json. claude rewrites this
-      # file on every command (project history, usage stats, recent
-      # slash commands). With N panes sharing one bind-mounted file,
-      # concurrent writes truncate it mid-string and the next claude
-      # spawn pops a "JSON Parse error: Unterminated string" dialog —
-      # boss saw worker_cc stuck on this 2026-05-04 right after a
-      # multi-agent restart. Image-baked /root/.claude/settings.json
-      # carries the silent-launch flags we actually need; ephemeral
-      # ~/.claude.json is fine since we don't read it.
+      # R172.b: bind-mount host's ~/.claude.json READ-ONLY at a
+      # secondary path so per-agent home setup can SEED a private copy
+      # (with userID + oauthAccount) into each /data/agent-home/<agent>.
+      # Direct-mounting at /root/.claude.json with multiple panes
+      # writing concurrently corrupted the file (JSON Parse error
+      # dialog 2026-05-04). RO at a side path means claude's per-agent
+      # writes go to the per-agent copy instead, no race.
+      - ${HOME}/.claude.json:/root/host-claude.json:ro
       # R170: bind-mount the claude projects/ directory so ccusage can
       # find usage logs inside the container. Without this, ccusage
       # crashes with "No valid Claude data directories found" — the
