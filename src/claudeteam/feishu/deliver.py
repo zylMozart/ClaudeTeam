@@ -96,29 +96,57 @@ def _build_wake_args(agent: str, adapter) -> dict:
     }
 
 
+# Heuristic: if the boss message asks for a summary / report-back / status
+# coordinated through manager, workers should also send the result to
+# manager (not just `say` to chat) so manager's inbox pings and they can
+# follow up. manager's pane doesn't see chat messages — only its own
+# inbox + dispatched messages — so without this hint the dispatch +
+# summarize loop stalls (boss saw this 2026-05-05 in a Round C dry-run:
+# manager dispatched, worker counted, posted to chat, manager never
+# learned and never summarized).
+_SUMMARY_CUE_TOKENS = (
+    "汇总", "汇报", "总结", "报告",
+    "summarize", "summary", "report back",
+    "manager 跟进", "manager 综合",
+)
+
+
+def _wants_manager_summary(text: str) -> bool:
+    low = text.lower()
+    return any(tok.lower() in low for tok in _SUMMARY_CUE_TOKENS)
+
+
 def _compose_inject_text(agent: str, decision: Decision,
                          local_id: str = "") -> str:
     """Prepend a short routing-context header to the chat message before
     injecting it into the agent's pane.
 
     R172.b: claude in the pane treats raw injected text as a regular
-    user prompt and answers IN PANE — boss-flagged 2026-05-05 because
-    `@worker_cc 写一句总结` got a clean text answer in the pane but no
-    `claudeteam say` callback to chat. The hint primes the agent to:
+    user prompt and answers IN PANE. The hint primes the agent to:
       1. Reply via the correct channel (`claudeteam say` for chat-
          originated; `claudeteam send` for peer messages).
       2. Mark the inbox row `read` afterward (deliver knows the
          local_id since it just appended the row) — keeps the inbox
-         from accumulating unread rows for messages that have been
-         processed."""
+         from accumulating unread rows.
+      3. R173: if the message hints at manager-summary follow-up,
+         non-manager agents are told to ALSO `claudeteam send manager`
+         so manager's inbox pings (manager pane is blind to chat-only
+         say events). Without this, Round C dispatch + summarize loops
+         stall after worker posts result."""
     sender = decision.sender or "user"
     read_hint = (f" 完成后用 `claudeteam read {local_id}` 销 inbox。"
                  if local_id else "")
+    summary_hint = ""
+    if (agent != "manager"
+            and _wants_manager_summary(decision.text)):
+        summary_hint = (f" 这条似乎需要 manager 汇总，处理完后**额外**"
+                        f"发一句 `claudeteam send manager {agent} \"<结果>\"` "
+                        f"让 manager inbox 知道你的进度。")
     if sender == "user" or not sender:
         hint = (f"[来自群聊 · 发送者=user] 处理后请用 "
                 f"`claudeteam say {agent} \"<回复>\"` 回到群里，"
                 f"而不是直接回 pane。"
-                f"{read_hint}")
+                f"{summary_hint}{read_hint}")
     else:
         hint = (f"[来自 {sender} · 同事消息] 处理后请用 "
                 f"`claudeteam send {sender} {agent} \"<回复>\"` 回 {sender}，"
