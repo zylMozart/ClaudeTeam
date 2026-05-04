@@ -32,15 +32,32 @@ upsert status。
 # 改成了 "Claude Code Senior 员工" 想让 agent 立刻 pick up
 
 claudeteam reidentify worker_cc
+
+# 全员一起刷新（R91：替代 `for a in ...; do claudeteam reidentify $a; done`）。
+# 跳过没活 pane 的（lazy / fired），逐 agent 打印一行结果，整体 rc=0
+# 当且仅当所有 agent 都成功；任何一个 skip 或 inject fail 时 rc=1。
+claudeteam reidentify --all
 ```
 
 ## Then
 
-stdout:
+stdout（单 agent）:
 
 ```
 ✅ re-injected identity init into worker_cc (pane: ClaudeTeam:worker_cc)
 ```
+
+stdout（`--all`）:
+
+```
+🔁 reidentify all (4 agents in ClaudeTeam):
+  ✅ manager (pane: ClaudeTeam:manager)
+  ✅ worker_cc (pane: ClaudeTeam:worker_cc)
+  ✅ worker_codex (pane: ClaudeTeam:worker_codex)
+  ⏭  worker_kimi: no pane in session ClaudeTeam
+reidentified 3/4 agents
+```
+（rc=1 because not 100%; rc=0 only when N/N）
 
 worker_cc 的 tmux pane 立刻收到一段 init prompt，提示它：
 - 你是 worker_cc
@@ -78,5 +95,6 @@ slash `/compact` 触发自动 reidentify（commit `ab90bd0`）。手动入口
 
 - **重启 CLI**：reidentify 不动 pane 进程，要重启用 `claudeteam fire <agent>
   && claudeteam hire <agent>`。前者会丢 tmux scrollback 历史。
-- **批量 reidentify**：现在一次只一个 agent。要全员的话 `for a in $(...);
-  do claudeteam reidentify $a; done` 自己 shell loop。
+- **跨 session 批量**：`--all` 只刷当前 `team.json` 对应的 session。
+  多 team 部署要用 `claudeteam switch` 切到下一个 team-data 再 `--all`，
+  没有一次性跨 team 的口子。
