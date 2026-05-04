@@ -36,6 +36,8 @@ import subprocess
 from collections import defaultdict
 from typing import Callable
 
+from claudeteam.util import fmt_bytes
+
 _SIZE_UNIT = {"K": 1024, "KI": 1024, "M": 1024**2, "MI": 1024**2,
               "G": 1024**3, "GI": 1024**3, "T": 1024**4, "TI": 1024**4}
 
@@ -62,17 +64,6 @@ def _parse_size(s: str) -> int:
         return 0
     return int(float(m.group(1))
                * _SIZE_UNIT.get((m.group(2) or "").upper(), 1))
-
-
-def _fmt_mem(b: int) -> str:
-    """Human-readable byte count: GB/MB/KB/B."""
-    if b >= 1024**3:
-        return f"{b/1024**3:.2f} GB"
-    if b >= 1024**2:
-        return f"{b/1024**2:.0f} MB"
-    if b >= 1024:
-        return f"{b/1024:.0f} KB"
-    return f"{b} B"
 
 
 # ── host metrics ────────────────────────────────────────────────
@@ -273,7 +264,7 @@ def _collect_alarms(host_mem: dict | None, host_disk: dict | None,
     if host_mem and host_mem["pct"] >= 90:
         alarms.append(
             f"主机内存 **{host_mem['pct']}%**"
-            f"（used {_fmt_mem(host_mem['used'])}）")
+            f"（used {fmt_bytes(host_mem['used'])}）")
     if host_disk and host_disk["pct"] >= 80:
         alarms.append(
             f"磁盘 `{host_disk['mount']}` **{host_disk['pct']}%**")

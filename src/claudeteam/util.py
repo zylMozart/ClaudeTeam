@@ -242,6 +242,24 @@ def fmt_time_ms(ms: int, *, fmt: str = "%m-%d %H:%M") -> str:
     return time.strftime(fmt, time.localtime(ms / 1000))
 
 
+def fmt_bytes(b: int) -> str:
+    """Bytes → human-readable `2.34 GB / 56 MB / 7 KB / 42 B`.
+
+    Promoted from per-module `_fmt_mem` mirrors (was duplicated in
+    `runtime/server_metrics` and `feishu/slash` with explicit "Local
+    mirror" disclaimer comments). Both /health text reporter + /health
+    card builder format the same byte fields, so the helper genuinely
+    has ≥ 2 call sites — earns its place in util per the two-use rule.
+    """
+    if b >= 1024**3:
+        return f"{b / 1024**3:.2f} GB"
+    if b >= 1024**2:
+        return f"{b / 1024**2:.0f} MB"
+    if b >= 1024:
+        return f"{b / 1024:.0f} KB"
+    return f"{b} B"
+
+
 def ago_ms(ms: int, *, now: float | None = None) -> str:
     """Format a millisecond epoch timestamp as `Ns ago / Nm ago / Nh ago / Nd ago`.
 

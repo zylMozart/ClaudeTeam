@@ -151,17 +151,6 @@ def test_parse_size_returns_zero_on_garbage():
     assert server_metrics._parse_size("not a size") == 0
 
 
-# ── _fmt_mem ─────────────────────────────────────────────────
-
-
-def test_fmt_mem_picks_unit_by_magnitude():
-    assert server_metrics._fmt_mem(1024**3) == "1.00 GB"
-    assert server_metrics._fmt_mem(int(1.5 * 1024**3)) == "1.50 GB"
-    assert server_metrics._fmt_mem(500 * 1024**2) == "500 MB"
-    assert server_metrics._fmt_mem(2048) == "2 KB"
-    assert server_metrics._fmt_mem(42) == "42 B"
-
-
 # ── collect_server_load (top-level) ─────────────────────────
 
 

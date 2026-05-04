@@ -12,9 +12,9 @@ from helpers import env_patch, tmux_patch
 from claudeteam.runtime import tmux
 from claudeteam.util import (
     ago_ms, atomic_write_text, env_path, env_str, error_exit, flock,
-    fmt_time_ms, help_requested, maybe_print_help, now_ms, pop_bool_flag,
-    pop_flag, print_json, read_json, read_jsonl, reject_extra_args,
-    usage_error, warn,
+    fmt_bytes, fmt_time_ms, help_requested, maybe_print_help, now_ms,
+    pop_bool_flag, pop_flag, print_json, read_json, read_jsonl,
+    reject_extra_args, usage_error, warn,
 )
 
 
@@ -83,6 +83,26 @@ def test_fmt_time_ms_custom_format_includes_seconds():
     epoch = int(time.mktime((2026, 1, 15, 14, 30, 45, 0, 0, -1))) * 1000
     out = fmt_time_ms(epoch, fmt="%m-%d %H:%M:%S")
     assert "14:30:45" in out
+
+
+# ── fmt_bytes ───────────────────────────────────────────────────
+
+
+def test_fmt_bytes_picks_unit_by_size():
+    assert fmt_bytes(0) == "0 B"
+    assert fmt_bytes(512) == "512 B"
+    assert fmt_bytes(1024) == "1 KB"
+    assert fmt_bytes(1500) == "1 KB"  # rounds down (.0f)
+    assert fmt_bytes(1024 ** 2) == "1 MB"
+    assert fmt_bytes(int(2.5 * 1024 ** 3)) == "2.50 GB"
+
+
+def test_fmt_bytes_uses_two_decimals_for_GB_only():
+    """GB step keeps 2 decimals so 7.34 GB doesn't collapse to 7 GB; the
+    smaller units round to whole numbers because their precision is
+    enough at the step boundary."""
+    assert fmt_bytes(int(7.34 * 1024 ** 3)) == "7.34 GB"
+    assert fmt_bytes(int(2.5 * 1024 ** 2)) == "2 MB"
 
 
 # ── ago_ms ──────────────────────────────────────────────────────

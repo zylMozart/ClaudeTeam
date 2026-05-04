@@ -65,7 +65,7 @@ from claudeteam.feishu.cards import (
 )
 from claudeteam.runtime import tmux
 from claudeteam.store import memory
-from claudeteam.util import fmt_time_ms
+from claudeteam.util import fmt_bytes, fmt_time_ms
 
 
 def _spawn_daemon_thread(fn: Callable[[], None]) -> None:
@@ -244,19 +244,6 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     )
 
 
-def _fmt_mem(b: int) -> str:
-    """Bytes → GB/MB/KB string. Local mirror of server_metrics._fmt_mem
-    so card builders don't have to import the runtime collector for
-    formatting alone."""
-    if b >= 1024**3:
-        return f"{b/1024**3:.2f} GB"
-    if b >= 1024**2:
-        return f"{b/1024**2:.0f} MB"
-    if b >= 1024:
-        return f"{b/1024:.0f} KB"
-    return f"{b} B"
-
-
 def _agent_emoji(cpu: float) -> str:
     if cpu >= 80:
         return "🔥"
@@ -294,15 +281,15 @@ def _build_server_load_elements(data: dict) -> list:
                 f"15m {cpu['load'][2]:.2f}</font>")
     mem_cell = ("**内存**\n<font color='grey'>无数据</font>" if not mem else
                 f"**内存**\n<font color='{load_color(mem['pct'])}'>"
-                f"**{_fmt_mem(mem['used'])} / {_fmt_mem(mem['total'])}"
+                f"**{fmt_bytes(mem['used'])} / {fmt_bytes(mem['total'])}"
                 f" ({mem['pct']}%)**</font>\n<font color='grey'>"
-                f"可用 {_fmt_mem(mem['available'])} · Swap "
-                f"{_fmt_mem(mem['swap']['used'])}/{_fmt_mem(mem['swap']['total'])}"
+                f"可用 {fmt_bytes(mem['available'])} · Swap "
+                f"{fmt_bytes(mem['swap']['used'])}/{fmt_bytes(mem['swap']['total'])}"
                 f"</font>")
     disk_cell = ("**磁盘**\n<font color='grey'>无数据</font>" if not disk else
                  f"**磁盘** `{disk['mount']}`\n"
                  f"<font color='{load_color(disk['pct'])}'>"
-                 f"**{_fmt_mem(disk['used'])} / {_fmt_mem(disk['total'])}"
+                 f"**{fmt_bytes(disk['used'])} / {fmt_bytes(disk['total'])}"
                  f" ({disk['pct']}%)**</font>")
     elements.append({"tag": "markdown", "content": "**🖥️ 主机总览**"})
     elements.append(column_set_3([cpu_cell, mem_cell, disk_cell]))
@@ -325,7 +312,7 @@ def _build_server_load_elements(data: dict) -> list:
             f"**容器 CPU 合计**\n<font color='{load_color(int(total_cpu))}'>"
             f"**{total_cpu:.1f}%**</font>\n<font color='grey'>"
             f"跨 {len(containers)} 容器加总</font>",
-            f"**容器内存合计**\n**{_fmt_mem(total_mem)}**\n"
+            f"**容器内存合计**\n**{fmt_bytes(total_mem)}**\n"
             f"<font color='{load_color(int(peak['mem_pct']))}'>"
             f"峰值 `{peak['short']}` {peak['mem_pct']:.1f}%</font>",
         ]))
@@ -341,7 +328,7 @@ def _build_server_load_elements(data: dict) -> list:
         for i in range(0, len(topn), 3):
             row_cells = [
                 f"{_agent_emoji(a['cpu'])} **{a['agent']}**\n"
-                f"CPU `{a['cpu']:.1f}%` · Mem `{_fmt_mem(a['mem'])}`\n"
+                f"CPU `{a['cpu']:.1f}%` · Mem `{fmt_bytes(a['mem'])}`\n"
                 f"<font color='grey'>{a['location']}</font>"
                 for a in topn[i:i + 3]
             ]
