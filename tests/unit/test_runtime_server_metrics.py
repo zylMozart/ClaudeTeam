@@ -23,55 +23,103 @@ def _stub_run(responses: dict):
 # ── _host_cpu ─────────────────────────────────────────────────
 
 
-def test_host_cpu_parses_uptime_load_average():
+def _no_proc(_path):
+    """Stub `read_proc` to simulate macOS host (no /proc) so the
+    uptime/nproc fallback path runs and exercises the test stubs."""
+    return None
+
+
+def test_host_cpu_reads_proc_loadavg_when_present():
+    """R172 primary path: /proc/loadavg directly read so it works
+    inside the slim Docker image without procps."""
+    proc_data = {"/proc/loadavg": "0.42 0.85 1.23 1/123 1234\n"}
+    cpu = server_metrics._host_cpu(
+        read_proc=lambda p: proc_data.get(p),
+        cpu_count=lambda: 4,
+    )
+    assert cpu["load"] == (0.42, 0.85, 1.23)
+    assert cpu["cores"] == 4
+    # pct = round(0.42 / 4 * 100) = 10 (rounds half to even)
+    assert cpu["pct"] == 10
+
+
+def test_host_cpu_falls_back_to_uptime_when_proc_missing():
+    """macOS host: /proc/loadavg returns None, code falls back to
+    `uptime` shell-out (which exists on macOS)."""
     run = _stub_run({
         "uptime": FakeProc(stdout=" 13:30:00 up 2 days,  load average: 1.23, 0.85, 0.42\n"),
         "nproc": FakeProc(stdout="8\n"),
     })
-    cpu = server_metrics._host_cpu(run=run)
+    cpu = server_metrics._host_cpu(run=run, read_proc=_no_proc)
     assert cpu["load"] == (1.23, 0.85, 0.42)
     assert cpu["cores"] == 8
-    # pct = round(1.23 / 8 * 100) = 15
     assert cpu["pct"] == 15
 
 
-def test_host_cpu_returns_none_when_uptime_missing():
+def test_host_cpu_returns_none_when_no_proc_and_no_uptime():
     run = _stub_run({})
-    assert server_metrics._host_cpu(run=run) is None
+    assert server_metrics._host_cpu(run=run, read_proc=_no_proc) is None
 
 
-def test_host_cpu_falls_back_to_one_core_on_bad_nproc():
+def test_host_cpu_uses_cpu_count_when_nproc_returns_garbage():
     run = _stub_run({
         "uptime": FakeProc(stdout=" load average: 0.5, 0.3, 0.2\n"),
         "nproc": FakeProc(stdout="not-a-number"),
     })
-    cpu = server_metrics._host_cpu(run=run)
-    assert cpu["cores"] == 1
+    cpu = server_metrics._host_cpu(run=run, read_proc=_no_proc,
+                                     cpu_count=lambda: 2)
+    assert cpu["cores"] == 2
 
 
 # ── _host_mem ─────────────────────────────────────────────────
 
 
-def test_host_mem_parses_free_b_output():
-    free_out = (
-        "              total        used        free      shared "
-        "buff/cache   available\n"
-        "Mem:    16777216000  8388608000   4194304000   100000000  "
-        "4194304000  7000000000\n"
-        "Swap:    2147483648  1073741824   1073741824\n"
+def test_host_mem_reads_proc_meminfo_when_present():
+    """R172 primary path: /proc/meminfo parse so /health works
+    inside slim Docker images (no `free` binary)."""
+    meminfo = (
+        "MemTotal:       16384000 kB\n"   # 16 GB
+        "MemFree:         2048000 kB\n"
+        "MemAvailable:    8192000 kB\n"   # 8 GB available
+        "Buffers:          512000 kB\n"
+        "Cached:          5000000 kB\n"
+        "SwapTotal:       2097152 kB\n"   # 2 GB swap total
+        "SwapFree:        1048576 kB\n"   # 1 GB swap free → 1 GB used
     )
-    run = _stub_run({"free": FakeProc(stdout=free_out)})
-    mem = server_metrics._host_mem(run=run)
-    assert mem["total"] == 16777216000
-    assert mem["used"] == 8388608000
-    assert mem["available"] == 7000000000
-    assert mem["pct"] == 50  # round(8388608000 / 16777216000 * 100)
-    assert mem["swap"]["total"] == 2147483648
+    proc_data = {"/proc/meminfo": meminfo}
+    mem = server_metrics._host_mem(read_proc=lambda p: proc_data.get(p))
+    assert mem["total"] == 16384000 * 1024  # bytes
+    # used = total - available = 16384000kB - 8192000kB = 8192000 kB
+    assert mem["used"] == 8192000 * 1024
+    assert mem["available"] == 8192000 * 1024
+    assert mem["pct"] == 50
+    assert mem["swap"]["total"] == 2097152 * 1024
+    assert mem["swap"]["used"] == 1048576 * 1024
 
 
-def test_host_mem_returns_none_when_free_missing():
+def test_host_mem_returns_none_when_no_proc_and_no_vm_stat():
+    """macOS host without /proc: falls back to `vm_stat`. If that's
+    missing too (or stub returns failure), bail out None."""
     run = _stub_run({})
-    assert server_metrics._host_mem(run=run) is None
+    assert server_metrics._host_mem(run=run, read_proc=_no_proc) is None
+
+
+def test_host_mem_falls_back_to_vm_stat_on_macos():
+    """macOS fallback path: parses `vm_stat` page counts."""
+    vm_out = (
+        "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n"
+        "Pages free:                  100000.\n"
+        "Pages active:                400000.\n"
+        "Pages inactive:              200000.\n"
+        "Pages speculative:            50000.\n"
+        "Pages wired down:            300000.\n"
+    )
+    run = _stub_run({"vm_stat": FakeProc(stdout=vm_out)})
+    mem = server_metrics._host_mem(run=run, read_proc=_no_proc)
+    # total = (100k + 400k + 200k + 50k + 300k) * 4096 = 1.05M * 4096
+    assert mem["total"] == (100000 + 400000 + 200000 + 50000 + 300000) * 4096
+    # used = active + wired = (400k + 300k) * 4096
+    assert mem["used"] == (400000 + 300000) * 4096
 
 
 # ── _host_disk ───────────────────────────────────────────────

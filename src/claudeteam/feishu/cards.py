@@ -146,22 +146,29 @@ def remaining_color(pct: float) -> str:
 
 
 def rich_card(title: str, elements: list, *, color: str = "blue") -> dict:
-    """Card v2 with a pre-built `body.elements` list — for handlers that
-    need column_set / hr / multi-section layouts the single-element
-    `simple_card` can't express.
+    """Card v1 (legacy schema) with top-level `elements` + `config:
+    {wide_screen_mode}` — the shape `feat/messaging-fixes-block1` /
+    `main`'s `build_usage_card` uses, and the only one that lays out
+    `column_set` columns SIDE-BY-SIDE in the Feishu app.
 
-    R166: introduced for `/health` server-load card port from
-    `feat/messaging-fixes-block1` / `main` — section headings as
-    bold markdown, column_set rows for grid layouts, hr separators.
-    `<font color='red|orange|green|grey'>` HTML works inline in v2's
-    `tag:"markdown"` element (verified live in chat).
+    R172: dropped the v2 (`schema: "2.0"` + `body.elements`) shape we
+    used since R166. Boss flagged 2026-05-04: in v2 schema, every
+    `column_set` row collapses to a stacked label-then-value pair —
+    the "对齐都做不好" complaint. Side-by-side rendering only works
+    in v1, despite both schemas advertising column_set support.
+
+    `tag:markdown` elements still work inside v1 columns (verified
+    against main's live cards), so we keep the GFM-rich `markdown`
+    element + `<font color>` html on each cell. Fenced-block-only
+    cards (e.g. /tmux) keep using `simple_card` (still v2) because
+    they don't need column alignment.
     """
     return {
-        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"content": title, "tag": "plain_text"},
+            "title": {"tag": "plain_text", "content": title},
             "template": _normalised_color(color),
         },
-        "body": {"elements": elements or [
-            {"tag": "markdown", "content": "(无内容)"}]},
+        "elements": elements or [
+            {"tag": "markdown", "content": "(无内容)"}],
     }

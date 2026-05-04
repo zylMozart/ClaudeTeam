@@ -31,6 +31,7 @@ module is the live-metrics collector that the slash card consumes.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections import defaultdict
@@ -69,41 +70,126 @@ def _parse_size(s: str) -> int:
 # ── host metrics ────────────────────────────────────────────────
 
 
-def _host_cpu(run: Callable = _run) -> dict | None:
+def _read_proc(path: str) -> str | None:
+    """Read a `/proc` file, returning None if it doesn't exist (macOS
+    host) or is unreadable. Avoids subprocess overhead and works in
+    `python:3.12-slim` containers without `procps` (no `uptime`/`free`)."""
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def _host_cpu(run: Callable = _run, *,
+              read_proc: Callable[[str], str | None] = _read_proc,
+              cpu_count: Callable[[], int | None] = os.cpu_count) -> dict | None:
+    """R172: prefer `/proc/loadavg` + `os.cpu_count()` over the
+    `uptime` + `nproc` shell-outs because the slim Docker image doesn't
+    ship `procps` (boss saw "无数据" in /health card 2026-05-04). Falls
+    back to `uptime` for macOS hosts which lack `/proc`. `read_proc` and
+    `cpu_count` are injectable for tests."""
+    loadavg = read_proc("/proc/loadavg")
+    if loadavg:
+        parts = loadavg.split()
+        if len(parts) < 3:
+            return None
+        try:
+            l1, l5, l15 = (float(p) for p in parts[:3])
+        except ValueError:
+            return None
+        ncores = cpu_count() or 1
+        return {"load": (l1, l5, l15), "cores": ncores,
+                "pct": int(round(l1 / max(ncores, 1) * 100))}
+    # macOS host fallback — no /proc, but `uptime` is on PATH.
     r = run(["uptime"])
     if r.returncode != 0:
         return None
-    m = re.search(r"load average:\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)",
+    m = re.search(r"load average[s]?:\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)",
                   r.stdout)
     if not m:
         return None
     l1, l5, l15 = (float(m.group(i)) for i in (1, 2, 3))
+    # Try `nproc` first for parity with old test fixture; fall back to
+    # `cpu_count()` if nproc isn't on PATH (or returns garbage).
     n = run(["nproc"])
     try:
-        ncores = int((n.stdout or "").strip() or "1")
+        ncores = int((n.stdout or "").strip())
     except ValueError:
-        ncores = 1
+        ncores = cpu_count() or 1
     return {"load": (l1, l5, l15), "cores": ncores,
             "pct": int(round(l1 / max(ncores, 1) * 100))}
 
 
-def _host_mem(run: Callable = _run) -> dict | None:
-    r = run(["free", "-b"])
+def _host_mem(run: Callable = _run, *,
+              read_proc: Callable[[str], str | None] = _read_proc) -> dict | None:
+    """R172: parse `/proc/meminfo` directly so /health works inside
+    the slim image (no `free` binary). MemAvailable is a kernel-
+    computed estimate of "memory that can be taken without swapping",
+    matching `free -b`'s `available` column. Used = Total - Available
+    so transient buffers/cache don't inflate the figure. `read_proc`
+    is injectable for tests."""
+    meminfo = read_proc("/proc/meminfo")
+    if meminfo:
+        kv: dict[str, int] = {}
+        for line in meminfo.splitlines():
+            label, _, rest = line.partition(":")
+            tokens = rest.strip().split()
+            if not tokens:
+                continue
+            try:
+                value = int(tokens[0])
+            except ValueError:
+                continue
+            unit = (tokens[1] if len(tokens) > 1 else "").lower()
+            if unit == "kb":
+                value *= 1024
+            elif unit == "mb":
+                value *= 1024 ** 2
+            kv[label] = value
+        total = kv.get("MemTotal")
+        avail = kv.get("MemAvailable")
+        if total is None or avail is None:
+            return None
+        used = max(0, total - avail)
+        return {
+            "total": total,
+            "used": used,
+            "available": avail,
+            "pct": int(round(used / max(total, 1) * 100)),
+            "swap": {
+                "total": kv.get("SwapTotal", 0),
+                "used": max(0, kv.get("SwapTotal", 0) - kv.get("SwapFree", 0)),
+            },
+        }
+    # macOS host fallback — `free -b` doesn't exist; use `vm_stat`.
+    r = run(["vm_stat"])
     if r.returncode != 0:
         return None
-    mem = swap = None
+    page_size = 4096
+    counts: dict[str, int] = {}
     for line in r.stdout.splitlines():
-        parts = line.split()
-        if parts and parts[0] == "Mem:" and len(parts) >= 7:
-            mem = {"total": int(parts[1]), "used": int(parts[2]),
-                   "available": int(parts[6])}
-        elif parts and parts[0] == "Swap:" and len(parts) >= 3:
-            swap = {"total": int(parts[1]), "used": int(parts[2])}
-    if not mem:
+        if "page size of" in line:
+            ps_m = re.search(r"page size of (\d+)", line)
+            if ps_m:
+                page_size = int(ps_m.group(1))
+        m = re.match(r"([A-Za-z][A-Za-z\- ]+):\s+(\d+)\.?", line)
+        if m:
+            counts[m.group(1).strip().lower()] = int(m.group(2))
+    if not counts:
         return None
-    mem["pct"] = int(round(mem["used"] / max(mem["total"], 1) * 100))
-    mem["swap"] = swap or {"total": 0, "used": 0}
-    return mem
+    free = counts.get("pages free", 0) * page_size
+    active = counts.get("pages active", 0) * page_size
+    inactive = counts.get("pages inactive", 0) * page_size
+    wired = counts.get("pages wired down", 0) * page_size
+    speculative = counts.get("pages speculative", 0) * page_size
+    total = free + active + inactive + wired + speculative
+    used = active + wired
+    return {
+        "total": total, "used": used, "available": free + inactive,
+        "pct": int(round(used / max(total, 1) * 100)),
+        "swap": {"total": 0, "used": 0},
+    }
 
 
 def _host_disk(run: Callable = _run) -> dict | None:

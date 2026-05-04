@@ -134,20 +134,28 @@ def test_remaining_color_inverse_thresholds():
     assert remaining_color(75) == "green"
 
 
-def test_rich_card_emits_v2_schema_with_body_elements():
+def test_rich_card_emits_v1_schema_with_top_level_elements():
+    """R172: rich_card flipped from v2 (`schema:"2.0"` + `body.elements`)
+    back to v1 (`config.wide_screen_mode` + top-level `elements`) so
+    column_set rows lay out side-by-side in the Feishu app — the boss-
+    flagged "对齐都做不好" was caused by v2 collapsing column_set
+    children into stacked paragraphs. simple_card stays v2 because
+    fenced-block-only cards (/tmux) don't need column alignment."""
     from claudeteam.feishu.cards import rich_card
     elements = [{"tag": "markdown", "content": "hi"}]
     card = rich_card("Title", elements, color="purple")
-    assert card["schema"] == "2.0"
+    assert card["config"]["wide_screen_mode"] is True
+    assert "schema" not in card  # v1 has no schema field
+    assert "body" not in card    # elements live at top level in v1
     assert card["header"]["template"] == "purple"
     assert card["header"]["title"]["content"] == "Title"
-    assert card["body"]["elements"] == elements
+    assert card["elements"] == elements
 
 
 def test_rich_card_falls_back_to_placeholder_when_elements_empty():
     from claudeteam.feishu.cards import rich_card
     card = rich_card("Title", [], color="blue")
-    assert card["body"]["elements"][0]["content"] == "(无内容)"
+    assert card["elements"][0]["content"] == "(无内容)"
 
 
 def test_simple_card_accepts_purple_after_R166():

@@ -6,6 +6,18 @@ from claudeteam.feishu import slash
 from claudeteam.runtime import tmux
 
 
+def _elements(reply):
+    """R172: card-shape adapter. `simple_card` (still v2) returns
+    `reply["body"]["elements"]`; `rich_card` returned to v1 schema
+    (top-level `elements`) so column_set rows lay out side-by-side
+    in the Feishu app — the boss-flagged "对齐都做不好" was caused by
+    v2 collapsing column_set children to stacked paragraphs. Tests
+    use this helper so both card shapes work."""
+    if "elements" in reply:
+        return reply["elements"]
+    return reply.get("body", {}).get("elements", [])
+
+
 def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
          session="ClaudeTeam", run=None, sleep=None, background=None,
          lazy_agents=()):
@@ -184,12 +196,11 @@ def test_health_card_renders_host_section_with_column_set():
     with _stub_server_load(data):
         reply = slash.dispatch("/health", _ctx())
     assert isinstance(reply, dict)
-    assert reply["schema"] == "2.0"
     assert reply["header"]["template"] == "purple"  # default no-alarm
     title = reply["header"]["title"]["content"]
     assert "/health" in title and "服务器负载" in title
     # First element is the section heading, second is the column_set grid
-    elements = reply["body"]["elements"]
+    elements = _elements(reply)
     headings = [e for e in elements if e.get("tag") == "markdown"
                 and "**🖥" in e.get("content", "")]
     assert headings, "missing 🖥️ 主机总览 heading"
@@ -216,7 +227,7 @@ def test_health_card_includes_alarm_section_when_alarms_present():
         reply = slash.dispatch("/health", _ctx())
     assert reply["header"]["template"] == "yellow"
     contents = " ".join(e.get("content", "")
-                        for e in reply["body"]["elements"]
+                        for e in _elements(reply)
                         if e.get("tag") == "markdown")
     assert "🚨" in contents
     assert "主机内存" in contents
@@ -234,23 +245,24 @@ def test_health_card_falls_back_to_no_data_cells_when_host_empty():
     with _stub_server_load(data):
         reply = slash.dispatch("/health", _ctx())
     contents = " ".join(e.get("content", "")
-                        for col_set in reply["body"]["elements"]
+                        for col_set in _elements(reply)
                         if col_set.get("tag") == "column_set"
                         for col in col_set["columns"]
                         for e in col["elements"])
     assert contents.count("无数据") >= 3  # CPU + 内存 + 磁盘 all blank
 
 
-def test_health_card_emits_v2_schema_with_grey_footer():
+def test_health_card_emits_grey_footer():
     """Footer line records collection time + data source list — useful
-    for debug "is this card stale?" questions. v2 schema dropped the
-    v1 `note` tag, so we use a grey-font markdown line as the footer."""
+    for debug "is this card stale?" questions. We use a grey-font
+    markdown line as the footer (v1's `note` tag was dropped during
+    R159; we kept the grey-font shape across the R172 v1-revert)."""
     data = {"host": {"cpu": None, "mem": None, "disk": None},
             "containers": [], "agents": [], "alarms": []}
     with _stub_server_load(data):
         reply = slash.dispatch("/health", _ctx())
     # The last element should carry the footer text in a grey font span.
-    last = reply["body"]["elements"][-1]
+    last = _elements(reply)[-1]
     assert last["tag"] == "markdown"
     assert "采集" in last["content"]
     assert "uptime/free/df/docker stats/ps" in last["content"]
@@ -295,7 +307,6 @@ def test_usage_card_emits_purple_header_when_ccusage_ok():
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
     assert isinstance(reply, dict)
-    assert reply["schema"] == "2.0"
     assert reply["header"]["template"] == "purple"
     title = reply["header"]["title"]["content"]
     assert "/usage" in title and "(daily)" in title
@@ -309,7 +320,7 @@ def test_usage_card_extracts_total_from_ccusage_output():
                '"output":"Date | Cost\\n2026-05-04 | $0.42\\nTotal: $1.23"},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    elements = reply["body"]["elements"]
+    elements = _elements(reply)
     col_sets = [e for e in elements if e.get("tag") == "column_set"]
     assert col_sets, "missing column_set row"
     # First row's right cell should contain the total
@@ -330,7 +341,7 @@ def test_usage_card_summarises_ccusage_failure_to_one_line():
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
     assert reply["header"]["template"] == "red"
-    elements = reply["body"]["elements"]
+    elements = _elements(reply)
     col_sets = [e for e in elements if e.get("tag") == "column_set"]
     right_content = col_sets[0]["columns"][1]["elements"][0]["content"]
     assert "color='red'" in right_content
@@ -358,7 +369,7 @@ def test_usage_card_prefers_clean_error_line_over_source_excerpt():
         'Error: No valid Claude data directories found"},'
         '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    elements = reply["body"]["elements"]
+    elements = _elements(reply)
     col_sets = [e for e in elements if e.get("tag") == "column_set"]
     right_content = col_sets[0]["columns"][1]["elements"][0]["content"]
     # The picked line is the clean Error: ... line, NOT the source-code
@@ -377,10 +388,10 @@ def test_usage_card_includes_other_cli_section_when_present():
                '{"cli":"kimi-code","note":"no upstream usage tool"}'
                ']}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+    contents = " ".join(e.get("content", "") for e in _elements(reply)
                         if e.get("tag") == "markdown")
     assert "📦 其他 CLI" in contents
-    col_sets = [e for e in reply["body"]["elements"]
+    col_sets = [e for e in _elements(reply)
                 if e.get("tag") == "column_set"]
     # Two rows for two CLIs
     cli_names = [cs["columns"][0]["elements"][0]["content"]
@@ -394,7 +405,7 @@ def test_usage_card_renders_no_data_when_both_sections_empty():
     than an empty card body."""
     payload = '{"view":"daily","claude_code":null,"other_clis":[]}'
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+    contents = " ".join(e.get("content", "") for e in _elements(reply)
                         if e.get("tag") == "markdown")
     assert "(无数据)" in contents
 
@@ -408,10 +419,10 @@ def test_usage_card_renders_codex_section_with_plan():
                '"valid_until":"2026-05-20T18:44:16+00:00"},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+    contents = " ".join(e.get("content", "") for e in _elements(reply)
                         if e.get("tag") == "markdown")
     assert "🟦 Codex" in contents
-    col_sets = [e for e in reply["body"]["elements"]
+    col_sets = [e for e in _elements(reply)
                 if e.get("tag") == "column_set"]
     rights = [cs["columns"][1]["elements"][0]["content"] for cs in col_sets]
     assert any("Pro" in r for r in rights)
@@ -428,10 +439,10 @@ def test_usage_card_renders_kimi_section_with_quota_metrics():
                '"reset_iso":"2026-05-08T00:00:00Z"}]},'
                '"other_clis":[]}')
     reply = slash.dispatch("/usage", _ctx(run=_usage_run(payload)))
-    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+    contents = " ".join(e.get("content", "") for e in _elements(reply)
                         if e.get("tag") == "markdown")
     assert "🟧 Kimi" in contents
-    col_sets = [e for e in reply["body"]["elements"]
+    col_sets = [e for e in _elements(reply)
                 if e.get("tag") == "column_set"]
     rights = [cs["columns"][1]["elements"][0]["content"] for cs in col_sets]
     weekly_row = next(r for r in rights if "剩余 80%" in r)
@@ -457,7 +468,7 @@ def test_usage_card_handles_invalid_json_gracefully():
         "returncode": 0, "stdout": "not json {[", "stderr": ""})()
     reply = slash.dispatch("/usage", _ctx(run=bad_run))
     assert isinstance(reply, dict)
-    contents = " ".join(e.get("content", "") for e in reply["body"]["elements"]
+    contents = " ".join(e.get("content", "") for e in _elements(reply)
                         if e.get("tag") == "markdown")
     assert "(无数据)" in contents
 
