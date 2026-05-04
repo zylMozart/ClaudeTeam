@@ -7,6 +7,13 @@ Composes existing primitives:
 
 Skip steps where the resource is already alive (idempotent restart).
 Returns 0 if everything ends up alive, 1 if any required step failed.
+
+Round-62 fast-fail guard: each daemon spawn waits up to 3s for its
+pid file to appear under `state_dir/`. If no pid file shows up
+(daemon `error_exit`'d before pidlock — usually missing chat_id /
+no team agents / port collision), `up` reports the boot failure and
+returns rc=1 instead of silently saying `✅ team up`. Operator runs
+`claudeteam <name>` directly to see the actual error message.
 """
 from __future__ import annotations
 
