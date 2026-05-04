@@ -8,7 +8,7 @@ stdout is empty, `None` on any failure.  Proxy bypass is automatic when
 
 Round-86 perf note: an earlier draft of this docstring claimed
 "lark-cli routinely takes ~73 seconds per call". That was npx's
-package-lookup overhead, not the API. `_resolve_cli_prefix` now picks
+package-lookup overhead, not the API. `resolve_cli_prefix` now picks
 the direct binary when one is on disk (`lark-cli` on PATH or the npx
 cache binary at `~/.npm/_npx/<hash>/node_modules/.bin/lark-cli`), so
 real round-trip is ~0.6s on macOS host. Default timeout = 90s gives
@@ -45,7 +45,7 @@ def subprocess_env() -> dict[str, str]:
     return env
 
 
-def _resolve_cli_prefix() -> list[str]:
+def resolve_cli_prefix() -> list[str]:
     """Return the argv prefix for invoking lark-cli, preferring direct
     binaries over `npx` to skip npm's package-lookup overhead.
 
@@ -61,6 +61,11 @@ def _resolve_cli_prefix() -> list[str]:
     Resolved fresh on each call so a newly-installed lark-cli takes
     effect without restarting daemons. Round 64 / round-86 perf:
     direct binary saves ~250–500 ms per send vs the npx fork.
+
+    Round-139: name no longer underscore-prefixed — `commands/router.py`
+    needed the same logic for the long-running `event +subscribe`
+    daemon, which had been hardcoded to npx since before R86 (docstring
+    claimed direct-binary preference, code didn't).
     """
     override = env_str("CLAUDETEAM_LARK_CLI_BIN")
     if override and os.path.exists(override):
@@ -79,7 +84,7 @@ def _resolve_cli_prefix() -> list[str]:
 
 
 def _build_argv(args: list[str], profile: str) -> list[str]:
-    base = _resolve_cli_prefix()
+    base = resolve_cli_prefix()
     if profile:
         base += ["--profile", profile]
     return base + list(args)

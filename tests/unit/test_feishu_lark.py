@@ -57,7 +57,7 @@ def test_resolve_cli_prefix_uses_explicit_env_override():
             fh.write("#!/bin/sh\nexit 0\n")
         _os.chmod(fake_bin, 0o755)
         with env_patch(CLAUDETEAM_LARK_CLI_BIN=fake_bin):
-            prefix = lark._resolve_cli_prefix()
+            prefix = lark.resolve_cli_prefix()
         assert prefix == [fake_bin]
 
 
@@ -65,7 +65,7 @@ def test_resolve_cli_prefix_ignores_nonexistent_override():
     """A bogus path in the env override must NOT be returned (would cause
     every send to fail with FileNotFoundError); fall through to discovery."""
     with env_patch(CLAUDETEAM_LARK_CLI_BIN="/does/not/exist/lark-cli"):
-        prefix = lark._resolve_cli_prefix()
+        prefix = lark.resolve_cli_prefix()
     # Falls through to either real lark-cli on PATH or npx fallback
     assert prefix[0] == "npx" or prefix[0].endswith("lark-cli")
 
@@ -82,7 +82,7 @@ def test_resolve_cli_prefix_falls_back_to_npx_when_nothing_else():
         # Pretend the npx cache dir doesn't exist (uninstalled state)
         lark.os.path.isdir = lambda p: False
         with env_patch(CLAUDETEAM_LARK_CLI_BIN=""):
-            prefix = lark._resolve_cli_prefix()
+            prefix = lark.resolve_cli_prefix()
     finally:
         _shutil.which = real_which
         lark.os.path.isdir = real_isdir

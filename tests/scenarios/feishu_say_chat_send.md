@@ -28,7 +28,7 @@ claudeteam say worker_codex "as user reply" --as user --reply om_parent_xxx
 ## 反例
 
 - 网络慢路径（罕见）：lark-cli 在 R86 之前常被误判 73s — 实际是 npx 包查找开销。当前
-  `feishu/lark._resolve_cli_prefix` 直连 binary，正常 ~0.6s/次。某次真慢时设
+  `feishu/lark.resolve_cli_prefix` 直连 binary，正常 ~0.6s/次。某次真慢时设
   `CLAUDETEAM_LARK_TIMEOUT=120` 给余量；先用 `time lark-cli ...` 验证是 binary 路径还是
   npx 兜底再决定调 timeout 还是 `npm i -g @larksuite/cli`。
 - 代理拦截：set `LARK_CLI_NO_PROXY=1` 让 wrapper 自动剥 HTTPS_PROXY

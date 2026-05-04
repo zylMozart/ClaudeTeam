@@ -41,7 +41,7 @@ existing rebuild:
    package-lookup overhead in favour of the direct binary in
    `~/.npm/_npx/<hash>/.bin/` (or whatever `which lark-cli` returns
    when `npm i -g @larksuite/cli`). Resolver in
-   `feishu/lark._resolve_cli_prefix`.
+   `feishu/lark.resolve_cli_prefix`.
 
 6. **`claudeteam say <agent> <msg> --card`** (R99) for card-formatted
    chat replies; manager → blue, worker_* → green template by
@@ -164,7 +164,7 @@ npm install -g @larksuite/cli
 | Watchdog cooldown | Feishu message starting `🚨 watchdog:` | No msg → `_make_alert_fn` returned None (chat_id unset) or send failed (check `lark-cli profile list`) |
 | memory.jsonl | One JSON record per `claudeteam remember` | Missing — agent dir not created (ensure facts_dir() reachable) |
 | init_prompt with memory | `## 既往记忆` block visible after reidentify | Block missing → `memory.render_for_prompt` returned empty (memory.jsonl missing or all entries dropped past 200 cap) |
-| /help round-trip < 2s | ~0.6-1.5s end-to-end | ≥30s → `_resolve_cli_prefix` falling through to npx (no direct binary on disk) |
+| /help round-trip < 2s | ~0.6-1.5s end-to-end | ≥30s → `resolve_cli_prefix` falling through to npx (no direct binary on disk) |
 
 ## 反例
 
