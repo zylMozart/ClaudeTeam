@@ -21,7 +21,12 @@ services:
     image: claudeteam:dev
     volumes:
       - ./team-data:/data
-      - ${HOME}/.lark-cli:/root/.lark-cli:ro
+      # lark-cli's `event +subscribe` fcntl-locks
+      # /root/.lark-cli/locks/subscribe_<app_id>.lock; under :ro the
+      # lock can't be acquired and lark-cli misreports "another
+      # instance running". RW mount needed so subscribe can claim
+      # the per-app lock inside the container.
+      - ${HOME}/.lark-cli:/root/.lark-cli
     # FEISHU_APP_SECRET / LARKSUITE_CLI_APP_SECRET — supplied via the
     # `.env` file (gitignored) so the container's lark-cli can
     # authenticate without reaching the host's macOS keychain. Both
