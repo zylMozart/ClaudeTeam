@@ -57,16 +57,19 @@ def test_install_hooks_remember_md_documents_kind_vocabulary():
         assert "claudeteam remember" in body
 
 
-def test_install_hooks_say_md_documents_card_flag():
-    """Round-100: /say hook teaches --card for long reports / status
-    announcements (manager → blue, worker_* → green) so agents know
-    when to upgrade from plain text."""
+def test_install_hooks_say_md_documents_card_default_after_R168():
+    """R168: card became the default. /say hook now teaches that
+    every `claudeteam say` is a card by default (manager → blue,
+    worker_* → green) and `--no-card` is the explicit escape hatch
+    for one-line acks."""
     with tempfile.TemporaryDirectory() as tmp:
         run_cli(["install-hooks", tmp])
         body = (Path(tmp) / ".claude" / "commands" / "say.md").read_text(
             encoding="utf-8")
-        assert "--card" in body
-        # Both invocation forms documented (default text + card)
+        # Card-by-default messaging surfaced
+        assert "v2 card" in body
+        assert "--no-card" in body
+        # Invocation form still documented
         assert "claudeteam say <your-name>" in body
         # Threading caveat surfaced so agents don't combine --card + --reply
         # and silently lose the threading

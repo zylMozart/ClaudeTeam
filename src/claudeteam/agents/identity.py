@@ -253,20 +253,36 @@ def render(agent: str, *, role: str | None = None,
 
 def init_prompt(agent: str) -> str:
     """On-spawn / on-clear / on-reidentify prompt: inject this into an
-    agent's pane so it loads its identity, checks inbox, and reports for
-    duty. Without this, a freshly-spawned claude-code sits at an empty
-    prompt and never knows it's "manager" or "worker_cc".
+    agent's pane so it loads its identity, checks inbox, processes any
+    unread messages, and reports for duty. Without this, a
+    freshly-spawned claude-code sits at an empty prompt and never knows
+    it's "manager" or "worker_cc".
 
     Round-84: append the agent's recent durable memory (if any) so a
     pane that's been /clear-ed or restarted picks up where it left off
     instead of losing all task continuity. Empty memory → no extra
     section appears (avoid noise on a brand-new agent).
+
+    R168: prompt now explicitly tells the agent to PROCESS unread
+    messages — not just count them. Boss-flagged after the 全员报道
+    e2e: worker_cc read its inbox, saw manager's "发卡响应" dispatch,
+    but only acked the init line and stopped. Adding the processing
+    contract closes the autonomy gap.
     """
     base = (
         f"You are {agent}. Read agents/{agent}/identity.md, then run:\n"
         f"  claudeteam inbox {agent}\n"
         f"  claudeteam status {agent} 进行中 \"ready\"\n"
-        f"Acknowledge with one line: name, state, unread count."
+        f"\n"
+        f"For EACH unread inbox message:\n"
+        f"  1. Do what it asks (group reports go in chat; peer questions\n"
+        f"     get answered via `claudeteam send <from> {agent} ...`).\n"
+        f"  2. If it's a status / 报道 / 完工 / progress update, post your\n"
+        f"     response to the group with `claudeteam say {agent} \"<msg>\"`\n"
+        f"     (defaults to card; one-line acks like 收到 use --no-card).\n"
+        f"  3. Mark each one read: `claudeteam read <local_id>`.\n"
+        f"\n"
+        f"After processing, ack with one line: name, state, processed count."
     )
     recall = memory.render_for_prompt(agent)
     if not recall:

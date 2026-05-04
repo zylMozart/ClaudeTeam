@@ -140,6 +140,23 @@ def test_init_prompt_omits_memory_section_when_empty():
         assert "既往记忆" not in prompt
 
 
+def test_init_prompt_teaches_inbox_processing_after_R168():
+    """R168: the prompt now tells agents to PROCESS unread messages
+    (post a chat response when it's a status / 报道, mark each read),
+    not just count them. Boss-flagged after the 全员报道 e2e where
+    worker_cc read its inbox but didn't follow up with a chat reply."""
+    with isolated_env():
+        prompt = identity.init_prompt("worker_cc")
+        # Per-message processing instruction
+        assert "For EACH unread inbox message" in prompt
+        # Tells agent to use claudeteam say for status reports
+        assert "claudeteam say worker_cc" in prompt
+        # Tells agent to mark each message read
+        assert "claudeteam read" in prompt
+        # Mentions card-by-default + --no-card escape hatch
+        assert "--no-card" in prompt
+
+
 def test_init_prompt_appends_memory_when_present():
     """After memory.append, the next init_prompt should include the
     memory block so a /clear-ed pane re-reads its prior context on wake."""
