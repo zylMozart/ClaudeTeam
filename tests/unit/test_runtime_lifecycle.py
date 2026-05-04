@@ -166,3 +166,18 @@ def test_provision_returns_config_error_on_unknown_cli():
     # Stderr explains which agent + what's wrong
     assert "typo_agent" in err.getvalue()
     assert "claude-cod" in err.getvalue() or "unknown cli" in err.getvalue()
+
+
+# ── _ensure_claude_agent_home (R172.b) ───────────────────────────
+
+
+def test_ensure_claude_agent_home_does_not_raise_when_data_missing():
+    """On hosts without /data (macOS, test runners), the helper is a
+    silent no-op — the per-agent home setup is container-only. Boss-
+    flagged 2026-05-05: don't crash claudeteam start outside Docker."""
+    import os
+    if os.path.exists("/data"):
+        return  # skip on Linux containers; helper does real work there
+    # Must not raise on missing /data
+    lifecycle._ensure_claude_agent_home("manager")
+    lifecycle._ensure_claude_agent_home("worker_cc")
