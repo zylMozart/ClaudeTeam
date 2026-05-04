@@ -86,27 +86,6 @@ _MAX_TMUX_LINES = 2000
 _REIDENTIFY_DELAY_S = 45.0   # rough upper bound for claude-code /compact
 
 
-def _is_lazy(agent: str) -> bool:
-    """Probe whether `agent` is configured `lazy: true` in team.json.
-
-    Round-129: used by `_handle_team` to distinguish "agent's CLI down
-    because the boss never sent a first message" (lazy, expected) from
-    "agent's CLI died unexpectedly" (alarm). Returns False on any
-    config lookup error — a missing-from-team.json agent is "not lazy"
-    by default, so it'll still flag as unhealthy if its pane is dead.
-
-    R142: dropped the cfg-as-parameter dance. The caller used to import
-    `runtime.config` at the slash-handler level just to pass it in;
-    closing over the import here lets `_handle_team` read the lazy
-    set as a one-liner with no awkward module-passing.
-    """
-    try:
-        from claudeteam.runtime import config
-        return bool(config.agent_config(agent).get("lazy"))
-    except Exception:
-        return False
-
-
 def _default_agent(ctx: SlashContext) -> str:
     return ctx.team_agents[0] if ctx.team_agents else "manager"
 
@@ -191,10 +170,20 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     caught the wart: yellow team header for a worker that's just
     waiting for its first message looks like an alarm.
     """
-    # Lazy agents in team.json get the ⏸ glyph instead of 🛑 below. _is_lazy
-    # already swallows every error mode (missing team.json, unknown agent,
-    # import failures) so the comprehension can't raise.
-    lazy_agents = {a for a in ctx.team_agents if _is_lazy(a)}
+    # Lazy agents in team.json get the ⏸ glyph instead of 🛑 below.
+    # R144: one team.json read for the whole card. The earlier
+    # `_is_lazy(agent)` helper called `config.agent_config(agent)` per
+    # agent, which re-read team.json from disk N times for an N-agent
+    # team. Bare-dict probe here lets the lazy set come from a single
+    # `load_team()` call; the broad except still catches missing /
+    # corrupt team.json so a card render can't fail open.
+    try:
+        from claudeteam.runtime import config as _cfg
+        agents_dict = _cfg.load_team().get("agents", {})
+        lazy_agents = {a for a in ctx.team_agents
+                       if agents_dict.get(a, {}).get("lazy")}
+    except Exception:
+        lazy_agents = set()
 
     rows = []
     tally: Counter[str] = Counter()
