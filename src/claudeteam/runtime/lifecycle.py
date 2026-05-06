@@ -66,15 +66,49 @@ def _ensure_claude_agent_home(agent: str) -> None:
     boss-flagged setup gets exercised only in real container
     deployments where /data is mounted.
     """
-    base = Path("/data/agent-home")
-    if not base.parent.exists():
-        return  # /data doesn't exist (typical macOS test env)
-    home = base / agent
+    from claudeteam.agents.claude_code import agent_home as _agent_home
+    home = Path(_agent_home(agent))
     claude_dir = home / ".claude"
     try:
         claude_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
         return
+    # Host fallback: claude on macOS keys keychain lookup by $HOME, so a
+    # per-agent HOME with no .credentials.json gets "Not logged in" even
+    # though the keychain entry exists for the user. Export it to a file
+    # the first time so each pane has working OAuth.
+    cred_link = claude_dir / ".credentials.json"
+    if not cred_link.exists():
+        user_creds = Path.home() / ".claude" / ".credentials.json"
+        if user_creds.exists():
+            try:
+                cred_link.symlink_to(user_creds)
+            except OSError:
+                pass
+        else:
+            import platform, subprocess
+            if platform.system() == "Darwin":
+                # Best-effort: any failure (subprocess fake in tests, missing
+                # `security`, empty keychain, attr errors from a Popen mock) →
+                # silent skip; pane will surface "Not logged in" if the OAuth
+                # really is unreachable, which is louder than a stack trace.
+                try:
+                    out = subprocess.run(
+                        ["security", "find-generic-password",
+                         "-s", "Claude Code-credentials", "-w"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if out.returncode == 0 and out.stdout.strip():
+                        cred_link.write_text(out.stdout)
+                except Exception:
+                    pass
+    user_claude_json = Path.home() / ".claude.json"
+    claude_json = home / ".claude.json"
+    if user_claude_json.exists() and not claude_json.exists():
+        try:
+            claude_json.write_bytes(user_claude_json.read_bytes())
+        except OSError:
+            pass
     settings = claude_dir / "settings.json"
     if not settings.exists():
         settings.write_text(

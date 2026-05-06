@@ -1,7 +1,24 @@
 """Anthropic Claude Code adapter."""
 from __future__ import annotations
 
+from pathlib import Path
+
+from claudeteam.runtime import paths
+
 from .base import CliAdapter, SPINNER_CHARS
+
+
+def agent_home(agent: str) -> str:
+    """Per-agent HOME for an isolated ~/.claude.json.
+
+    Container deploys (Dockerfile mounts /data) use /data/agent-home/<agent>.
+    Host deploys (where /data is read-only or absent, e.g. macOS firmlink)
+    fall back to <state_dir>/agent-home/<agent> so each pane still gets
+    its own ~/.claude.json without needing root.
+    """
+    if Path("/data/agent-home").parent.exists():
+        return f"/data/agent-home/{agent}"
+    return str(paths.state_dir() / "agent-home" / agent)
 
 
 class ClaudeCodeAdapter(CliAdapter):
@@ -21,7 +38,7 @@ class ClaudeCodeAdapter(CliAdapter):
         #   silent-launch flags also live in the per-agent home so
         #   the dialog skip persists.
         return (
-            f"HOME=/data/agent-home/{agent} "
+            f"HOME={agent_home(agent)} "
             f"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 DISABLE_AUTOUPDATER=1 "
             f"IS_SANDBOX=1 claude --dangerously-skip-permissions "
             f"--model {model} --name {agent}"

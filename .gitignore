@@ -6,6 +6,12 @@ build/
 dist/
 .pytest_cache/
 
+# Python venv — per-developer; `pip install -e .` populates this
+.venv/
+
+# macOS noise
+.DS_Store
+
 # runtime state — anchor to repo root so src/claudeteam/agents/ isn't swallowed
 /workspace/
 /agents/
@@ -17,6 +23,8 @@ dist/
 # .router.pid / runtime_config.json into a commit (caught round-79).
 /scripts/
 .claude/scheduled_tasks.lock
+# `claudeteam install-hooks` output — regenerated per deploy
+/.claude/commands/
 team.json
 runtime_config.json
 
@@ -24,3 +32,6 @@ runtime_config.json
 .env
 /team-data/
 /docker-compose.override.yml
+
+# unrelated tool caches that drift into the repo root
+/.playwright-mcp/

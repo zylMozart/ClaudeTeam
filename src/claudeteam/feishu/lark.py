@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import time
@@ -136,11 +137,20 @@ def subprocess_env() -> dict[str, str]:
     supply app_id+app_secret but lark-cli has no keychain access (the
     Linux container case). No-op on macOS host where the token is empty
     and lark-cli's keychain path takes over.
+
+    Pins HOME to the host user's pw_dir so lark-cli finds
+    `~/.lark-cli/config.json` regardless of caller HOME. Claude panes
+    spawn with HOME=<state_dir>/agent-home/<agent> for ~/.claude.json
+    isolation; without this pin, `claudeteam say` from inside an agent
+    pane inherited the per-agent HOME and lark-cli failed to locate
+    its profile/keychain entry (rc=2). Use pw_dir, not the env's HOME,
+    so the override is robust against env tampering by the caller.
     """
     env = os.environ.copy()
     if env_str("LARK_CLI_NO_PROXY").lower() in {"1", "true", "yes", "on"}:
         for key in _PROXY_KEYS:
             env.pop(key, None)
+    env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     token = _ensure_tenant_token()
     if token:
         env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] = token

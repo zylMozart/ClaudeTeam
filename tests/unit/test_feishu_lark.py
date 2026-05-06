@@ -296,6 +296,21 @@ def test_subprocess_env_keeps_proxy_when_no_proxy_unset():
     assert env.get("HTTPS_PROXY") == "http://x"
 
 
+def test_subprocess_env_pins_home_to_pw_dir():
+    """Claude panes spawn with HOME=<state_dir>/agent-home/<agent> for
+    ~/.claude.json isolation. When an agent inside such a pane runs
+    `claudeteam say`, the lark-cli subprocess inherits that per-agent
+    HOME and fails to locate `~/.lark-cli/config.json` (rc=2). Pin
+    HOME to the OS user's pw_dir so lark-cli always reads the host
+    user's profile regardless of how the caller's HOME was mangled."""
+    import os, pwd
+    expected_home = pwd.getpwuid(os.getuid()).pw_dir
+    with env_patch(HOME="/data/agent-home/manager"):
+        env = lark.subprocess_env()
+    assert env["HOME"] == expected_home
+    assert env["HOME"] != "/data/agent-home/manager"
+
+
 # ── _resolve_timeout (env-driven default override) ────────────────
 
 

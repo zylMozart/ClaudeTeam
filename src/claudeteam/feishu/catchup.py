@@ -32,7 +32,7 @@ from typing import Callable, Iterable
 from claudeteam.feishu import chat as _chat
 from claudeteam.feishu.router import Decision
 from claudeteam.runtime import paths
-from claudeteam.util import read_json, write_json
+from claudeteam.util import env_str, read_json, write_json
 
 
 # ── cursor persistence ─────────────────────────────────────────
@@ -136,8 +136,13 @@ def pending_lines(chat_id: str, *,
     cursor = read_cursor()
     cursor_ct = str(cursor.get("create_time") or "")
     if list_fn is None:
+        # Honor CLAUDETEAM_LARK_SEND_AS so bot-only deployments don't trip
+        # `need_user_authorization` from `chat-messages-list --as user`
+        # (chat.list_recent's historical default). Mirrors `say`'s resolver.
+        as_user = env_str("CLAUDETEAM_LARK_SEND_AS").lower() != "bot"
         def list_fn():
-            return _chat.list_recent(chat_id, profile=profile, page_size=page_size)
+            return _chat.list_recent(chat_id, profile=profile,
+                                     page_size=page_size, as_user=as_user)
     msgs = list_fn() or []
     fresh = _newer_than(msgs, cursor_ct)
     return [_msg_to_event_line(m) for m in fresh]

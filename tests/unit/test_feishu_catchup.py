@@ -124,6 +124,44 @@ def test_pending_lines_emits_subscribe_compatible_shape():
     assert line["event"]["sender"]["sender_id"]["open_id"] == "ou_42"
 
 
+def test_pending_lines_default_list_fn_uses_bot_when_env_says_bot():
+    """Bot-only deploys (no `lark-cli auth login` user) trip
+    `need_user_authorization` from chat.list_recent's historical
+    as_user=True default. Honor CLAUDETEAM_LARK_SEND_AS=bot like
+    `say` does so the router catchup actually fetches."""
+    captured = {}
+    from claudeteam.feishu import chat as _chat
+    real_list_recent = _chat.list_recent
+    def spy(chat_id, **kw):
+        captured["as_user"] = kw.get("as_user")
+        return []
+    _chat.list_recent = spy
+    try:
+        from helpers import env_patch
+        with isolated_env(), env_patch(CLAUDETEAM_LARK_SEND_AS="bot"):
+            catchup.pending_lines("oc_x")
+        assert captured["as_user"] is False
+    finally:
+        _chat.list_recent = real_list_recent
+
+
+def test_pending_lines_default_list_fn_keeps_user_default_when_env_unset():
+    captured = {}
+    from claudeteam.feishu import chat as _chat
+    real_list_recent = _chat.list_recent
+    def spy(chat_id, **kw):
+        captured["as_user"] = kw.get("as_user")
+        return []
+    _chat.list_recent = spy
+    try:
+        from helpers import env_patch
+        with isolated_env(), env_patch(CLAUDETEAM_LARK_SEND_AS=None):
+            catchup.pending_lines("oc_x")
+        assert captured["as_user"] is True
+    finally:
+        _chat.list_recent = real_list_recent
+
+
 def test_pending_lines_returns_empty_when_history_empty():
     with isolated_env():
         catchup.write_cursor("om_anchor", "1000")
