@@ -79,20 +79,74 @@ def _msg(msg_id, create_time, *, text="hi", chat_id="oc_x", sender="ou_user"):
     }
 
 
-def test_pending_lines_returns_only_messages_newer_than_cursor():
+def test_pending_lines_returns_only_messages_at_or_after_cursor_minute():
+    """`>=` minute-floor semantics. Cutoff is floored to the minute so
+    REST minute-precision messages aligned with the cursor's minute are
+    included. Documented in feishu/catchup._newer_than."""
+    # Use real minute-aligned epoch ms so the floor doesn't collapse to 0
+    minute_a = "1778047620000"   # 2026-05-06 14:07:00
+    minute_b = "1778047680000"   # 2026-05-06 14:08:00
+    minute_c = "1778047740000"   # 2026-05-06 14:09:00
     history = [
-        _msg("om_old1", "1000"),
-        _msg("om_old2", "1500"),
-        _msg("om_new1", "2500"),
-        _msg("om_new2", "3000"),
+        _msg("om_a1", minute_a),                 # before cursor minute → drop
+        _msg("om_b1", minute_b),                 # at cursor minute → keep
+        _msg("om_b2", "1778047712000"),          # cursor itself, sub-minute → keep
+        _msg("om_c1", minute_c),                 # after cursor → keep
     ]
     with isolated_env():
-        catchup.write_cursor("om_old2", "1500")
+        catchup.write_cursor("om_b2", "1778047712000")  # 14:08:32
         lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
-    assert len(lines) == 2
+    import json
+    ids = sorted(json.loads(l)["event"]["message"]["message_id"] for l in lines)
+    # om_a1 (14:07) drops; om_b1, om_b2 (both 14:08), om_c1 (14:09) keep
+    assert ids == ["om_b1", "om_b2", "om_c1"]
+
+
+def test_pending_lines_recovers_messages_when_cursor_has_subminute_precision():
+    """REGRESSION: 2026-05-06 host_smoke caught the deeper bug — cursor
+    written from live events has millisecond precision, REST API
+    list_recent returns minute precision strings. A bare `>=` still
+    loses same-minute messages because REST 14:08:00 < cursor 14:08:32.
+    Cutoff must floor to minute boundary."""
+    cursor_ms = "1778047712107"  # 2026-05-06 14:08:32.107
+    rest_minute = "2026-05-06 14:08"  # REST API shape, parses to 14:08:00
+    history = [
+        _msg("om_processed_via_live", cursor_ms),
+        _msg("om_missed_a", rest_minute),
+        _msg("om_missed_b", rest_minute),
+    ]
+    with isolated_env():
+        catchup.write_cursor("om_processed_via_live", cursor_ms)
+        lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
+    parsed = [json.loads(l) for l in lines]
+    ids = sorted(p["event"]["message"]["message_id"] for p in parsed)
+    # Both REST-precision missed messages must be returned despite REST
+    # parsing to 14:08:00 < cursor's 14:08:32.107
+    assert "om_missed_a" in ids
+    assert "om_missed_b" in ids
+
+
+def test_pending_lines_recovers_messages_at_same_minute_as_cursor():
+    """REGRESSION: 2026-05-06 host_smoke caught lark WebSocket missing
+    4 of 9 slash commands all sharing the same minute as the cursor.
+    Strict `>` cutoff lost them permanently. With `>=`, they come back
+    via catchup. Same minute simulated here as same epoch-ms."""
+    same_minute = "1778047200000"
+    history = [
+        _msg("om_processed", same_minute),   # cursor lands here after live event
+        _msg("om_missed_a", same_minute),    # lark WebSocket missed; same minute
+        _msg("om_missed_b", same_minute),    # ditto
+    ]
+    with isolated_env():
+        catchup.write_cursor("om_processed", same_minute)
+        lines = catchup.pending_lines("oc_x", list_fn=lambda: history)
+    # All 3 returned (cursor itself + 2 missed) so the missed ones get
+    # a second chance; in-process dedup will skip om_processed if it's
+    # still in seen_msg_ids.
+    assert len(lines) == 3
     parsed = [json.loads(line) for line in lines]
     ids = [p["event"]["message"]["message_id"] for p in parsed]
-    assert ids == ["om_new1", "om_new2"]
+    assert sorted(ids) == ["om_missed_a", "om_missed_b", "om_processed"]
 
 
 def test_pending_lines_returns_all_when_no_cursor():

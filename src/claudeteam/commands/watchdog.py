@@ -143,10 +143,15 @@ def _maybe_refresh_claude_oauth(now: float) -> None:
     case the boss still sees expired-token errors next cycle and runs
     `make creds` manually.
     """
+    if not _CRED_PATH.exists():
+        # Host deploy (macOS): no /root mount, claude OAuth lives in
+        # keychain not file. Silent skip — printing every 5min spams
+        # watchdog.log with hundreds of false alarms.
+        return
     try:
         oauth = json.loads(_CRED_PATH.read_text())["claudeAiOauth"]
         expires_ms = int(oauth.get("expiresAt", 0))
-    except (FileNotFoundError, OSError, ValueError, KeyError) as e:
+    except (OSError, ValueError, KeyError) as e:
         print(f"  ⚠️ cred-refresh: read {_CRED_PATH} failed: {e}")
         return
     remaining = expires_ms / 1000 - now

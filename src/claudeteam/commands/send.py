@@ -18,8 +18,8 @@ expecting recipient to read NOW).
 """
 from __future__ import annotations
 
-from claudeteam.agents import adapter_for_agent
-from claudeteam.runtime import config, tmux
+from claudeteam.agents import adapter_for_agent, identity as _identity
+from claudeteam.runtime import config, lifecycle, tmux, wake
 from claudeteam.store import local_facts
 from claudeteam.util import pop_bool_flag, usage_error
 
@@ -53,6 +53,21 @@ def main(argv: list[str]) -> int:
         if not tmux.has_window(target):
             return 0
         adapter = adapter_for_agent(to)
+        # Lazy worker: pane exists as a placeholder shell, CLI hasn't been
+        # spawned yet. Without wake_if_dormant the inject below would land
+        # in the shell, not the CLI — agent never sees the message.
+        # REGRESSION 2026-05-06 host_smoke §7: lazy worker_codex received
+        # a manager dispatch but pane stayed at a bare shell prompt.
+        if not wake.is_ready(target, adapter):
+            spawn_cmd = (f"{lifecycle.pane_env_prefix()} "
+                         f"{adapter.spawn_cmd(to, config.agent_model(to))}")
+            wake.wake_if_dormant(
+                target, adapter,
+                spawn_cmd=spawn_cmd,
+                init_msg=_identity.init_prompt(to),
+                on_woken=lambda: local_facts.upsert_status(
+                    to, "进行中", "responding to first message"),
+            )
         nudge = (f"📥 收到 {frm} 的消息（local_id={local_id}）。"
                  f"立即执行：claudeteam inbox {to} 查看，按 R168 contract "
                  f"处理：执行请求 + 必要时 claudeteam say {to} \"...\" 在群里"

@@ -40,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Callable
 
 from claudeteam.feishu import catchup, lark
 from claudeteam.feishu.deliver import apply as _deliver_apply
@@ -170,9 +171,18 @@ def _terminate_subscribe_group(proc: subprocess.Popen) -> None:
             pass
 
 
-def _on_progress(decision, stats):
-    """After each handled event, advance the catchup cursor."""
-    catchup.record_decision(decision)
+def _make_on_progress(last_event_at: list[float]) -> Callable:
+    """Build the on_progress callback bound to a mutable timestamp slot.
+
+    Every successfully handled (non-DROP) event refreshes
+    `last_event_at[0]` so the subscribe-watchdog thread can detect
+    "lark-cli subprocess alive but events stopped flowing" — the
+    silent-failure mode that bouncing the router fixes.
+    """
+    def _on_progress(decision, stats):
+        catchup.record_decision(decision)
+        last_event_at[0] = time.monotonic()
+    return _on_progress
 
 
 # How often the subscribe-watchdog thread checks whether the lark-cli
@@ -181,25 +191,59 @@ def _on_progress(decision, stats):
 _SUBSCRIBE_WATCHDOG_PERIOD_S = 20.0
 
 
-def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event) -> None:
-    """Background thread: kill the daemon if the subscribe child dies.
+def _stale_event_threshold_s() -> float:
+    """Max seconds router will tolerate with no inbound event before
+    self-SIGTERM'ing for a watchdog respawn. Override via
+    `CLAUDETEAM_ROUTER_STALE_S` env (e.g. for tests).
 
-    `lark-cli event +subscribe` periodically dies silently — Round B Smoke
-    + round-52 smoke both saw the lark-cli grandchild vanish while npm-exec
-    parent stayed running. With npm-exec still holding stdout open, the
-    main thread's `process_lines(proc.stdout, ...)` would block forever
-    on readline, never noticing.
-
-    This thread polls proc.poll() every ~20s. When the npm parent exits
-    (which usually follows lark-cli's death within a few seconds), it
-    terminates the entire subscribe group + raises SIGTERM at the daemon
-    so the SIGTERM handler runs cleanup. Watchdog respawns from there.
+    Default 180s — observed lark WebSocket silent-stall happens within
+    minutes of router boot in 2026-05-06 host_smoke; 1200s default was
+    too lax (test caught manager not seeing user message for 7+ minutes).
+    A quiet group with no traffic for 3min just triggers a benign
+    catchup-of-zero-messages cycle, so over-triggering is cheap.
     """
+    raw = os.environ.get("CLAUDETEAM_ROUTER_STALE_S", "")
+    try:
+        v = float(raw)
+        if v > 0:
+            return v
+    except ValueError:
+        pass
+    return 180.0
+
+
+def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event,
+                            last_event_at: list[float]) -> None:
+    """Background thread: kill the daemon if the subscribe child dies OR
+    stops delivering events.
+
+    Two failure modes covered:
+
+    (a) `lark-cli event +subscribe` exits silently — Round B Smoke +
+        round-52 smoke both saw the lark-cli grandchild vanish while
+        npm-exec parent stayed running. With npm-exec still holding
+        stdout open, the main thread's `process_lines(proc.stdout, ...)`
+        would block forever on readline, never noticing.
+
+    (b) `lark-cli` subprocess stays alive but the WebSocket silently
+        stops delivering events (host_smoke 2026-05-06 caught this).
+        proc.poll() is None, the npm tree looks healthy in `ps`, but
+        no inbound events reach process_lines for hours. Detected by
+        comparing `last_event_at[0]` to wall-clock; threshold from
+        `CLAUDETEAM_ROUTER_STALE_S` env or 1200s default.
+
+    Both modes terminate via SIGTERM-to-self so the registered handler
+    reaps the subscribe group cleanly. Watchdog respawns from there.
+    """
+    threshold = _stale_event_threshold_s()
     while not stop_event.wait(_SUBSCRIBE_WATCHDOG_PERIOD_S):
         if proc.poll() is not None:
             print(f"  ⚠️ subscribe child exited (rc={proc.returncode}); router will exit so watchdog can respawn")
-            # Send SIGTERM to ourselves; the registered handler will
-            # reap the subscribe group and exit cleanly.
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        idle = time.monotonic() - last_event_at[0]
+        if idle > threshold:
+            print(f"  ⚠️ no events for {idle:.0f}s (threshold {threshold:.0f}s); subscribe likely silently stalled, exiting for respawn")
             os.kill(os.getpid(), signal.SIGTERM)
             return
 
@@ -255,10 +299,13 @@ def main(argv: list[str]) -> int:
     # Spawn the subscribe-health watchdog thread. It exits the daemon
     # cleanly if lark-cli dies under us — without it, process_lines would
     # block forever on stdout that npm-exec parent keeps open after the
-    # lark-cli grandchild vanishes.
+    # lark-cli grandchild vanishes. Also self-terminates if events stop
+    # flowing for too long (silent-subscribe-stall mode).
     stop_watchdog = threading.Event()
+    last_event_at = [time.monotonic()]
     threading.Thread(
-        target=_watch_subscribe_health, args=(proc, stop_watchdog),
+        target=_watch_subscribe_health,
+        args=(proc, stop_watchdog, last_event_at),
         daemon=True,
     ).start()
 
@@ -290,7 +337,7 @@ def main(argv: list[str]) -> int:
             chat_id=chat,
             default_target="manager",
             apply_fn=apply_fn,
-            on_progress=_on_progress,
+            on_progress=_make_on_progress(last_event_at),
         )
 
         # Catchup: replay anything newer than the cursor before going live

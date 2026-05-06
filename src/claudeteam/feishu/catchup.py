@@ -117,8 +117,32 @@ def _to_epoch_ms(create_time: object) -> int:
 
 
 def _newer_than(messages: Iterable[dict], cursor_create_time: str) -> list[dict]:
-    cutoff = _to_epoch_ms(cursor_create_time)
-    fresh = [m for m in messages if _to_epoch_ms(m.get("create_time")) > cutoff]
+    """Filter `messages` to those at-or-after the cursor minute.
+
+    Two precision realms collide here. Cursor is set from the LIVE event
+    `create_time` (lark-cli WebSocket → millisecond precision string).
+    `messages` come from `chat-messages-list` REST (minute precision
+    string like "2026-05-06 14:08", parses to the floor of that minute).
+    A strict `>` or even bare `>=` comparison loses the minute the
+    cursor is in: cursor 14:08:32.107 vs REST 14:08:00 → REST < cursor
+    → every message that shares the cursor's minute is dropped.
+
+    Floor the cutoff to the minute boundary so REST messages in the
+    same minute as the cursor are kept. Same-minute messages already
+    handled by the live stream get re-applied; in-process `seen_msg_ids`
+    dedups within one router run. Across restarts, the cursor message
+    itself is re-applied — acceptable, lark WebSocket misses are far
+    more common in observed host_smoke runs (2026-05-06).
+
+    Bad/missing create_time (parses to 0) gets dropped — never include
+    rows we can't timestamp, even when there's no cursor.
+    """
+    raw_cutoff = _to_epoch_ms(cursor_create_time)
+    cutoff = (raw_cutoff // 60_000) * 60_000  # floor to minute
+    def keep(m: dict) -> bool:
+        ts = _to_epoch_ms(m.get("create_time"))
+        return ts > 0 and ts >= cutoff
+    fresh = [m for m in messages if keep(m)]
     fresh.sort(key=lambda m: _to_epoch_ms(m.get("create_time")))
     return fresh
 

@@ -1,6 +1,7 @@
 """Anthropic Claude Code adapter."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from claudeteam.runtime import paths
@@ -11,14 +12,35 @@ from .base import CliAdapter, SPINNER_CHARS
 def agent_home(agent: str) -> str:
     """Per-agent HOME for an isolated ~/.claude.json.
 
-    Container deploys (Dockerfile mounts /data) use /data/agent-home/<agent>.
-    Host deploys (where /data is read-only or absent, e.g. macOS firmlink)
-    fall back to <state_dir>/agent-home/<agent> so each pane still gets
-    its own ~/.claude.json without needing root.
+    Container deploys (Dockerfile mounts /data writable) use
+    /data/agent-home/<agent>. Host deploys (macOS firmlink read-only;
+    Linux without that mount) fall back to <state_dir>/agent-home/<agent>.
+
+    Probe writability rather than just existence: a Linux server might
+    have /data as a read-only data disk mount where mkdir would fail,
+    and macOS Big Sur+ has /data as a firmlink that exists() reports
+    True for in some setups but rejects writes. Cache the probe result
+    so we don't pay an os.access call per spawn.
     """
-    if Path("/data/agent-home").parent.exists():
+    if _data_writable():
         return f"/data/agent-home/{agent}"
     return str(paths.state_dir() / "agent-home" / agent)
+
+
+_DATA_WRITABLE: bool | None = None
+
+
+def _data_writable() -> bool:
+    """Cached probe of whether /data/agent-home is a real writable dir."""
+    global _DATA_WRITABLE
+    if _DATA_WRITABLE is None:
+        base = Path("/data/agent-home")
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            _DATA_WRITABLE = os.access(base, os.W_OK)
+        except OSError:
+            _DATA_WRITABLE = False
+    return _DATA_WRITABLE
 
 
 class ClaudeCodeAdapter(CliAdapter):
