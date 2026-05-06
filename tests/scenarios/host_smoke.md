@@ -30,16 +30,19 @@ export CLAUDETEAM_LARK_SEND_AS=bot
 export PYTHONUNBUFFERED=1
 ```
 
-## 1. 团队上线
+## 1. 团队上线（前置环境检查，非通过点）
+
+这一节不算冒烟通过条件——只是确保后续步骤的环境是好的。
 
 ```bash
 claudeteam up        # 起 tmux 会话 + router + watchdog
 claudeteam health    # 三个 agent ✅，router 与 watchdog 都活着
 ```
 
-**通过条件**：health 输出全绿（最多容忍 `lark_profile blank` 一条 ⚠️，不致命）。
+环境检查应得：health 输出全绿（最多容忍 `lark_profile blank` 一条 ⚠️，不致命）。
+**真冒烟从 §3 开始**——前面只是"环境是不是搭好"。
 
-**失败排查**：
+**环境失败排查**：
 
 - "claude: not found"——CLI 适配器找不到二进制，检查 `$PATH`
 - "pane up but CLI not ready"——常见原因是 codex 弹更新提示。`tmux capture-pane -t ClaudeTeam:worker_codex -p` 看一眼，按 `3 Enter` 选「Skip until next version」即可
@@ -87,16 +90,35 @@ SEND "/tmux foobar"           # 期望「⚠️ 未知 agent」
 SEND "/foo"                   # 期望「⚠️ 未知斜杠命令，建议 /help」
 ```
 
-**通过条件**：每条都在 10 秒内有对应卡片落地。可以用下面这条拉群历史核对：
+**通过条件（看群里）**：每条都在 10 秒内能在群里看到对应的卡片，标题
+能跟下面表对上：
+
+| 发的 | 群里期望卡的标题前缀 |
+|---|---|
+| `/help` | 🆘 ClaudeTeam 自定义斜杠命令 |
+| `/team` | 👥 /team — 员工实时状态 |
+| `/health` | 🩺 /health — 服务器负载 |
+| `/usage` | 📊 /usage |
+| `/tmux` | 📺 /tmux manager — 最近 10 行 |
+| `/tmux worker_cc` | 📺 /tmux worker_cc — 最近 10 行 |
+| `/tmux worker_codex 25` | 📺 /tmux worker_codex — 最近 25 行 |
+| `/tmux foobar` | 群里直接出现纯文本「⚠️ 未知 agent」 |
+| `/foo` | 群里直接出现纯文本「⚠️ 未知斜杠命令，建议 /help」 |
+
+拉历史核对：
 
 ```bash
-LARK_CLI_NO_PROXY=1 lark-cli im +chat-messages-list --chat-id "$CHAT" --as bot --page-size 12 --format json
+LARK_CLI_NO_PROXY=1 lark-cli im +chat-messages-list --chat-id "$CHAT" \
+  --as bot --page-size 12 --format json | python3 -c "
+import json,sys
+for m in json.load(sys.stdin)['data']['messages'][:12]:
+    print(f\"[{m['create_time']}] {m.get('msg_type'):11} {m.get('content','')[:90]}\")"
 ```
 
-**失败排查**：
+**失败排查**（**只在群里没看到预期卡时才看**）：
 
 - 某条没回——看 `state/router.log`（提交 `c0996a5` 之后才有），定位是不是 `[slash]` 入口之后 `[send_card] result=None`
-- 卡片标题对不上发的命令——看 [slash_matrix.md](slash_matrix.md) 的失败标准表
+- 卡片标题对不上——看 [slash_matrix.md](slash_matrix.md) 的失败标准表
 
 ### 状态变更类（按需）
 
@@ -111,52 +133,180 @@ SEND "/stop worker_cc"              # 杀 pane，需要 `claudeteam hire worker_
 
 ## 4. 普通文本路由（验证 R174）
 
-证明所有人话最终都进 manager 的收件箱。
+证明任何文本——加 @ 也好、广播触发词也好——都只到 manager，最终在群里被
+manager 反应一次（不是被 worker 直接抢答）。
 
 ```bash
-SEND "你好"                       # 无 @ 无前缀
-SEND "@worker_cc 你在吗"          # 显式 @worker_cc
-SEND "@team 全员同步进度"         # 广播触发词
-SEND "全体注意"                   # 中文广播触发词
+SEND "你好"                              # 无 @ 无前缀
+SEND "@worker_cc 你在吗"                 # 显式 @worker_cc
+SEND "@team 全员同步进度"                # 广播触发词
+SEND "全体注意：smoke ping $(date +%s)"  # 中文广播 + 时间戳锚定
 ```
 
-**通过条件**：4 条全都进 manager 的收件箱，**任何一条**都不应进 worker_cc 或 worker_codex 的收件箱。
+**通过条件（看群里）**：
+
+1. 4 条都能在群里看到 **manager 的回复卡**（manager 配色蓝色），不超过 60 秒
+2. **没有任何 worker 直接发卡回应**——只有 manager。如果你看到 worker_cc
+   或 worker_codex 直接对这 4 条人话发卡回，R174 契约破了
+3. manager 第 4 条的回复卡里**应当能看到那个时间戳**——证明它真的处理了
+   你这条具体的消息，而不是回复以前的指令
 
 ```bash
-claudeteam inbox manager       # 应有 4 条新未读
-claudeteam inbox worker_cc     # 应有 0 条新（除非上一节 /send 测过）
-claudeteam inbox worker_codex  # 应有 0 条新
+# 验证抓取最近的卡：
+LARK_CLI_NO_PROXY=1 lark-cli im +chat-messages-list --chat-id "$CHAT" \
+  --as bot --page-size 8 --format json | python3 -c "
+import json,sys
+for m in json.load(sys.stdin)['data']['messages'][:8]:
+    role = (m.get('sender') or {}).get('id_type','?')
+    print(f\"[{m['create_time']}] {role:10} {m.get('msg_type'):11} {m.get('content','')[:90]}\")"
 ```
 
-**失败排查**：
+**失败排查**（**只在群里没看到预期卡时才看**）：
 
-- worker_cc 收件箱里冒出「你在吗」——R174 没生效，回去看 `feishu/router.classify_event` 是不是被回退了
-- 没人收到——router 没在跑或飞书事件订阅断了；重启 router 后看 `state/router.log` 是否出现 `[event] action=route`
+- 群里 worker_cc 直接回了——R174 没生效；查 `feishu/router.classify_event` 是否被回退
+- 群里 manager 没回——manager pane 卡住或没在工作。先 `tmux capture-pane -t ClaudeTeam:manager -p | tail -30` 看 LLM 状态；再 `claudeteam inbox manager` 看消息有没有进来；再看 `state/router.log` 看路由是不是 ROUTE 到 manager
 
 ## 5. Worker → manager 反向路由（R174 的例外分支）
 
-证明 worker 自己发的卡能让 manager 看到。
+证明 worker 自己发的卡能被 manager 看到并在群里**继续动作**——闭环就这一条。
 
 ```bash
-# 在 worker_cc pane 里跑（或直接命令行也行）：
-claudeteam say worker_cc "反向路由冒烟测试" --card
+ANCHOR="smoke-反向-$(date +%s)"
+claudeteam say worker_cc "$ANCHOR" --card
 ```
 
-**通过条件**：
+**通过条件（看群里）**：
 
-1. 群里能看到 💎 worker_cc 的卡（卡片头是 worker 配色）
-2. **manager 的收件箱多一条**，发件人是 worker_cc，内容是卡片文本
-3. manager pane 看到这条新收件箱并开始处理
-
-```bash
-claudeteam inbox manager | head    # 最新一条来源应是 worker_cc
-```
+1. 60 秒内群里能看到 worker_cc 的卡（蓝/绿色 worker 配色），内容含 `$ANCHOR`
+2. 之后 60 秒内**还能看到 manager 的另一张卡**——证明 manager 看到了
+   worker 的话并做出了反应（可能是简短 ack、可能是询问、可能是无视后仍发了
+   状态汇总）。**关键：必须有 manager 的卡，不只是 worker 的**
+3. manager 的卡内容里能找到 worker_cc 名字或 `$ANCHOR`，证明它真在 react
+   这条而不是别的事
 
 **失败排查**：
 
-- manager 收件箱没这条——R174 的「worker 卡片回路 manager」分支没生效，看 `feishu/router._card_sender_agent`
+- 只看到 worker_cc 卡，半分钟后没 manager 卡——R174 的 worker→manager
+  反向分支没生效，或 manager 卡住了。先 `claudeteam inbox manager` 看消息
+  有没有进来。如果没进来，看 `feishu/router._card_sender_agent`。如果进
+  来了 manager 没动，看 manager pane（identity init 是否完成）
 
-## 6. 收尾
+## 6. 路由器重启不丢消息
+
+证明 router 死掉再起来时，期间发的消息**最终在群里有 manager 的回应**。
+
+```bash
+WATCHDOG_PID=$(cat state/watchdog.pid)
+kill -STOP $WATCHDOG_PID    # 暂停 watchdog 防止立刻 respawn
+ROUTER_PID=$(cat state/router.pid)
+kill $ROUTER_PID
+sleep 2
+
+# router 不在期间发两条，**带时间戳锚定**
+T1="$(date +%s)"
+SEND "回放测试 A $T1"
+SEND "回放测试 B $T1"
+sleep 3
+
+# 重启 router + 恢复 watchdog
+kill -CONT $WATCHDOG_PID
+claudeteam up
+```
+
+**通过条件（看群里）**：
+
+router 重启后 90 秒内，群里能看到 manager 的回复卡，**内容里包含
+`$T1` 这个时间戳**——证明这两条停机期间发的消息确实进了 manager 并被
+react 了一次（manager 处理两条还是一条不强求，但至少要看到对应时间戳的
+回应）。
+
+**失败排查**：
+
+- 群里没有任何带 `$T1` 的 manager 卡——catchup 没正确补回来。看
+  `state/router.log` 找 `📥 catching up`，如果数字 != 2 说明 cursor
+  没正确推进；如果有 `catchup fetch failed` 说明 catchup 调用失败
+  （在提交 `780fd08` 之前，bot-only 部署会因为 `--as user` 默认报权限错）
+
+## 7. 懒启动 worker（lazy）
+
+某些 worker 配 `"lazy": true` 时，`claudeteam start` 不真起 CLI；首条
+进收件箱的消息才触发起 CLI。**通过条件：群里能看到这个 lazy worker 在
+被点名后真发出报到卡**——验证从 placeholder 到活 CLI 再到群里说话的
+完整链路。
+
+```bash
+# 给 worker_codex 临时打 lazy
+python3 -c '
+import json
+t = json.load(open("team.json"))
+t["agents"]["worker_codex"]["lazy"] = True
+json.dump(t, open("team.json","w"), ensure_ascii=False, indent=2)
+'
+claudeteam down && claudeteam up
+
+# 在群里点名让 worker_codex 报到（带锚定）
+ANCHOR="lazy-wake-$(date +%s)"
+SEND "@manager 让 worker_codex 现在报个到，回复里带上 $ANCHOR"
+```
+
+**通过条件（看群里）**：
+
+3 分钟内群里出现 worker_codex 的卡，**内容里能看到 `$ANCHOR`**——
+证明 manager 收到 → manager 派单 → worker_codex 第一次被唤醒起 CLI →
+真的处理 inbox 并发卡。
+
+**清理**：
+
+```bash
+python3 -c '
+import json
+t = json.load(open("team.json"))
+t["agents"]["worker_codex"].pop("lazy", None)
+json.dump(t, open("team.json","w"), ensure_ascii=False, indent=2)
+'
+claudeteam down && claudeteam up
+```
+
+## 8. 多部署冲突（同一个 App 抢订阅）
+
+这一节没有"群里通过条件"——冲突的本质就是第二个 router 起不来。
+通过条件是**第一个 deploy 的群里继续正常工作**，第二个 router stderr
+报错并退出。
+
+```bash
+# 当前 deploy 在 /path/to/ClaudeTeam，已 up
+cd /tmp && mkdir -p test-conflict && cd test-conflict
+cp /path/to/ClaudeTeam/team.json /path/to/ClaudeTeam/runtime_config.json .
+export CLAUDETEAM_STATE_DIR="$PWD/state"
+claudeteam router 2>&1 | head -10
+```
+
+期望第二个 router 立刻打印：
+
+```
+🚀 router subscribing on chat oc_xxx (profile=<default>)
+  ⚠️ lark-cli failed (rc=1): Error: another event +subscribe instance is already running for app cli_xxx
+```
+
+并退出。
+
+```bash
+# 回到原 deploy 验证它没受影响
+cd /path/to/ClaudeTeam
+unset CLAUDETEAM_STATE_DIR
+export CLAUDETEAM_STATE_DIR="$PWD/state"
+SEND "/team"
+```
+
+**通过条件（看群里）**：原 deploy 还能正常回 `/team` 卡。
+
+**清理**：
+
+```bash
+rm -rf /tmp/test-conflict
+```
+
+## 9. 收尾
 
 冒烟通过则不需清理；如果想回到干净状态：
 
@@ -164,7 +314,7 @@ claudeteam inbox manager | head    # 最新一条来源应是 worker_cc
 claudeteam down
 ```
 
-只停 pane 和守护进程，不会删收件箱、日志、游标。要彻底清空：`claudeteam reset`（看 [team_down_and_reset.md](team_down_and_reset.md)）。
+只停 pane 和守护进程，不会删收件箱、日志、游标。要彻底清空：`claudeteam reset`（看 [_archive/team_down_and_reset.md](_archive/team_down_and_reset.md)）。
 
 ## 已知的本机特有怪现象
 

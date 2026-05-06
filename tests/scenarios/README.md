@@ -1,102 +1,93 @@
-# tests/scenarios/ — 烟测剧本索引
+# tests/scenarios/ — 端到端冒烟剧本
 
-每篇 `.md` 是一份"操作员能照着跑、看到现象就能勾对错"的回归剧本。
-不是单元测试（那些在 `tests/unit/`，跑 `python3 tests/run.py`）；
-这里的剧本要真起 tmux pane、真发飞书消息、真看群里有没有卡——
-单元测试覆盖不到的"真世界副作用"在这里收。
+冒烟测试的形态：**用户视角，从飞书群里发消息开始，到群里看到结果结束**。
+中间过程（收件箱状态、pane 缓冲、router 日志）是诊断手段，只在失败时才看。
 
-## 我刚部署完，想 1 分钟过一遍
+不要把"手动跑一遍 CLI 看输出对不对"塞进这里——那是单元测试已经覆盖的事
+（`tests/unit/test_*.py` 用 mock 自动跑）。这里只放需要真飞书 + 真 tmux +
+真 CLI 联动才能验证的剧本。
 
-→ **[host_smoke.md](host_smoke.md)** — macOS host 部署的最短验证路径：
-9 条斜杠 + 2 条普通文本 + R174 验证。每一步带可复制的命令和判定。
+## 入口：刚部署完想 1 分钟过一遍
 
-新部署强烈建议先把这一篇跑绿，再考虑下面的细分主题。
+→ **[host_smoke.md](host_smoke.md)**
 
-## 按主题分组
+九节内容，全部以"群里发 → 群里看"为主轴：
 
-### 部署与多团队
-| 文件 | 范围 |
-|---|---|
-| [host_smoke.md](host_smoke.md) | macOS 本机部署一分钟冒烟（推荐入口） |
-| [init_bootstrap.md](init_bootstrap.md) | `claudeteam init` 写 team.json 和 runtime_config.json |
-| [docker_deploy.md](docker_deploy.md) | Docker compose 路径（容器部署，区别于本机部署） |
-| [team_switch.md](team_switch.md) | 多份部署之间通过 `claudeteam switch` 切换环境 |
+1. 团队上线（`claudeteam up` + `health`）
+2. 用户 OAuth（设备授权流程，一次性）
+3. 9 条斜杠命令矩阵（含状态变更类）
+4. 普通文本路由（验证 R174「manager 是唯一接口」）
+5. Worker → manager 反向路由（R174 例外分支）
+6. 路由器重启不丢消息（catchup）
+7. 懒启动 worker（lazy 标记 + 首消息触发起 CLI）
+8. 多部署冲突（同一 App 抢订阅锁的失败语义）
+9. 收尾
 
-### 团队生命周期
-| 文件 | 范围 |
-|---|---|
-| [team_lifecycle.md](team_lifecycle.md) | `start / hire / fire` 端到端 |
-| [team_down_and_reset.md](team_down_and_reset.md) | `down` 与 `reset` 两条停机路径 |
-| [spawn_cmd_per_cli.md](spawn_cmd_per_cli.md) | 每个 CLI 适配器生成的拉起命令字符串 |
-| [identity_render.md](identity_render.md) | `agents/<name>/identity.md` 渲染 |
-| [lazy_wake.md](lazy_wake.md) | 懒启动 worker 收到首条消息时拉起 CLI |
-| [reidentify.md](reidentify.md) | 重新注入身份（compact / clear 之后） |
+这一篇是新部署默认入口，跑通即认定基础设施可用。
 
-### 消息路由
-| 文件 | 范围 |
-|---|---|
-| [local_message_cycle.md](local_message_cycle.md) | `send → inbox → read` 本地链路（不经飞书） |
-| [router_event_to_pane.md](router_event_to_pane.md) | 飞书 → router → 收件箱与 pane 注入（核心端到端） |
-| [router_catchup.md](router_catchup.md) | 路由重启时续读，不丢消息 |
-| [orphan_subscribe_reap.md](orphan_subscribe_reap.md) | 看门狗清理残留的 `lark-cli +subscribe` 子进程 |
-| [feishu_say_chat_send.md](feishu_say_chat_send.md) | `claudeteam say` 把一句话发到群 |
-| [slash_matrix.md](slash_matrix.md) | 9 条斜杠命令的输出验收 |
+## 专题剧本
 
-### 状态、审计、健康
-| 文件 | 范围 |
-|---|---|
-| [agent_status_and_audit.md](agent_status_and_audit.md) | `status` 上报与 `log` 审计 |
-| [team_overview_and_workspace.md](team_overview_and_workspace.md) | `team` / `workspace` 读侧命令 |
-| [health_check.md](health_check.md) | `claudeteam health` 部署快照 |
-
-### 任务卡片
-| 文件 | 范围 |
-|---|---|
-| [task_lifecycle.md](task_lifecycle.md) | `claudeteam task` 五条子命令 |
-
-### 用量与版本
-| 文件 | 范围 |
-|---|---|
-| [usage_snapshot.md](usage_snapshot.md) | `claudeteam usage` 包装 ccusage |
-| [version_check.md](version_check.md) | `claudeteam version` |
-
-### 真任务协作
-| 文件 | 范围 |
-|---|---|
-| [round_c_real_task.md](round_c_real_task.md) | 老板 → manager → workers → 汇总（最完整端到端） |
-
-### 杂货铺（待拆）
-| 文件 | 范围 |
-|---|---|
-| [cards_memory_and_speed.md](cards_memory_and_speed.md) | 卡片样式、按 agent 记忆、看门狗告警、lark-cli 速度——四个主题缝在一起，待拆 |
-
-## 已知滞后于代码的剧本
-
-跑剧本前先核对这张表。已修的会被移除。
-
-| 文件 | 滞后内容 | 涉及提交 |
+| 文件 | 范围 | 何时跑 |
 |---|---|---|
-| `cards_memory_and_speed.md` | 一篇 189 行混了 4 个不相关主题（卡片样式、按 agent 记忆、看门狗告警、lark-cli 速度），TODO 拆 | R79-R112 多波累积 |
+| [slash_matrix.md](slash_matrix.md) | 9 条斜杠 + 路由分类的详细 pass/fail 标准、color 期望、错误诊断 | host_smoke 某条出错时翻这一篇 |
+| [round_c_real_task.md](round_c_real_task.md) | 老板 → manager → workers → 汇总，30-60 分钟真任务派活 | 重大改动后或想压测协作时 |
+| [reidentify.md](reidentify.md) | `claudeteam reidentify` 重新注入身份的几种触发情境 | post-compact 或 worker 记忆乱了 |
 
-历史上修过的（保留作 changelog）：
+## 归档：`_archive/`
 
-| 文件 | 修订 | 在 commit |
-|---|---|---|
-| `slash_matrix.md` | R3-R8 改写为 R174「manager 是唯一接口」；新增 W1/W2 验证 worker → manager 反向路由；补本机部署 macOS keychain 三套凭证一节 | `ccf90b6` |
-| `router_event_to_pane.md` | 重写为 5 用例覆盖 R174 默认路由 / R174 例外 / dedup / cross_team / 守护进程退出；提 `state/router.log` 观察方式 | （本轮） |
-| `round_c_real_task.md` | profile/chat_id 改成从 `runtime_config.json` 读，不再硬编码；团队规模适配 N（默认 3、按需 4）；新增 G6/G10 验证 worker→manager 反向路由与 catchup；macOS 凭证过期风险落知识 | （本轮） |
-| `health_check.md` | 团队规模描述去掉 "4 agents" 假设；补 `state/router.log` / `state/watchdog.log` 观察方式 | （本轮） |
-| `router_catchup.md` | R174 后 @worker_codex 也只到 manager；catchup `--as bot` 修复说明；`router.log` 观察 | （本轮） |
+20 篇早期文档移到 [_archive/](_archive/)，**不再当冒烟测试看**。它们仍有价值
+但归类不对：
+
+**单元测试已 100% 覆盖（mock 自动跑）**——这些剧本只是手抄一遍 unit test。
+跑 `python3 tests/run.py` 就够了：
+
+- `local_message_cycle.md` ← `test_local_facts.py` / `test_commands_messaging.py`
+- `spawn_cmd_per_cli.md` ← `test_agents.py` / `test_agents_*.py`
+- `identity_render.md` ← `test_agents_identity.py`
+- `agent_status_and_audit.md` ← `test_commands_status_log.py`
+- `task_lifecycle.md` ← `test_commands_task.py` / `test_store_tasks.py`
+- `team_overview_and_workspace.md` ← `test_commands_team_workspace.py`
+- `version_check.md` ← `test_commands_version.py`
+- `init_bootstrap.md` ← `test_commands_init.py`
+
+**操作手册（应在 `docs/` 不在 `tests/`）**——讲怎么用某个命令的步骤说明：
+
+- `team_lifecycle.md`、`team_down_and_reset.md`、`team_switch.md`
+- `health_check.md`、`usage_snapshot.md`
+- `docker_deploy.md`
+- `cards_memory_and_speed.md`（189 行 4 主题杂货铺）
+
+**已被 host_smoke 吸收**——核心场景已抽到主入口：
+
+| Archive | 吸收到 host_smoke 的哪一节 |
+|---|---|
+| `feishu_say_chat_send.md` | §5 Worker → manager 反向路由 |
+| `router_event_to_pane.md` | §3、§4、§5（路由分类全覆盖） |
+| `router_catchup.md` | §6 路由器重启不丢 |
+| `lazy_wake.md` | §7 懒启动 worker |
+| `team_switch.md` | §8 多部署冲突 |
+| `orphan_subscribe_reap.md` | §8 同主题（watchdog 内部机制描述放 archive） |
+| `reidentify.md` 的烟测面 | （保留独立专题，因为 post-compact 是常用 ops） |
 
 ## 命名规则
 
 - 文件名 `<主题>.md`，全小写、下划线分隔
-- 标题用一句话描述范围，**不要**写成"Round X"。这种命名会让文件按时间序而不是主题序排，失去索引价值
-- 推荐统一模板：`## 范围` / `## 前置条件` / `## 操作` / `## 期望` / `## 已知风险` / `## 不在范围`
+- 一篇 = 一个端到端可验证的目标，不是 N 个不相关主题的聚合
+- 模板：`## 目的` / `## 适用范围` / `## 前置条件` / `## 操作` / `## 期望` / `## 失败排查` / `## 不在范围`
+- **不要新建**「`_v2`」「`_round_X`」后缀文件——直接改原文件，git 历史保留版本
 
-## 新增一篇剧本
+## 加一篇新剧本之前先问
 
-1. 在 `commands/X.py` 或 `feishu/Y.py` 落码的同时写 `tests/scenarios/<主题>.md`（CLAUDE.md 规则 #2：每条公共命令必须配剧本）
-2. 把入口加到本 README 对应主题分组
-3. 如果它取代或废弃了已有剧本，把被替换的那篇标进"已知滞后"
-4. 不要新建 `_v2` 或 `_round_X` 后缀文件——直接改原文件，git 历史会保留版本
+1. 这条路径单元测试能 mock 出来吗？能 → 写 unit test 不写剧本
+2. 这条是「教用户怎么用」吗？是 → 写到 `docs/` 不写在这
+3. 必须真起 tmux + 真发飞书才能验吗？是 → 写在这；并且看能不能直接往
+   `host_smoke.md` 加一节，避免新文件
+4. 真要新文件——是不是 host_smoke 已经太长该拆？拆按"基础烟测 / 真任务"
+   两栏，不要按"每个特性一篇"切
+
+## 已知归档候选
+
+冒烟价值 < 操作手册价值的会持续往 `_archive/` 沉。现在杂货铺
+[cards_memory_and_speed.md](_archive/cards_memory_and_speed.md) 还在那，
+里面 4 个主题（卡片、内存、watchdog 告警、lark 速度）应当拆到对应的
+operations doc 或 design doc。
