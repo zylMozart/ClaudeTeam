@@ -14,9 +14,11 @@ from __future__ import annotations
 from helpers import env_patch, isolated_env, run_cli
 from claudeteam.commands.router import (
     _build_subscribe_cmd,
+    _load_seen_msg_ids,
     _make_on_progress,
     _stale_event_threshold_s,
     _watch_subscribe_health,
+    _SEEN_MAX_LINES,
 )
 
 
@@ -162,20 +164,21 @@ def test_make_on_progress_refreshes_timestamp_on_each_event():
     """Every successful (non-DROP) event should bump last_event_at[0]
     so the watchdog's stale check sees fresh activity. DROP events don't
     flow through process_lines' on_progress, so they don't refresh."""
-    last_event_at = [0.0]
-    cb = _make_on_progress(last_event_at)
-    # Mock decision (only attribute used is by record_decision; we patch
-    # catchup.record_decision to a no-op so we don't need full Decision).
-    from claudeteam.feishu import catchup
-    real_record = catchup.record_decision
-    catchup.record_decision = lambda d: None
-    try:
-        import time
-        before = last_event_at[0]
-        cb(decision=object(), stats=object())
-        after = last_event_at[0]
-    finally:
-        catchup.record_decision = real_record
+    from types import SimpleNamespace
+    with isolated_env():
+        last_event_at = [0.0]
+        cb = _make_on_progress(last_event_at)
+        # Mock decision (only attribute used is by record_decision; we patch
+        # catchup.record_decision to a no-op so we don't need full Decision).
+        from claudeteam.feishu import catchup
+        real_record = catchup.record_decision
+        catchup.record_decision = lambda d: None
+        try:
+            before = last_event_at[0]
+            cb(SimpleNamespace(msg_id="om_x"), object())
+            after = last_event_at[0]
+        finally:
+            catchup.record_decision = real_record
     # time.monotonic always > 0 since boot; before was 0.0
     assert after > before
 
@@ -249,3 +252,93 @@ def test_watch_subscribe_health_self_terminates_on_child_exit():
     finally:
         os.kill = real_kill
         _r._SUBSCRIBE_WATCHDOG_PERIOD_S = real_period
+
+
+# ── persisted dedup set (state/router.seen) ──────────────────────
+
+
+def test_load_seen_returns_empty_when_file_missing():
+    with isolated_env():
+        assert _load_seen_msg_ids() == set()
+
+
+def test_load_seen_reads_one_msg_id_per_line():
+    from claudeteam.runtime import paths
+    with isolated_env():
+        paths.ensure_state_dir()
+        paths.router_seen_file().write_text("om_a\nom_b\nom_c\n")
+        assert _load_seen_msg_ids() == {"om_a", "om_b", "om_c"}
+
+
+def test_load_seen_skips_blank_lines():
+    from claudeteam.runtime import paths
+    with isolated_env():
+        paths.ensure_state_dir()
+        paths.router_seen_file().write_text("om_a\n\nom_b\n   \n")
+        assert _load_seen_msg_ids() == {"om_a", "om_b"}
+
+
+def test_load_seen_truncates_huge_file_to_recent_window():
+    """Bound the file size — long-running deploy can't grow seen.json
+    indefinitely. Truncate to the last _SEEN_MAX_LINES on load."""
+    from claudeteam.runtime import paths
+    with isolated_env():
+        paths.ensure_state_dir()
+        # Write more than the cap; oldest should be dropped.
+        ids = [f"om_{i}" for i in range(_SEEN_MAX_LINES + 200)]
+        paths.router_seen_file().write_text("\n".join(ids) + "\n")
+        loaded = _load_seen_msg_ids()
+        assert len(loaded) == _SEEN_MAX_LINES
+        # Oldest dropped, newest kept
+        assert "om_0" not in loaded
+        assert f"om_{_SEEN_MAX_LINES + 199}" in loaded
+        # File on disk also truncated for next boot
+        on_disk = paths.router_seen_file().read_text().strip().splitlines()
+        assert len(on_disk) == _SEEN_MAX_LINES
+
+
+def test_on_progress_appends_msg_id_to_seen_file():
+    """REGRESSION: 2026-05-06 host_smoke caught manager's own /tmux
+    manager card forwarded into manager inbox every ~3.5min as router
+    self-restarted. Root cause: seen_msg_ids was an in-memory set, not
+    persisted, so catchup replay after restart re-applied messages.
+    Now: each on_progress fires append-to-file."""
+    from types import SimpleNamespace
+    from claudeteam.runtime import paths
+    with isolated_env():
+        last_event_at = [0.0]
+        cb = _make_on_progress(last_event_at)
+        # Mock the catchup.record_decision side effect
+        from claudeteam.feishu import catchup
+        real_record = catchup.record_decision
+        catchup.record_decision = lambda d: None
+        try:
+            cb(SimpleNamespace(msg_id="om_first"), object())
+            cb(SimpleNamespace(msg_id="om_second"), object())
+            cb(SimpleNamespace(msg_id=""), object())  # blank id is skipped
+        finally:
+            catchup.record_decision = real_record
+        contents = paths.router_seen_file().read_text()
+        assert "om_first" in contents
+        assert "om_second" in contents
+        # Empty id didn't add a blank line
+        assert _load_seen_msg_ids() == {"om_first", "om_second"}
+
+
+def test_seen_persists_across_simulated_restart():
+    """Two consecutive _make_on_progress sessions sharing the same
+    state dir: second session's _load_seen_msg_ids must see what the
+    first session wrote."""
+    from types import SimpleNamespace
+    with isolated_env():
+        from claudeteam.feishu import catchup
+        real_record = catchup.record_decision
+        catchup.record_decision = lambda d: None
+        try:
+            cb1 = _make_on_progress([0.0])
+            cb1(SimpleNamespace(msg_id="om_X"), object())
+        finally:
+            catchup.record_decision = real_record
+        # Simulate restart: load again
+        seen = _load_seen_msg_ids()
+        assert "om_X" in seen

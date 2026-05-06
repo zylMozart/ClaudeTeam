@@ -171,17 +171,59 @@ def _terminate_subscribe_group(proc: subprocess.Popen) -> None:
             pass
 
 
+_SEEN_MAX_LINES = 5000   # truncate router.seen file when it grows past this
+
+
+def _load_seen_msg_ids() -> set[str]:
+    """Load persisted dedup set from disk, truncating to the most recent
+    SEEN_MAX_LINES entries to bound the file. Returns empty set if the
+    file is missing or unreadable — best-effort, never fails the daemon.
+    """
+    path = paths.router_seen_file()
+    try:
+        if not path.exists():
+            return set()
+        with path.open("r", encoding="utf-8") as f:
+            ids = [line.strip() for line in f if line.strip()]
+    except OSError:
+        return set()
+    if len(ids) > _SEEN_MAX_LINES:
+        # Truncate file in place so it doesn't grow unbounded.
+        try:
+            kept = ids[-_SEEN_MAX_LINES:]
+            path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            ids = kept
+        except OSError:
+            pass
+    return set(ids)
+
+
 def _make_on_progress(last_event_at: list[float]) -> Callable:
     """Build the on_progress callback bound to a mutable timestamp slot.
 
-    Every successfully handled (non-DROP) event refreshes
-    `last_event_at[0]` so the subscribe-watchdog thread can detect
-    "lark-cli subprocess alive but events stopped flowing" — the
-    silent-failure mode that bouncing the router fixes.
+    Every successfully handled (non-DROP) event:
+    - refreshes `last_event_at[0]` so the subscribe-watchdog thread can
+      detect "lark-cli subprocess alive but events stopped flowing" —
+      the silent-failure mode that bouncing the router fixes.
+    - appends the message_id to `state/router.seen` so the dedup set
+      survives across process restarts. Without this, router self-
+      restarts (driven by stale-detect or watchdog) re-apply messages
+      that catchup re-fetches because seen_msg_ids was an in-memory
+      set (host_smoke 2026-05-06: /tmux manager card forwarded into
+      manager inbox every ~3.5min on every restart cycle).
     """
     def _on_progress(decision, stats):
         catchup.record_decision(decision)
         last_event_at[0] = time.monotonic()
+        msg_id = getattr(decision, "msg_id", "")
+        if msg_id:
+            try:
+                seen_path = paths.router_seen_file()
+                seen_path.parent.mkdir(parents=True, exist_ok=True)
+                with seen_path.open("a", encoding="utf-8") as f:
+                    f.write(msg_id + "\n")
+            except OSError:
+                pass  # best-effort; in-memory set still dedups in this run
     return _on_progress
 
 
@@ -332,12 +374,17 @@ def main(argv: list[str]) -> int:
                                   if cfg.get("lazy")),
         )
 
+        # Persisted dedup set — survives daemon restarts so catchup
+        # replay after stale-detect / watchdog respawn doesn't re-apply
+        # already-handled messages (host_smoke 2026-05-06 caught it).
+        seen = _load_seen_msg_ids()
         loop_kwargs = dict(
             team_agents=agents,
             chat_id=chat,
             default_target="manager",
             apply_fn=apply_fn,
             on_progress=_make_on_progress(last_event_at),
+            seen_msg_ids=seen,
         )
 
         # Catchup: replay anything newer than the cursor before going live

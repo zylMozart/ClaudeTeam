@@ -141,13 +141,23 @@ def process_lines(lines: Iterable[str], *,
                   bot_id: str = "",
                   default_target: str = "manager",
                   apply_fn: Callable = apply,
-                  on_progress: Callable | None = None) -> LoopStats:
+                  on_progress: Callable | None = None,
+                  seen_msg_ids: set[str] | None = None) -> LoopStats:
     """Run the subscribe loop over `lines` (one Feishu event JSON each).
 
     Designed to be exited by exhausting the iterator.  The production
     daemon wraps a never-ending Popen stdout iterator; tests pass a list.
+
+    `seen_msg_ids` lets the caller seed the dedup set across calls /
+    process restarts. Used by the router to persist seen ids to
+    state/router.seen.json so catchup-after-restart doesn't re-apply
+    messages that were already handled before the restart (host_smoke
+    2026-05-06: same /tmux manager card forwarded into manager inbox
+    every ~3.5min as router self-restarted).
     """
     stats = LoopStats()
+    if seen_msg_ids is not None:
+        stats.seen_msg_ids = seen_msg_ids
     for raw_line in lines:
         line = raw_line.strip()
         if not line:

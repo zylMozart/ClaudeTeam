@@ -47,6 +47,10 @@ def router_log_file() -> Path:
     return state_file("router.log")
 
 
+def router_seen_file() -> Path:
+    return state_file("router.seen")
+
+
 def watchdog_pid_file() -> Path:
     return state_file("watchdog.pid")
 
