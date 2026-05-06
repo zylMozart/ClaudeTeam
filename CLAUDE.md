@@ -4,6 +4,53 @@ This is the `rebuild/minimal` branch — a clean-slate ClaudeTeam rewrite.
 Read this file before making changes.  See README.md for what the
 project is and how a user runs it.
 
+## If you're a deploy agent (just got pasted here to set this up)
+
+The user wants you to bring up a working ClaudeTeam deployment. Walk
+them through it; don't assume they've done any of it before.
+
+**Step 1 — Feishu app**: Ask if they already have an enterprise
+custom app + bot. If **no**, drive `scripts/feishu_bot_creator/` in
+**staged mode** (it pauses between each of the 7 steps so they can
+spot-check the browser before continuing):
+
+```bash
+cd scripts/feishu_bot_creator
+npm install                                          # one-time
+node create_feishu_bot.js login                      # one-time, scan QR
+node create_feishu_bot.js stage create-app --name <bot> --desc "..."
+# ...inspect, then:
+node create_feishu_bot.js next --app <bot>           # repeat until publish
+```
+
+After publish, the user reads `App ID` + `App Secret` from the
+Feishu open platform's **Credentials & Basic Info** page. They'll
+also need the `chat_id` of the group the bot is in (find via
+`lark-cli im +chat-search --query "<group name>" --as user`).
+
+If **yes** (they already have an app), skip the bot creator and just
+ask for the three values directly: App ID, App Secret, chat_id.
+
+**Step 2 — Pick host or Docker**: Docker is simpler if they have
+Docker + don't want to install Python. Host is faster iteration but
+needs Python 3.10+ and tmux. Both are documented in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — read it, follow it
+step by step.
+
+**Step 3 — Config**: Write App ID/Secret into `.env` (Docker only)
+and `chat_id` + agents into `claudeteam.toml` (`claudeteam init`
+generates a template with the three default agents — `manager` (cc) +
+`worker_cc` (cc) + `worker_codex` (codex) — feel free to keep that as
+the starter team).
+
+**Step 4 — Launch + verify**: `claudeteam up` → `claudeteam health`
+should be green. Send `/health` and `@manager 你好` in the Feishu
+group; manager should reply within ~30 s.
+
+If anything goes red, the **Common failures** section at the bottom
+of `docs/DEPLOYMENT.md` covers the recurring ones (claude OAuth
+stale, container env, lark WebSocket drop, etc.).
+
 ## Where things live
 
 Business logic lives in `src/claudeteam/` only.  There is **no** parallel

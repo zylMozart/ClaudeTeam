@@ -23,9 +23,9 @@ manager dispatches workers, watches their panes, and summarises back.
 > **One-click deploy — paste this prompt to your Claude Code agent:**
 >
 > ```
-> Clone https://github.com/zylMozart/ClaudeTeam.git, read CLAUDE.md
-> and docs/DEPLOYMENT.md, then walk me through bringing up a team.
-> Ask for the Feishu app credentials and chat_id when you need them.
+> Clone https://github.com/zylMozart/ClaudeTeam.git, read CLAUDE.md,
+> then walk me through bringing up a team end-to-end (including the
+> Feishu app if I don't have one yet).
 > ```
 
 ---
