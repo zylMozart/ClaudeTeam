@@ -178,34 +178,37 @@ npm install               # also installs playwright chromium (postinstall)
 node create_feishu_bot.js login
 ```
 
-**Staged mode (recommended for agents)** — each of the 7 stages
-runs as one batch of Playwright actions, then the script returns
-between stages. The driving agent (not the user) reads the
-state, sanity-checks the result, and decides whether to advance or
-re-run a stage. The user only logs in once at the start (QR scan)
-and reads off `App ID`/`App Secret` at the end — they're hands-off
-in between.
+**Drive mode (recommended for agents)** — chromium opens **once**
+and stays open across all 7 stages. After each stage finishes the
+script writes the result to `.state/<bot>.json` and waits on a
+command file. The driving agent reads the state, decides whether to
+advance, and writes `next` (or `redo <stage>`, or `quit`) to that
+file. The user only logs in once at the very start (QR scan); after
+that they're hands-off until the script announces App ID/Secret.
 
 ```bash
-# Stage 1 — create app, capture appId
-node create_feishu_bot.js stage create-app --name my-bot --desc "My bot"
+# Terminal A — start drive in the background
+node create_feishu_bot.js drive my-bot "My ClaudeTeam bot" \
+  > /tmp/drive.log 2>&1 &
 
-# Agent runs `status` to verify the stage landed, then advances:
-node create_feishu_bot.js status --app my-bot   # which stages are done
-node create_feishu_bot.js next   --app my-bot   # runs the next incomplete stage
+# Agent watches /tmp/drive.log + .state/my-bot.json. After each
+# stage settles, agent advances:
+echo next > scripts/feishu_bot_creator/.state/my-bot.cmd
 
-# Repeat `next` until publish is done. Re-run a single stage if the
-# agent decides the prior result is wrong (re-running overwrites it):
-node create_feishu_bot.js stage events --app my-bot
+# Or re-run a stage that the agent thinks went wrong:
+echo "redo events" > scripts/feishu_bot_creator/.state/my-bot.cmd
+
+# Drive auto-exits after publish; or send `quit` to bail early.
 ```
 
 Stages: `create-app → add-bot → import-scopes → data-range → events
-→ callbacks → publish`. State persists to
-`scripts/feishu_bot_creator/.state/<app-name>.json`, so a crashed or
-killed agent can resume.
+→ callbacks → publish`. Each one is described in
+[`docs/setup_feishu_bot.md`](docs/setup_feishu_bot.md) — what
+Playwright does, the equivalent manual UI steps, and how to recover
+if a stage fails.
 
 **Unattended mode** — runs all 7 stages straight through without
-returning between them. Use only when you trust the selectors fully
+agent involvement. Use only when you trust the selectors fully
 (e.g. recreating a known-good bot, or batching across many test apps):
 
 ```bash

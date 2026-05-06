@@ -12,21 +12,29 @@ deployment, the flow is the same:
    enterprise custom app + bot. If **yes**, just collect `App ID`,
    `App Secret`, and the `chat_id` of the group the bot is in. If
    **no**, drive [`scripts/feishu_bot_creator/`](../scripts/feishu_bot_creator/)
-   yourself in staged mode. The user logs in once (QR scan); after
-   that **the agent runs all 7 stages without further user
-   involvement** — `status` after each stage to verify it landed,
-   `next` to advance, re-run a stage if the prior result looks
-   wrong. Don't poll the user between stages.
+   in **drive mode**. The user logs in once (QR scan); after that
+   the agent runs all 7 stages without further user involvement.
+   Browser stays open the whole time — no re-launch between stages.
 
    ```bash
    cd scripts/feishu_bot_creator
-   npm install                                            # one-time
-   node create_feishu_bot.js login                        # one-time, user scans QR
-   node create_feishu_bot.js stage create-app --name <bot> --desc "..."
-   node create_feishu_bot.js status --app <bot>           # agent verifies
-   node create_feishu_bot.js next --app <bot>             # agent advances
-   # ...repeat status + next until publish
+   npm install                                          # one-time
+   node create_feishu_bot.js login                      # one-time, user scans QR
+
+   # Start drive (chromium opens once, stays open all 7 stages):
+   node create_feishu_bot.js drive <bot-name> "<description>" \
+     > /tmp/drive.log 2>&1 &
+
+   # After each stage drive blocks waiting on .state/<bot>.cmd.
+   # Read the log + state, then advance:
+   echo next > .state/<bot-name>.cmd
+
+   # If a stage looked wrong, redo it instead of advancing:
+   echo "redo events" > .state/<bot-name>.cmd
    ```
+
+   Per-stage details (what Playwright does, equivalent manual UI,
+   how to recover) are in [`setup_feishu_bot.md`](setup_feishu_bot.md).
 
    After `publish`, read `App ID` + `App Secret` from the Feishu open
    platform's **Credentials & Basic Info** page. The user adds the

@@ -364,7 +364,39 @@ async function runStage(page, context, stage, state) {
   if (remaining.length === 0) {
     log(`🎉 All stages complete for ${state.appName} (${state.appId})`);
   } else {
-    log(`   Next: ${remaining[0]}. Inspect the page, then run \`next --app ${state.appName}\` to continue.`);
+    log(`   Next: ${remaining[0]}.`);
+  }
+}
+
+// File-based IPC for `drive`: agent writes a command into
+// .state/<app>.cmd and the long-running browser session reads it.
+// Polling instead of fs.watch — fs.watch is flaky on macOS and we
+// don't need sub-second latency for staged dispatch.
+function cmdFilePath(appName) {
+  return path.join(STATE_DIR, `${appName}.cmd`);
+}
+
+function clearCmd(appName) {
+  try { fs.unlinkSync(cmdFilePath(appName)); } catch (e) {}
+}
+
+async function waitForCmd(appName, validCmds = ['next', 'redo', 'quit']) {
+  const p = cmdFilePath(appName);
+  log(`💤 Waiting for command at ${p}`);
+  log(`   Agent sends one of: ${validCmds.join(' / ')} (e.g. \`echo next > ${p}\`).`);
+  log(`   For 'redo <stage-id>' use the form: \`echo "redo events" > ${p}\``);
+  while (true) {
+    if (fs.existsSync(p)) {
+      let raw;
+      try { raw = fs.readFileSync(p, 'utf-8').trim(); }
+      catch (e) { await new Promise(r => setTimeout(r, 500)); continue; }
+      try { fs.unlinkSync(p); } catch (e) {}
+      if (!raw) continue;
+      const head = raw.split(/\s+/)[0];
+      if (validCmds.includes(head)) return raw;
+      log(`   ⚠️ unknown command "${raw}" — expected ${validCmds.join('/')}; ignoring.`);
+    }
+    await new Promise(r => setTimeout(r, 500));
   }
 }
 
@@ -388,18 +420,29 @@ function printHelp() {
   console.log(`
 Feishu Bot Creator
 
-Login (one-time):
+Login (one-time, user scans QR):
   node create_feishu_bot.js login
 
-Auto mode (all 7 stages back-to-back):
-  node create_feishu_bot.js create <name> <desc>
-  node create_feishu_bot.js batch <bots.json>          # [{name, description}, ...]
+Drive mode — RECOMMENDED for AI agents:
+  node create_feishu_bot.js drive <name> <desc>
+                  Opens chromium ONCE, runs the first incomplete
+                  stage, then waits on .state/<name>.cmd for the
+                  agent's next instruction. Agent advances with:
+                    echo next            > .state/<name>.cmd
+                    echo "redo events"   > .state/<name>.cmd
+                    echo quit            > .state/<name>.cmd
+                  Browser stays open across all 7 stages — no
+                  re-launch overhead, no Feishu login churn.
 
-Staged mode (pause between stages so an agent can sanity-check):
+Unattended mode (no pauses, no agent involvement):
+  node create_feishu_bot.js create <name> <desc>
+  node create_feishu_bot.js batch <bots.json>      # [{name, description}, ...]
+
+One-shot stage (re-launch chromium per call — slower; useful for
+re-running a single failed stage outside drive):
   node create_feishu_bot.js stage <stage-id> [--app <name>] [--name <n> --desc <d>]
-                                                       # first stage needs --name + --desc
-  node create_feishu_bot.js next [--app <name>]        # run the next incomplete stage
-  node create_feishu_bot.js status [--app <name>]      # show saved state
+  node create_feishu_bot.js next [--app <name>]    # run the next incomplete stage
+  node create_feishu_bot.js status [--app <name>]  # show saved state
 
 Stages: ${STAGE_IDS.join(' → ')}
 
@@ -432,6 +475,61 @@ async function cmd_login() {
   await withBrowser(async (page, context) => {
     await ensureLoggedIn(page, context);
     log('Login complete. Cookies saved.');
+  });
+}
+
+async function cmd_drive(name, desc) {
+  // Long-running browser session. The browser stays open across all 7
+  // stages — old `stage <id>` and `next` flow re-launch chromium each
+  // time, which wastes 2-3s per call AND occasionally trips Feishu's
+  // "too many login churns" rate limit. `drive` opens once, runs the
+  // first incomplete stage, then waits for the agent to write `next`
+  // / `redo <id>` / `quit` to .state/<name>.cmd before continuing.
+  if (!name) { console.error('Error: name is required'); process.exit(1); }
+  const state = loadState(name) || {
+    appName: name,
+    appDescription: desc || name,
+    appId: null,
+    completedStages: [],
+    lastStageAt: null,
+    lastError: null,
+  };
+  saveState(state);
+  clearCmd(name);  // ignore stale commands from previous sessions
+
+  await withBrowser(async (page, context) => {
+    await ensureLoggedIn(page, context);
+    while (true) {
+      const next = nextIncompleteStage(state);
+      if (!next) {
+        log(`🎉 All stages complete for ${name} (${state.appId})`);
+        log(`   Read App ID + App Secret from open.feishu.cn/app/${state.appId}/safe`);
+        break;
+      }
+      try {
+        await runStage(page, context, next, state);
+      } catch (e) {
+        log(`❌ Stage [${next.id}] failed: ${e.message}`);
+        log(`   Browser stays open — agent can fix the page manually,`);
+        log(`   then send 'next' (skip this stage as done) or 'redo ${next.id}'.`);
+      }
+      const cmd = await waitForCmd(name);
+      if (cmd === 'quit') {
+        log('👋 Quitting drive (browser closing).');
+        break;
+      }
+      if (cmd.startsWith('redo ')) {
+        const redoId = cmd.substring(5).trim();
+        if (!STAGE_IDS.includes(redoId)) {
+          log(`   ⚠️ unknown stage "${redoId}" — ignoring.`);
+          continue;
+        }
+        state.completedStages = (state.completedStages || []).filter(s => s !== redoId);
+        saveState(state);
+        log(`🔁 Will re-run stage [${redoId}].`);
+      }
+      // 'next' (default) → loop body picks the next incomplete stage.
+    }
   });
 }
 
@@ -596,6 +694,8 @@ async function main() {
 
   if (cmd === 'login') {
     await cmd_login();
+  } else if (cmd === 'drive') {
+    await cmd_drive(positional[0], positional[1]);
   } else if (cmd === 'create') {
     await cmd_create(positional[0], positional[1]);
   } else if (cmd === 'batch') {
