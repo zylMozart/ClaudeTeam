@@ -199,6 +199,34 @@ def test_pending_lines_default_list_fn_uses_bot_when_env_says_bot():
         _chat.list_recent = real_list_recent
 
 
+def test_pending_lines_default_list_fn_honors_toml_send_as_bot():
+    """Container deploy without env CLAUDETEAM_LARK_SEND_AS but with
+    [feishu] send_as = "bot" in claudeteam.toml: catchup must respect
+    the tunable and use bot identity. Boss-flagged 2026-05-06 host_smoke:
+    bot-only container catchup got rc=2 because env var wasn't pinned
+    in docker-compose; tunables fallback should cover that."""
+    captured = {}
+    from claudeteam.feishu import chat as _chat
+    real_list_recent = _chat.list_recent
+    def spy(chat_id, **kw):
+        captured["as_user"] = kw.get("as_user")
+        return []
+    _chat.list_recent = spy
+    try:
+        from helpers import env_patch
+        with isolated_env() as tmp:
+            (tmp / "claudeteam.toml").write_text(
+                '[feishu]\nsend_as = "bot"\n', encoding="utf-8")
+            from claudeteam.runtime import tunables
+            tunables.reset_cache()
+            with env_patch(CLAUDETEAM_LARK_SEND_AS=None,
+                            CLAUDETEAM_CONFIG_FILE=str(tmp / "claudeteam.toml")):
+                catchup.pending_lines("oc_x")
+        assert captured["as_user"] is False
+    finally:
+        _chat.list_recent = real_list_recent
+
+
 def test_pending_lines_default_list_fn_keeps_user_default_when_env_unset():
     captured = {}
     from claudeteam.feishu import chat as _chat

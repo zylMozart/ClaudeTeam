@@ -99,6 +99,15 @@ services:
       - FEISHU_APP_ID=${FEISHU_APP_ID:-}
       - LARKSUITE_CLI_APP_ID=${LARKSUITE_CLI_APP_ID:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Container-only deploys typically have bot OAuth (via app_secret →
+      # tenant_token in subprocess_env) but NOT user OAuth (which lives in
+      # macOS keychain / lark-cli config that the container can't reach).
+      # Pin send_as=bot here so catchup / say / slash all use bot identity
+      # and don't trip `need_user_authorization` (rc=2 from
+      # chat-messages-list when --as user without OAuth). Override with
+      # `claudeteam.toml` [feishu] send_as = "user" if the container has
+      # been set up with user OAuth.
+      - CLAUDETEAM_LARK_SEND_AS=${CLAUDETEAM_LARK_SEND_AS:-bot}
     network_mode: host
     tty: true
     stdin_open: true

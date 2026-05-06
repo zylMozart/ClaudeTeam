@@ -168,10 +168,19 @@ def pending_lines(chat_id: str, *,
     cursor = read_cursor()
     cursor_ct = str(cursor.get("create_time") or "")
     if list_fn is None:
-        # Honor CLAUDETEAM_LARK_SEND_AS so bot-only deployments don't trip
+        # Honor send_as cascade so bot-only deployments don't trip
         # `need_user_authorization` from `chat-messages-list --as user`
-        # (chat.list_recent's historical default). Mirrors `say`'s resolver.
-        as_user = env_str("CLAUDETEAM_LARK_SEND_AS").lower() != "bot"
+        # (chat.list_recent's historical default). Mirrors `say`'s resolver:
+        # legacy env CLAUDETEAM_LARK_SEND_AS first, then tunables
+        # `feishu.send_as`, default "user" (preserve pre-tunables behaviour
+        # where bare deployments without env had user-OAuth ready).
+        legacy = env_str("CLAUDETEAM_LARK_SEND_AS").lower()
+        if legacy:
+            as_value = legacy
+        else:
+            from claudeteam.runtime import tunables
+            as_value = str(tunables.tunable("feishu.send_as", "user")).lower()
+        as_user = as_value != "bot"
         def list_fn():
             return _chat.list_recent(chat_id, profile=profile,
                                      page_size=page_size, as_user=as_user)
