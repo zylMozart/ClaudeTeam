@@ -1,0 +1,15 @@
+{
+  "name": "feishu-bot-creator",
+  "version": "1.0.0",
+  "description": "Automates Feishu enterprise custom app (bot) creation via Playwright",
+  "main": "create_feishu_bot.js",
+  "scripts": {
+    "login": "node create_feishu_bot.js login",
+    "create": "node create_feishu_bot.js create",
+    "batch": "node create_feishu_bot.js batch"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

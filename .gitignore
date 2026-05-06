@@ -17,11 +17,10 @@ dist/
 /agents/
 /projects/
 /state/
-# /scripts/ shouldn't exist on this branch (CLAUDE.md bans it), but
-# left-over local checkouts of old main can carry stale runtime state
-# under that name. Belt-and-suspenders so `git add -A` can't sweep
-# .router.pid / runtime_config.json into a commit (caught round-79).
-/scripts/
+# scripts/feishu_bot_creator/ is checked in (Playwright bot creator);
+# its own .gitignore handles node_modules + cookies. Allow this dir.
+# Watch git status when adding under scripts/ so legacy state files
+# from old main checkouts don't sneak in (caught round-79).
 .claude/scheduled_tasks.lock
 # `claudeteam install-hooks` output — regenerated per deploy
 /.claude/commands/

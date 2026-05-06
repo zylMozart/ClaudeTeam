@@ -122,9 +122,12 @@ fixture instead of a real subprocess.
 
 ## What NOT to do
 
-- Don't add files to a `scripts/` directory at the repo root.  There is no
-  `scripts/` here.  Console-script entry is `pyproject.toml` →
-  `claudeteam = "claudeteam.cli:main"`.
+- Don't put business logic under `scripts/` at the repo root.
+  Console-script entry is `pyproject.toml` →
+  `claudeteam = "claudeteam.cli:main"`. The only thing allowed under
+  `scripts/` is self-contained external utilities (e.g. the bundled
+  Playwright bot creator at `scripts/feishu_bot_creator/`) — they have
+  their own `package.json` / runtime and never import claudeteam.
 - Don't reach into other modules' module-level globals from tests.
   Use the injectable kwargs (`run=`, `popen=`, `tmux_inject=`).
 - Don't add docs/ subfolders for every concern.  This file + README.md

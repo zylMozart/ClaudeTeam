@@ -156,17 +156,51 @@ role = "策划员工"
 
 ---
 
+## Feishu bot setup
+
+ClaudeTeam needs a Feishu enterprise custom app (bot) with the right
+permissions, event subscriptions, and callbacks. Two ways to set it up:
+
+### Automated (recommended)
+
+The bundled Playwright script creates and fully configures a Feishu
+bot in one command — app creation, bot capability, ~480 permission
+scopes, event subscriptions (persistent connection + message events),
+card callbacks, and version publishing.
+
+```bash
+cd scripts/feishu_bot_creator
+npm install
+npx playwright install chromium
+
+# One-time login (scan QR code with Feishu mobile)
+node create_feishu_bot.js login
+
+# Create one bot
+node create_feishu_bot.js create my-bot "My ClaudeTeam bot"
+
+# Or batch-create from a JSON list
+node create_feishu_bot.js batch bots.json
+```
+
+When done, paste the `App ID` + `App Secret` into your `.env` (Docker)
+or `claudeteam.toml` and the `chat_id` of the group the bot was added
+to.
+
+### Manual
+
+Follow [`docs/setup_feishu_bot.md`](docs/setup_feishu_bot.md) for the
+step-by-step open-platform UI walkthrough.
+
+---
+
 ## Documentation
 
 | Doc | What's in it |
 | --- | ------------ |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Host + Docker setup, config schema, multi-team isolation, troubleshooting |
+| [`docs/setup_feishu_bot.md`](docs/setup_feishu_bot.md) | Manual Feishu bot creation walkthrough |
 | [`CLAUDE.md`](CLAUDE.md) | Building rules — read before changing code |
-
-For Feishu app setup itself (creating the bot, scopes, callbacks), see
-the [Feishu bot setup guide](https://github.com/zylMozart/ClaudeTeam/blob/main/docs/setup_feishu_bots.md)
-or the
-[Playwright auto-creator script](https://github.com/zylMozart/ClaudeTeam/tree/main/scripts/feishu_bot_creator).
 
 ---
 

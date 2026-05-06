@@ -20,6 +20,11 @@ see [`tests/scenarios/`](../tests/scenarios/).
 | At least one CLI| latest  | `claude` / `codex` / `kimi` / `gemini` / `qwen` (whichever your team uses) |
 | Feishu (Lark)   | any     | enterprise app with `im:message` permission + WebSocket subscription |
 
+**Feishu app setup**: easiest path is the bundled Playwright auto-creator
+in [`scripts/feishu_bot_creator/`](../scripts/feishu_bot_creator/) — one
+command to create + permission + subscribe + publish a bot. Manual
+walkthrough at [`docs/setup_feishu_bot.md`](setup_feishu_bot.md).
+
 Optional but recommended:
 - `lark-cli` installed globally (`npm i -g @larksuite/cli`) — saves
   ~250 ms per invocation vs the `npx` fallback.
