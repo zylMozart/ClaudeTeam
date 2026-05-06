@@ -1,12 +1,55 @@
 # Deployment Guide
 
-End-to-end setup for ClaudeTeam (`rebuild/minimal` branch). Covers
-host-native deployment, Docker, single config (`claudeteam.toml`),
-multi-team isolation, and common failure modes.
+End-to-end setup for ClaudeTeam. Covers host-native, Docker, config,
+multi-team isolation, and common failures.
 
-For the project pitch and screenshots, see [README.md](../README.md).
-For day-to-day operator playbooks (smoke tests, real-task scenarios),
-see [`tests/scenarios/`](../tests/scenarios/).
+## Bringing up a team end-to-end
+
+Whether you're a human reading this or an AI agent driving the
+deployment, the flow is the same:
+
+1. **Feishu app** — does the user already have an enterprise custom
+   app + bot in their Feishu workspace? If **yes**, ask them for
+   `App ID`, `App Secret`, and the `chat_id` of the group the bot
+   is in. If **no**, drive
+   [`scripts/feishu_bot_creator/`](../scripts/feishu_bot_creator/)
+   in staged mode — it pauses between each of the 7 steps so the
+   user can spot-check the live browser before continuing:
+
+   ```bash
+   cd scripts/feishu_bot_creator
+   npm install                                            # one-time
+   node create_feishu_bot.js login                        # one-time, scan QR
+   node create_feishu_bot.js stage create-app --name <bot> --desc "..."
+   # inspect the page, then:
+   node create_feishu_bot.js next --app <bot>             # repeat until publish
+   node create_feishu_bot.js status --app <bot>           # check progress
+   ```
+
+   After `publish`, read `App ID` + `App Secret` from the Feishu open
+   platform's **Credentials & Basic Info** page; the user adds the
+   bot to a group and finds the `chat_id` via
+   `lark-cli im +chat-search --query "<group name>" --as user`.
+
+2. **Pick host or Docker** — Docker is the simpler path (no Python on
+   the host, just `docker compose`). Host is faster iteration but
+   needs Python 3.10+, tmux, and the agent CLIs locally. Sections
+   below cover both.
+
+3. **Config** — write the credentials into `.env` (Docker) and the
+   `chat_id` + agents into `claudeteam.toml`. `claudeteam init`
+   generates a starter `claudeteam.toml` with three default agents
+   (`manager` running Claude Code + `worker_cc` running Claude Code +
+   `worker_codex` running Codex CLI) — keep them for a quick first
+   smoke or edit before launch.
+
+4. **Launch + verify** — `claudeteam up` then `claudeteam health`
+   should be all green. From the Feishu group send `/health` and
+   `@manager 你好`; manager should reply within ~30 s.
+
+5. **If anything goes red**, see [Common failures](#common-failures)
+   at the bottom — it covers Claude OAuth stale, container env not
+   picked up, lark WebSocket drop, codex update prompt, etc.
 
 ---
 

@@ -20,12 +20,13 @@ manager dispatches workers, watches their panes, and summarises back.
 
 <p><img src="docs/media/example/tmux_example.png" width="800" /></p>
 
-> **One-click deploy — paste this prompt to your Claude Code agent:**
+> **One-click deploy — paste this prompt to your coding agent
+> (Claude Code, Codex, Kimi, Gemini, Qwen, ...):**
 >
 > ```
-> Clone https://github.com/zylMozart/ClaudeTeam.git, read CLAUDE.md,
-> then walk me through bringing up a team end-to-end (including the
-> Feishu app if I don't have one yet).
+> Clone https://github.com/zylMozart/ClaudeTeam.git, read
+> docs/DEPLOYMENT.md, then walk me through bringing up a team
+> end-to-end (including the Feishu app if I don't have one yet).
 > ```
 
 ---
