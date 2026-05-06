@@ -112,16 +112,32 @@ def _tmux_max_lines() -> int:
     return int(tunables.tunable("limits.tmux_capture_max_lines", 2000))
 
 
+def _live_agents() -> tuple[list[str], frozenset[str], frozenset[str], dict]:
+    """Return (ordered_list, name_set, lazy_set, agents_dict) read from
+    config NOW. Slash handlers use this instead of ctx.team_agents /
+    ctx.agent_set / ctx.lazy_agents so editing claudeteam.toml takes
+    effect immediately (no router restart). One disk read per slash
+    event — negligible vs the per-agent tmux subprocesses below."""
+    from claudeteam.runtime import config as _config
+    agents_dict = _config.load_team().get("agents", {})
+    names = list(agents_dict.keys())
+    return (names, frozenset(names),
+            frozenset(n for n, c in agents_dict.items() if c.get("lazy")),
+            agents_dict)
+
+
 def _default_agent(ctx: SlashContext) -> str:
-    return ctx.team_agents[0] if ctx.team_agents else "manager"
+    names, _, _, _ = _live_agents()
+    return names[0] if names else "manager"
 
 
 def _bad_agent(agent: str, ctx: SlashContext) -> str | None:
     """Return a Chinese warning string if `agent` is unknown, else None."""
     if not _AGENT_NAME_RE.fullmatch(agent):
         return f"⚠️ 非法 agent 名: `{agent}`"
-    if agent not in ctx.agent_set:
-        return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(ctx.agent_set)}）"
+    _, agent_set, _, _ = _live_agents()
+    if agent not in agent_set:
+        return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(agent_set)}）"
     return None
 
 
@@ -174,19 +190,9 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     caught the wart: yellow team header for a worker that's just
     waiting for its first message looks like an alarm.
     """
-    # Re-read team config on every /team so the operator sees the live
-    # set of agents — adding `[team.agents.<name>]` to claudeteam.toml
-    # is meant to take effect without restarting the router. The 1
-    # disk read per /team event is negligible vs the per-agent
-    # tmux capture_pane subprocesses below. (Earlier rounds cached
-    # this in ctx for "0 disk reads", but that broke the live-edit
-    # workflow the boss expects from a config file.)
-    from claudeteam.runtime import config as _config
-    team_data = _config.load_team()
-    agents_dict = team_data.get("agents", {})
-    team_agents = list(agents_dict.keys())
-    lazy_agents = frozenset(
-        n for n, c in agents_dict.items() if c.get("lazy"))
+    # _live_agents reads config every call so claudeteam.toml edits
+    # take effect on the next /team without a router restart.
+    team_agents, _, lazy_agents, _ = _live_agents()
 
     rows = []
     tally: Counter[str] = Counter()
@@ -360,8 +366,9 @@ def _handle_health(args: str, ctx: SlashContext) -> dict:
     Desktop where some host commands aren't visible.
     """
     from claudeteam.runtime import server_metrics
+    _, agent_set, _, _ = _live_agents()
     data = server_metrics.collect_server_load(
-        agent_set=frozenset(ctx.team_agents),
+        agent_set=agent_set,
         session=ctx.session,
     )
     elements = _build_server_load_elements(data)
@@ -570,8 +577,9 @@ def _handle_tmux(args: str, ctx: SlashContext) -> str | dict:
     raw_lines = (int(parts[1]) if len(parts) >= 2 and parts[1].isdigit()
                  else _tmux_default_lines())
     n_lines = max(1, min(raw_lines, _tmux_max_lines()))
-    if agent not in ctx.agent_set:
-        return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(ctx.agent_set)}）"
+    _, agent_set, _, _ = _live_agents()
+    if agent not in agent_set:
+        return f"⚠️ 未知 agent: `{agent}`（合法名: {sorted(agent_set)}）"
     target = tmux.Target(ctx.session, agent)
     raw = tmux.capture_pane(target, lines=n_lines).rstrip() or "(窗口为空)"
     return simple_card(

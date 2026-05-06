@@ -150,6 +150,47 @@ def test_team_card_reflects_live_toml_after_adding_agent():
         assert "worker_codex" in body2
 
 
+def test_tmux_recognises_agent_added_to_toml_without_restart():
+    """REGRESSION: /tmux <new_agent> previously rejected agents added
+    to claudeteam.toml after router started, because _bad_agent used
+    ctx.agent_set (cached at daemon boot). Now _live_agents() reads
+    config fresh so live-edits show up."""
+    from helpers import isolated_env
+    from claudeteam.runtime import paths, tunables as _tun
+
+    team = {"session": "ClaudeTeam", "agents": {
+        "manager": {"cli": "claude-code"},
+    }}
+    pane_buffers = {"manager": "x", "worker_new": "from new pane"}
+    def fake_capture(target, lines=80):
+        return pane_buffers.get(target.window, "")
+
+    with isolated_env(team=team), tmux_patch(capture_pane=fake_capture):
+        # Old ctx still says only "manager" — handler must ignore
+        # ctx and re-resolve from disk.
+        reply_known_only = slash.dispatch("/tmux worker_new",
+                                          _ctx(agents=("manager",)))
+        # Initially worker_new isn't in toml → expect 未知 agent warning
+        assert "未知 agent" in str(reply_known_only)
+
+        # Operator adds worker_new to claudeteam.toml live.
+        cf = paths.config_file()
+        cf.write_text(
+            '[team]\nsession = "ClaudeTeam"\n\n'
+            '[team.agents.manager]\ncli = "claude-code"\n\n'
+            '[team.agents.worker_new]\ncli = "claude-code"\n',
+            encoding='utf-8')
+        _tun.reset_cache()
+
+        # Same stale ctx, but /tmux now sees the new agent because
+        # _bad_agent goes through _live_agents() — no restart needed.
+        reply_after = slash.dispatch("/tmux worker_new",
+                                     _ctx(agents=("manager",)))
+        assert "未知 agent" not in str(reply_after)
+        # And the captured pane content shows up in the card
+        assert "from new pane" in str(reply_after)
+
+
 def test_team_card_keeps_green_when_only_unhealthy_is_lazy():
     """Round-129: an agent configured `lazy: true` showing 🛑 because
     its CLI hasn't spawned yet is NOT a failure — flag it ⏸ and keep
