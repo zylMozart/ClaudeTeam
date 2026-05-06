@@ -83,20 +83,31 @@ claudeteam reset      # nuclear option: also wipes state
 
 ## Docker deploy
 
+You don't need Python or `claudeteam` on the host — everything runs
+in the container. The host only needs Docker + the host's
+`~/.claude/.credentials.json` (extracted from macOS keychain on Mac
+hosts) so the container can reuse your Claude OAuth.
+
 ```bash
 # 1. fill credentials (gitignored)
 cp .env.example .env
 $EDITOR .env                    # FEISHU_APP_ID + FEISHU_APP_SECRET
 
-# 2. bootstrap a team-data dir (held outside the container so state survives `down`)
-mkdir -p team-data && cd team-data
-claudeteam init                 # writes claudeteam.toml here
-$EDITOR claudeteam.toml         # set chat_id + agents
-cd ..
+# 2. macOS only — materialise Claude OAuth from keychain into a file
+#    the container can bind-mount. Skip on Linux (file is already there).
+mkdir -p ~/.claude
+security find-generic-password -s "Claude Code-credentials" -w \
+  > ~/.claude/.credentials.json
 
-# 3. build + launch
+# 3. build the image and start the container
 docker compose build
 docker compose up -d
+
+# 4. bootstrap config inside the container (output lands in ./team-data/)
+docker compose exec --workdir /data claudeteam claudeteam init
+$EDITOR team-data/claudeteam.toml    # set chat_id + agents
+
+# 5. launch the team + verify
 docker compose exec claudeteam claudeteam install-hooks
 docker compose exec claudeteam claudeteam up
 docker compose exec claudeteam claudeteam health

@@ -105,6 +105,7 @@ RUN pip install --no-cache-dir -e .
 # any of these at run time via `docker run -e CLAUDETEAM_STATE_DIR=...`
 # or compose `environment:` if you want a different layout.
 ENV CLAUDETEAM_STATE_DIR=/data/state \
+    CLAUDETEAM_CONFIG_FILE=/data/claudeteam.toml \
     CLAUDETEAM_TEAM_FILE=/data/team.json \
     CLAUDETEAM_RUNTIME_CONFIG=/data/runtime_config.json \
     LARK_CLI_NO_PROXY=1

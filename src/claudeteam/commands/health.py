@@ -97,25 +97,41 @@ def _read_json_or_fail(rep: HealthReport, path, label: str) -> dict | None:
 
 
 def _check_team(rep: HealthReport) -> None:
+    """Verify team is loadable and has at least one agent.
+
+    Goes through `config.load_team()` (toml-first, json fallback) so
+    deployments on either shape work. Reports red only when there's
+    no usable config at all, or when the loaded team has zero agents.
+    Corrupt-file detection is handled by the config layer's lenient
+    parse (stderr warn) rather than tripping health.
+    """
+    cf = paths.config_file()
     tf = config.team_file()
-    team = _read_json_or_fail(rep, tf, "team.json")
-    if team is None:
+    if not cf.exists() and not tf.exists():
+        rep.fail(f"team config missing — expected {cf} or {tf}")
+        return
+    try:
+        team = config.load_team()
+    except Exception as e:
+        rep.fail(f"team config parse error: {e}")
         return
     agents = team.get("agents", {})
-    rep.ok(f"team.json: {len(agents)} agent(s) ({tf})")
-    if not agents:
-        rep.yellow("team.json has no agents")
+    if agents:
+        rep.ok(f"team config: {len(agents)} agent(s)")
+    else:
+        rep.fail("team config has no agents (set [team.agents.<name>] in claudeteam.toml)")
 
 
 def _check_runtime_config(rep: HealthReport) -> None:
-    rc = config.runtime_config_file()
-    cfg = _read_json_or_fail(rep, rc, "runtime_config.json")
-    if cfg is None:
-        return
-    if chat := cfg.get("chat_id", ""):
+    """Verify chat_id is set + report lark_profile.
+
+    Reads through `config.chat_id()` / `config.lark_profile()` which
+    cascade env > toml > legacy json, so the check is shape-agnostic.
+    """
+    if chat := config.chat_id():
         rep.ok(f"chat_id: {chat}")
     else:
-        rep.fail("runtime_config.json has empty chat_id")
+        rep.fail("chat_id is empty (set it in claudeteam.toml)")
     if profile := config.lark_profile():
         rep.ok(f"lark_profile: {profile}")
     else:

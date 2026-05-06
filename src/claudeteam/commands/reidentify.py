@@ -50,6 +50,16 @@ def _reidentify_one(agent: str, session: str, *,
     except KeyError as e:
         print(f"  ⚠️ {agent}: {e}")
         return False
+    # Re-render identity.md from current config BEFORE injecting the
+    # wake prompt — the prompt only tells the pane "go read your
+    # identity.md", so a stale disk file means the LLM picks up the
+    # OLD specialty / role / notes. Edits to claudeteam.toml only
+    # land in the pane via this rewrite.
+    try:
+        identity.write(agent)
+    except Exception as e:
+        print(f"  ⚠️ {agent}: identity write failed: {e}")
+        return False
     if not tmux.inject(target, identity.init_prompt(agent),
                        submit_keys=adapter.submit_keys()):
         print(f"  ❌ {agent}: tmux inject failed")
@@ -108,6 +118,12 @@ def main(argv: list[str]) -> int:
             f"❌ {agent} has no pane in session {session} "
             f"(was it fired? try `claudeteam hire {agent}`)")
     adapter = adapter_for_agent(agent)
+    # Same as the --all path: re-render disk before inject so LLM
+    # picks up new claudeteam.toml fields, not the snapshot at spawn.
+    try:
+        identity.write(agent)
+    except Exception as e:
+        return error_exit(f"❌ identity write failed for {agent}: {e}")
     if not tmux.inject(target, identity.init_prompt(agent),
                        submit_keys=adapter.submit_keys()):
         return error_exit(f"❌ failed to inject identity init into {agent}")

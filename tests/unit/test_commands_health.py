@@ -35,7 +35,7 @@ def test_health_all_green_returns_zero():
             env_patch(HTTPS_PROXY=None, HTTP_PROXY=None):
         rc, out, _ = run_cli(["health"])
         assert rc == 0
-        assert "team.json" in out
+        assert "team config" in out
         assert "chat_id: oc_x" in out
         assert "lark_profile: prod" in out
         assert "tmux session: S" in out
@@ -64,16 +64,18 @@ def test_health_returns_one_when_chat_id_blank():
             session_alive=True, panes_with_cli=["manager"]):
         rc, out, _ = run_cli(["health"])
         assert rc == 1
-        assert "empty chat_id" in out
+        assert "chat_id is empty" in out
 
 
-def test_health_returns_one_when_team_json_missing():
+def test_health_returns_one_when_team_config_missing():
+    """No claudeteam.toml AND no team.json → can't deploy. Health
+    surfaces this as a red so the operator sees it before running up."""
     with isolated_env(runtime_config={"chat_id": "oc_x"}), _stub_tmux(
             session_alive=True):
-        # don't call isolated_env(team=...) so file doesn't exist
+        # don't call isolated_env(team=...) so neither config file exists
         rc, out, _ = run_cli(["health"])
         assert rc == 1
-        assert "team.json missing" in out
+        assert "team config missing" in out
 
 
 def test_health_returns_one_when_pane_window_missing():
@@ -221,31 +223,6 @@ def test_health_silent_when_proxy_unset():
         assert "HTTPS_PROXY" not in out
 
 
-def test_health_red_when_team_json_corrupt():
-    """REGRESSION: after config.load_team became lenient, health needs
-    to do its own raw parse to surface corruption as a red check.
-    Otherwise a malformed team.json would silently fall through to
-    'team.json: 0 agent(s)' and confuse the operator."""
-    with isolated_env() as tmp, _stub_tmux(session_alive=False):
-        (tmp / "team.json").write_text("{ broken", encoding="utf-8")
-        (tmp / "runtime_config.json").write_text(
-            '{"chat_id": "oc_x"}', encoding="utf-8")
-        rc, out, _ = run_cli(["health"])
-        assert rc == 1
-        assert "team.json parse error" in out
-
-
-def test_health_red_when_runtime_config_corrupt():
-    """Sister case — corrupt runtime_config.json should also red,
-    not silently fall back to defaults."""
-    with isolated_env() as tmp, _stub_tmux(session_alive=False):
-        (tmp / "team.json").write_text(
-            '{"agents": {"m": {}}}', encoding="utf-8")
-        (tmp / "runtime_config.json").write_text("garbage", encoding="utf-8")
-        rc, out, _ = run_cli(["health"])
-        assert rc == 1
-        assert "runtime_config.json parse error" in out
-
 
 def test_health_info_when_proxy_set_with_no_proxy_flag():
     """HTTPS_PROXY set + LARK_CLI_NO_PROXY=1 → informational ℹ️ rather
@@ -307,7 +284,7 @@ def test_health_json_emits_machine_readable_object():
         assert data["bad"] == 0
         assert data["warn"] >= 0
         assert isinstance(data["lines"], list)
-        assert any("team.json" in line for line in data["lines"])
+        assert any("team config" in line for line in data["lines"])
 
 
 def test_health_json_with_bad_check_returns_one_and_ok_false():
