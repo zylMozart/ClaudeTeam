@@ -1,79 +1,205 @@
 # 飞书企业自建应用（机器人）创建指南
 
-本文档介绍如何在飞书开放平台手动创建一个企业自建应用，并配置机器人能力、权限、事件订阅、回调及版本发布。
+ClaudeTeam 部署需要一个飞书企业自建 App + 机器人能力 + 一组权限 +
+事件订阅 + 卡片回调 + 已发布版本。整个流程由
+[`scripts/feishu_bot_creator/create_feishu_bot.js`](../scripts/feishu_bot_creator/create_feishu_bot.js)
+分成 **7 个 stage**，每个 stage 内部由 Playwright 跑完一段 UI 操作，
+跑完即 exit；驱动它的 AI agent 用 `status` 自检结果，再用 `next`
+推进到下一 stage。**用户全程只需要扫一次 QR 登录**，之后由 agent
+托管完成，最后报回 `App ID` + `App Secret`。
 
-> **自动化方案：** 让 AI agent 驱动 [`scripts/feishu_bot_creator/create_feishu_bot.js`](../scripts/feishu_bot_creator/create_feishu_bot.js) 脚本即可——分 7 个 stage（create-app / add-bot / import-scopes / data-range / events / callbacks / publish），每个 stage 内部 Playwright 自动跑完，stage 之间 agent 用 `status` 自检结果再 `next` 推进。**用户只在最开始扫码 login 一次，之后全程不参与，直到 agent 跑完拿到 App ID / Secret 报回**。命令用法见脚本顶部注释。
-
----
-
-## 第一步：创建应用
-
-1. 访问 [飞书开放平台开发者后台](https://open.feishu.cn/app)
-2. 点击 **创建企业自建应用**
-3. 填写**应用名称**和**应用描述**，点击 **创建**
-
----
-
-## 第二步：添加机器人能力
-
-在应用的「添加应用能力」页面中，找到**机器人**卡片，点击 **添加**。
+如果 UI 改版导致脚本某个 stage 失败，agent 可以参照本文里对应章节
+的"页面变化"描述手动操作那一个 stage，再用 `next` 接着自动跑剩下
+的——不必整套重来。
 
 ---
 
-## 第三步：批量导入权限
+## 入口命令
 
-1. 在左侧菜单「开发配置」中选择 **权限管理**
-2. 点击 **批量导入/导出权限**
-3. 选择「导入」，将 [`feishu_scopes.json`](../scripts/feishu_bot_creator/feishu_scopes.json) 的内容粘贴到编辑器中，点击 **下一步，确认新增权限**
-4. 在确认页面中点击 **添加**
+```bash
+cd scripts/feishu_bot_creator
+npm install                                      # postinstall 自动装 chromium
+node create_feishu_bot.js login                  # 一次性, 用户扫 QR
+node create_feishu_bot.js stage create-app --name <bot-name> --desc "<desc>"
+node create_feishu_bot.js status --app <bot-name>     # agent 自检
+node create_feishu_bot.js next   --app <bot-name>     # 推进到下一 stage
+node create_feishu_bot.js stage <stage-id> --app <bot-name>   # 重跑某 stage
+```
 
-> 权限共计 **483 条**（Tenant 234 条 + User 249 条），覆盖以下模块：
-> Base/Bitable、Board、Calendar、CardKit、Contact/Directory、
-> Docs/Docx、Drive、Helpdesk、IM（消息/群组）、Mail、Minutes、
-> Search、Sheets、Slides、Space、Task、VC、Wiki、Approval、Attendance
->
-> 完整 JSON 见 [`feishu_scopes.json`](../scripts/feishu_bot_creator/feishu_scopes.json)
-
----
-
-## 第四步：配置可访问的数据范围
-
-导入权限后会自动弹出数据范围配置对话框。如果没有弹出，可以在权限管理页面中点击 **配置**。
-
-1. 点击 **配置**
-2. 选择 **全部**，然后点击 **保存**
-3. 确认后关闭配置页面
+state 文件路径：`scripts/feishu_bot_creator/.state/<bot-name>.json`，
+crash 后再起脚本会从同一断点继续。
 
 ---
 
-## 第五步：配置事件订阅
+## Stage 1 — `create-app`
 
-1. 在左侧菜单「开发配置」中选择 **事件与回调**
-2. 在「事件配置」中，点击**订阅方式**右侧的编辑按钮
-3. 订阅方式选择 **长连接**（persistent connection），点击 **保存**
-4. 点击 **添加事件**
-5. 搜索 `message`，在 Tenant Token 和 User Token 两个标签页中勾选**所有事件**，点击 **添加**
-6. 如果弹出「建议添加的权限」对话框，点击 **添加权限** 即可
+**目标**：在飞书开放平台创建一个企业自建应用，从 URL 拿到 App ID。
 
----
+**自动操作**：
+1. 跳转 [https://open.feishu.cn/app](https://open.feishu.cn/app)
+2. 点 **"Create Custom App"**（创建企业自建应用）
+3. 在弹出的表单填 `--name` 给出的应用名
+4. 在 textarea 填 `--desc` 给出的应用描述
+5. 点 **"Create"**
+6. 跳转后从 URL `…/app/cli_xxx/capability` 中正则匹配 App ID
+7. 写入 `.state/<bot-name>.json` 的 `appId` 字段
 
-## 第六步：配置回调
+**对应 manual UI**：登录开放平台 → 「创建企业自建应用」→ 填名字 +
+描述 → 「创建」。完成后浏览器地址栏的 `cli_xxx` 就是 App ID。
 
-1. 切换到 **回调配置** 标签页
-2. 点击**订阅方式**右侧的编辑按钮，选择 **长连接**，点击 **保存**
-3. 点击 **添加回调**
-4. 勾选 **卡片回传交互**（card.action.trigger），点击 **添加**
+**完成判断**：state 文件里 `appId` 非空，且 `completedStages` 含
+`create-app`。
 
----
-
-## 第七步：创建版本并发布
-
-1. 在左侧菜单「版本管理与发布」中，点击 **创建版本**
-2. 表单保留默认值，滚动到页面底部点击 **保存**
-3. 在弹出的对话框中点击 **确认发布**
+**失败常见原因**：用户未登录（前置 `login` 没跑或 cookie 过期）。
+解决：跑 `node create_feishu_bot.js login` 重新扫码。
 
 ---
 
-## 完成
+## Stage 2 — `add-bot`
 
-应用创建完成后，状态为 **已启用**（Enabled）。可在开发者后台的「凭证与基础信息」页面获取 App ID 和 App Secret，用于后续 API 调用。
+**目标**：给应用添加"机器人"能力，否则后续没办法发卡 / 收消息。
+
+**自动操作**：
+1. 跳转 `…/app/<appId>/capability`
+2. 在能力列表里点第一个 **"Add"** 按钮（机器人卡片）
+3. 等待跳转到 `…/bot` 页面
+
+**对应 manual UI**：进应用 → 左侧「添加应用能力」→ 找到「机器人」
+卡片点「添加」。
+
+**完成判断**：URL 里出现 `/bot`，且 `completedStages` 含 `add-bot`。
+
+**失败常见原因**：能力列表的 "Add" 按钮顺序变了。解决：手动加完
+机器人能力后跑 `next` 跳到 stage 3。
+
+---
+
+## Stage 3 — `import-scopes`
+
+**目标**：通过 Monaco 编辑器批量粘贴
+[`feishu_scopes.json`](../scripts/feishu_bot_creator/feishu_scopes.json)
+里的 ~480 条权限作用域（IM / Docs / Drive / Calendar / Base / Wiki /
+Mail 等），一次性全部添加。
+
+**自动操作**：
+1. 跳转 `…/app/<appId>/auth`（权限管理）
+2. 点 **"Batch import/export scopes"**
+3. 在弹出 dialog 的 Monaco editor 里 `Cmd+A` → `Backspace` 清空
+4. 把 JSON 内容写到剪贴板，`Cmd+V` 粘贴
+5. 点 **"Next, Review New Scopes"**
+6. 点 **"Add"** 确认导入
+
+**对应 manual UI**：左侧「权限管理」→「批量导入/导出权限」→ 选
+「导入」→ 粘贴 `feishu_scopes.json` 全部内容 → 「下一步」→ 「添加」。
+
+**完成判断**：导入后权限列表显示约 480 条权限；`completedStages`
+含 `import-scopes`。
+
+**失败常见原因**：Monaco editor 的 textarea 被 span 覆盖（脚本就是
+为此点 `.view-lines` 而不是 textarea）；或剪贴板权限被浏览器拦
+截。解决：手动打开 batch import 对话框、粘贴 JSON 完成后跑 `next`。
+
+---
+
+## Stage 4 — `data-range`
+
+**目标**：把"数据访问范围"设为「全部」，否则后续机器人在某些群
+里读不到消息。
+
+**自动操作**：
+1. stage 3 导入权限后会自动弹"配置数据访问范围"对话框
+2. 点对话框内的 **"Configure"**
+3. 选 **"All"** → **"Save"** → **"Confirm"**
+4. 如果对话框未弹（之前已配过），跳过这步
+
+**对应 manual UI**：弹出对话框 →「配置」→ 选「全部」→ 「保存」→
+「确认」。
+
+**完成判断**：对话框消失，`completedStages` 含 `data-range`。
+
+**失败常见原因**：对话框选择器变化。解决：手动在权限管理页面找
+「配置数据范围」按钮设为「全部」，然后跑 `next`。
+
+---
+
+## Stage 5 — `events`
+
+**目标**：把订阅模式设为**长连接（persistent connection）**而不是
+回调 URL，并订阅所有 `message` 相关事件（Tenant + User token 双
+tab 全勾）。
+
+**自动操作**：
+1. 跳转 `…/app/<appId>/event`
+2. 找「Subscription mode」编辑按钮 → 点开 → 默认是长连接 → **Save**
+3. 点 **"Add Events"** → 搜 `message` → Tenant Token tab 勾全部
+   checkbox → User Token-Based Subscription tab 切换勾全部
+4. **"Add"** 提交
+5. 如果弹「建议添加的权限」对话框，点 **"Add Scopes"** 关掉
+
+**对应 manual UI**：左侧「事件与回调」→「事件配置」→ 编辑订阅方
+式 → 选「长连接」保存 →「添加事件」→ 搜 `message` → 两个 tab 全
+勾 → 「添加」。
+
+**完成判断**：事件列表里出现 `im.message.receive_v1` 等条目；
+`completedStages` 含 `events`。
+
+**失败常见原因**：tab 切换的文案 "User Token-Based Subscription" 改
+了。解决：手动按上述步骤勾选完事件订阅后跑 `next`。
+
+---
+
+## Stage 6 — `callbacks`
+
+**目标**：在「回调配置」tab 启用 **`card.action.trigger`**，让用户
+点卡片按钮的事件能回到机器人（ClaudeTeam 不依赖这个但保留以备
+未来用）。
+
+**自动操作**：
+1. 在 events 同一页切到 **"Callback Configuration"** tab
+2. 编辑订阅方式 → 长连接 → Save
+3. 点 **"Add callback"** → 勾第一个 checkbox（`card.action.trigger`）
+   → **"Add"**
+
+**对应 manual UI**：「事件与回调」→「回调配置」→ 编辑订阅方式 →
+长连接保存 → 「添加回调」→ 勾「卡片回传交互」→ 「添加」。
+
+**完成判断**：回调列表里出现 `card.action.trigger`；
+`completedStages` 含 `callbacks`。
+
+---
+
+## Stage 7 — `publish`
+
+**目标**：把以上所有配置打包成一个版本并发布上线，否则机器人不
+会真的开始接事件。
+
+**自动操作**：
+1. 跳转 `…/app/<appId>/version`
+2. 点 **"Create Version"**
+3. 跳到表单，滚动到底部点 **"Save"**（保留默认值）
+4. 在弹出确认框点 **"Publish"**
+
+**对应 manual UI**：左侧「版本管理与发布」→「创建版本」→ 表单保
+留默认 → 滚到底「保存」→ 弹出确认框「确认发布」。
+
+**完成判断**：版本列表里出现新版本，状态「已启用」；
+`completedStages` 含 `publish` —— 这时整个 7 stage 走完，agent
+应该停下来去开放平台「凭证与基础信息」页读 App ID + App Secret，
+报给用户。
+
+---
+
+## 完成之后
+
+把 `App ID` + `App Secret` + 你把机器人加到的飞书群的 `chat_id`
+喂给 `claudeteam`（写进 `.env` 或 `claudeteam.toml`），后面就走
+[`docs/DEPLOYMENT.md`](DEPLOYMENT.md) 的 step 2-4。
+
+`chat_id` 怎么拿：
+
+```bash
+LARK_CLI_NO_PROXY=1 lark-cli im +chat-search \
+  --query "<群名关键字>" --as user
+```
+
+输出里的 `oc_xxxxxxxx` 就是 chat_id。
