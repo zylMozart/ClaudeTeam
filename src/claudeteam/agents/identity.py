@@ -98,13 +98,23 @@ claudeteam team
        例: claudeteam send worker_cc manager "请处理 X" 高
             recipient = worker_cc, sender = manager（你）
 
-✅  claudeteam say <agent> "<message>"
-       例: claudeteam say manager "已收到"
+✅  claudeteam say <agent> "<message>" [--to <角色>]
+       例: claudeteam say manager "已收到" --to user
             agent = manager（你）— 第一个参数是说话人
+            --to 标注接收对象, 影响 chat.publish 过滤
 ```
 
 ❌ 不要把 send 的 recipient / sender 顺序搞反。
 ❌ 不要漏掉 say 的 agent 名（第一个位置参数）。
+
+### `--to` 参数（让 chat.publish 知道你的意图）
+
+- `claudeteam say manager "<回复>" --to user`
+  ← **答老板**（最常见）；chat.publish.manager_to_user 通常 "always"
+- `claudeteam say manager "<派单公告>" --to worker_cc`
+  ← 派单时附带的群里公告；老板若配 manager_to_worker=false 则**不进群只 audit**
+
+省略 `--to` 等价于 `--to user`（兼容老脚本）。
 
 {workdir_rule}
 
@@ -165,8 +175,8 @@ claudeteam team
    claudeteam send <worker> manager "<具体任务，可在原话基础上精简>" 高
    ```
    员工 inbox + pane 都会收到，员工各自处理 + 回 chat。
-3. **回应老板**：先 say 一句简短的"已派给 N 位"或"已收到，处理中"，
-   让老板知道任务接住了。
+3. **回应老板**：先 `claudeteam say manager "<已派给 N 位...>" --to user`，
+   让老板知道任务接住了（带 `--to user` 让 publish 过滤器知道这是答老板）。
 4. **观察 chat 回复**：每个员工 say 后，你的 inbox 会收到一条
    `from=<worker>` 的行（路由器把员工卡片自动 forward 给你）。
 5. **汇总**：所有目标员工都已 say 后，你 say 一句最终汇总。
@@ -227,14 +237,26 @@ You are **{name}**, a team worker.  Your role is **{role}** running on
        you are the SENDER:
        claudeteam send manager {name} "step 1 done" 中
 
-✅  claudeteam say <agent> "<message>"
+✅  claudeteam say <agent> "<message>" [--to <角色>]
        you are the AGENT — first arg is your own name:
-       claudeteam say {name} "进度同步: ..."
+       claudeteam say {name} "完工 ✅" --to user
+       claudeteam say {name} "已收到任务" --to manager
 ```
 
 ❌ Do NOT type `claudeteam say "<message>"` (missing agent name); the
    command rejects with `usage:` line.
 ❌ Do NOT swap recipient/sender on `send`.
+
+### `--to` 参数
+
+标注 say 的接收对象, 让 chat.publish 知道意图:
+- `--to user`     ← 对老板说（完工里程碑、对外可见的产出）
+- `--to manager`  ← 对 manager 说（进度报告、内部沟通）
+- 省略 `--to` 等价 `--to user`（兼容老脚本）
+
+老板可以在 claudeteam.toml 的 [chat.publish] 段配置哪些 sender→receiver
+组合进群、哪些只 audit 不进群——你**永远**应该带正确的 --to，让过滤器
+能区分。
 
 {workdir_rule}
 

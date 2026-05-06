@@ -200,6 +200,52 @@ def test_manager_omits_team_specialties_block_when_no_worker_has_specialty():
     assert "## 团队成员专长" not in text
 
 
+# ── Step 4b: identity 模板教 LLM 用 --to ────────────────────
+
+
+def test_manager_identity_teaches_to_user():
+    team = {"agents": {"manager": {"cli": "claude-code", "model": "opus",
+                                    "role": "主管"}}}
+    with isolated_env(team=team):
+        text = identity.render("manager")
+    # manager 必须看到 `--to user` 用法和 chat.publish 提示
+    assert "--to user" in text
+    assert "chat.publish" in text
+
+
+def test_manager_identity_dispatch_step_uses_to_user():
+    team = {"agents": {"manager": {"cli": "claude-code", "model": "opus",
+                                    "role": "主管"}}}
+    with isolated_env(team=team):
+        text = identity.render("manager")
+    # 派活流程 step 3 例子要带 --to user
+    assert 'claudeteam say manager "<已派给 N 位...>" --to user' in text
+
+
+def test_worker_identity_teaches_both_to_targets():
+    team = {"agents": {"worker_cc": {"cli": "claude-code", "model": "sonnet",
+                                      "role": "员工"}}}
+    with isolated_env(team=team):
+        text = identity.render("worker_cc")
+    # worker 要知道两个常见 --to 值
+    assert "--to user" in text
+    assert "--to manager" in text
+
+
+def test_identity_say_no_to_means_user_documented():
+    """两个 body 都要明说"省略 --to 等价 --to user"，避免老脚本不带 --to 时
+    LLM 困惑。"""
+    team = {"agents": {
+        "manager": {"cli": "claude-code", "model": "opus", "role": "主管"},
+        "worker_cc": {"cli": "claude-code", "model": "sonnet", "role": "员工"},
+    }}
+    with isolated_env(team=team):
+        mgr = identity.render("manager")
+        wkr = identity.render("worker_cc")
+    assert "省略 `--to` 等价" in mgr
+    assert "省略 `--to` 等价" in wkr
+
+
 def test_write_overwrites_existing_file():
     """Round-88 caught: worker body now mentions 'oldest auto-drop' so a
     naive 'old' substring leaks. Pin the role line explicitly so the

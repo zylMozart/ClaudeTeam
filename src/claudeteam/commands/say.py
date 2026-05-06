@@ -66,22 +66,39 @@ def _role_of(name: str) -> str:
 
 
 def _publish_allowed(sender: str, to_target: str) -> bool:
-    """Look up `chat.publish.{sender_role}_to_{receiver_role}` in toml.
+    """Look up publish rule for sender→receiver, with agent-level override.
 
-    Default for any unset key is True (preserves the pre-Step-3 behavior
-    where every `say` posted to chat). Operators turn keys to false to
-    silence specific channels (e.g. manager_to_worker = false makes
-    派单卡只走 send/inbox 不进群).
+    Priority:
+      1. team.agents.<sender>.publish_overrides.{key}  (single-agent override)
+      2. chat.publish.{key}                             (team-wide tunable)
+      3. default True                                    (preserves pre-Step-3 behavior)
 
-    "always" is treated as True — the schema uses "always" as a hint
-    that this lane shouldn't be silenced (老板↔manager 必显), but the
-    semantic is just "send".
+    `key` = "{sender_role}_to_{receiver_role}".
+
+    "always" is treated as True — schema uses it as a "don't silence"
+    hint but the runtime semantic is just "send".
+
+    Agent-level override is for cases like "I want worker_cc 完工卡进群,
+    but worker_codex 完工卡静默" — set worker_codex.publish_overrides
+    = {worker_to_user = false} without touching the global rule.
     """
     from claudeteam.runtime import tunables
     sender_role = _role_of(sender)
     receiver_role = _role_of(to_target)
-    key = f"chat.publish.{sender_role}_to_{receiver_role}"
-    val = tunables.tunable(key, True)
+    key = f"{sender_role}_to_{receiver_role}"
+
+    # 1. Agent-level override
+    try:
+        agent_cfg = config.agent_config(sender)
+    except KeyError:
+        agent_cfg = {}
+    overrides = agent_cfg.get("publish_overrides") or {}
+    if key in overrides:
+        v = overrides[key]
+        return v == "always" or bool(v)
+
+    # 2. Global tunable
+    val = tunables.tunable(f"chat.publish.{key}", True)
     if val == "always":
         return True
     return bool(val)

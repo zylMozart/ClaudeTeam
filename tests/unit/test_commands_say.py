@@ -390,3 +390,88 @@ def test_say_to_arg_value_required():
         rc, _, err = run_cli(["say", "manager", "msg", "--to"])
     assert rc == 1
     assert "usage: claudeteam say" in err
+
+
+# ── Step 4a: publish_overrides 单 agent 覆盖 ───────────────────
+
+
+def _isolated_with_overrides(agent: str, overrides: dict, **other_agent_cfg):
+    """Build an isolated_env where the named agent has publish_overrides."""
+    full_cfg = {"role": "测试", "emoji": "💎", "color": "green",
+                "publish_overrides": overrides, **other_agent_cfg}
+    return isolated_env(
+        team={"agents": {
+            "manager": {"role": "团队主管", "emoji": "🎯", "color": "blue"},
+            agent: full_cfg,
+        }},
+        runtime_config={"chat_id": "oc_test", "lark_profile": ""},
+    )
+
+
+def test_say_overrides_force_silence_when_global_default_true():
+    """Even if chat.publish is unset (default True), agent override
+    can still silence its own channel."""
+    with _isolated_with_overrides("worker_cc", {"worker_to_user": False}) as tmp, \
+            _fake_send() as send:
+        rc, out, _ = run_cli(["say", "worker_cc", "完工", "--to", "user"])
+        assert rc == 0
+        assert len(send["calls"]) == 0
+        assert "silenced" in out
+
+
+def test_say_overrides_force_pass_when_global_silenced():
+    """Override can also force-allow a channel that's globally silenced."""
+    with _isolated_with_overrides("worker_cc", {"worker_to_manager": True}) as tmp, \
+            _fake_send() as send:
+        _toml_with_publish(tmp, worker_to_manager=False)
+        rc, _, _ = run_cli(["say", "worker_cc", "进度", "--to", "manager"])
+        assert rc == 0
+        assert len(send["calls"]) == 1
+
+
+def test_say_overrides_take_precedence_over_global():
+    """When global says false but override says true, override wins."""
+    with _isolated_with_overrides("worker_cc", {"worker_to_user": True}) as tmp, \
+            _fake_send() as send:
+        _toml_with_publish(tmp, worker_to_user=False)
+        rc, _, _ = run_cli(["say", "worker_cc", "完工", "--to", "user"])
+        assert rc == 0
+        assert len(send["calls"]) == 1
+
+
+def test_say_overrides_always_treated_as_true():
+    with _isolated_with_overrides("worker_cc", {"worker_to_user": "always"}) as tmp, \
+            _fake_send() as send:
+        _toml_with_publish(tmp, worker_to_user=False)
+        rc, _, _ = run_cli(["say", "worker_cc", "完工", "--to", "user"])
+        assert rc == 0
+        assert len(send["calls"]) == 1
+
+
+def test_say_overrides_other_agents_unaffected():
+    """worker_cc has override forcing silence; worker_codex w/o override
+    follows global rule."""
+    other = {"role": "数据", "emoji": "🟦", "color": "purple"}
+    with isolated_env(team={"agents": {
+        "manager": {"role": "主管"},
+        "worker_cc": {"role": "策划", "publish_overrides": {"worker_to_user": False}},
+        "worker_codex": other,
+    }}, runtime_config={"chat_id": "oc_test", "lark_profile": ""}) as tmp, \
+            _fake_send() as send:
+        # worker_cc → 静默
+        rc1, _, _ = run_cli(["say", "worker_cc", "完工 cc", "--to", "user"])
+        assert len(send["calls"]) == 0
+        # worker_codex → 通过（默认 True）
+        rc2, _, _ = run_cli(["say", "worker_codex", "完工 codex", "--to", "user"])
+        assert len(send["calls"]) == 1
+        assert rc1 == 0 and rc2 == 0
+
+
+def test_say_no_override_falls_through_to_global():
+    """Agent without publish_overrides → global rule applies."""
+    with _isolated() as tmp, _fake_send() as send:
+        _toml_with_publish(tmp, manager_to_worker=False)
+        rc, out, _ = run_cli(["say", "manager", "派单", "--to", "worker_cc"])
+        assert rc == 0
+        assert len(send["calls"]) == 0
+        assert "silenced" in out

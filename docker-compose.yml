@@ -35,7 +35,17 @@ services:
       # lock can't be acquired and lark-cli misreports "another
       # instance running". RW mount needed so subscribe can claim
       # the per-app lock inside the container.
-      - ${HOME}/.lark-cli:/root/.lark-cli
+      #
+      # 2026-05-06: 拆分两个挂载 — 共享 config（host 与容器复用
+      # 同一份 OAuth profile）但 *不* 共享 locks/。原来 mount 整
+      # 个 ~/.lark-cli 让 host router & 容器 router 抢同一个 fcntl
+      # 锁文件 (host_smoke 实测: 容器持锁后 host 报 "another instance
+      # running"; 反过来同样)。现在容器锁独立, host 与容器可以并存
+      # (虽然 lark 服务端仍只允许一条 subscribe, 但锁文件层面不互
+      # 干扰; 是否两个同时跑由 operator 决定)。
+      - ${HOME}/.lark-cli/config.json:/root/.lark-cli/config.json
+      - ${HOME}/.lark-cli/cache:/root/.lark-cli/cache
+      # locks/ 是容器私有 — 跟 host 隔离
       # R168: bind-mount host's claude OAuth so container reuses it
       # without an interactive login. Mirrors `feat/messaging-fixes-
       # block1` / `main`'s pattern (their docker-compose.yml mounts
