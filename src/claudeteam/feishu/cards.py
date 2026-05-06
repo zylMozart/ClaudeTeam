@@ -1,25 +1,18 @@
 """Feishu interactive card builders.
 
-Slash handlers can return a dict matching the Feishu **card v2** schema
-and `deliver._apply_slash` will send it via `chat.send_card`
+Slash handlers return a dict matching Feishu **card v2** schema and
+`deliver._apply_slash` sends it via `chat.send_card`
 (`--msg-type interactive`) instead of plain text.
 
-Builders are pure: no I/O, no env reads. One constructor (`simple_card`)
-plus two helpers (`beijing_stamp`, `fenced_block`) shared across slash
-handlers that produce timestamped / monospace card bodies.
+Builders are pure: no I/O, no env reads. `simple_card` is the
+one-section constructor; `column_set_2/3` + `rich_card` build
+multi-section layouts (used by /health and /usage). `beijing_stamp`
+and `fenced_block` produce the timestamp suffix and monospace fence
+that titles / bodies share.
 
-R159: migrated from card v1 (`elements: [{tag:"div", text:{tag:"lark_md",
-content:...}}]`) to card v2 (`body: {elements: [{tag:"markdown",
-content:...}]}`). The v1 `lark_md` text tag did NOT render fenced code
-blocks (triple-backtick fences) — three-backticks showed up as literal text.
-v2's dedicated `markdown` element renders the full GFM subset including
-fenced blocks AND nested lists, validated live in the test_a chat
-(message D `om_x100b50b5131ed13cb229d7c5f1c16b0` for fenced, E
-`om_x100b50b52c50fcb0b2ad0b2268f202d` for nested list + trailing text).
-
-(R79 also shipped `kv_card` for `**key**: value` listings; R137
-removed it — never had a production caller. Add back if a future
-handler genuinely needs the shape.)
+We're on card v2 (`schema: "2.0"`) because v1's `lark_md` element
+silently dropped fenced code blocks and nested lists. v2's
+`markdown` element renders the full GFM subset.
 """
 from __future__ import annotations
 
@@ -63,32 +56,19 @@ def simple_card(title: str, body: str, *, color: str = "blue") -> dict:
 
 def beijing_stamp(now: Callable[[], datetime] = datetime.now) -> str:
     """Format `now()` as `YYYY-MM-DD HH:MM 北京时间` — the trailing
-    suffix every card title uses (R85 manager identity 沟通格式 rule).
-
-    Round-117: extracted from 5 slash card handlers. R136: lifted out
-    of `slash.py` into `cards.py` (canonical card-builder home) and
-    decoupled from SlashContext by taking a `now` callable directly.
-    Slash callers pass `ctx.now` at the call site; tests can pin a
-    fixed clock the same way.
-    """
+    suffix every card title uses (manager identity rule that all
+    timestamps shown to the boss are in Beijing time)."""
     return f"{now().strftime('%Y-%m-%d %H:%M')} 北京时间"
 
 
 def fenced_block(text: str) -> str:
-    """Wrap `text` in a triple-backtick lark_md fence so monospace /
-    box-drawing / ANSI artefacts survive Feishu's lark_md collapsing
-    (which would otherwise eat indentation and merge consecutive spaces).
-
-    Round-118: extracted from 3 card handlers (/health, /usage, /tmux)
-    that all do the same `f"```\\n{out}\\n```"` wrap. R136: moved from
-    `slash.py` to `cards.py` next to the other card builders. Empty /
-    whitespace-only input still produces a valid fence so Feishu doesn't
-    reject the card.
-    """
+    """Wrap `text` in a triple-backtick fence so monospace / box-drawing
+    / ANSI artefacts survive Feishu's markdown collapsing (which would
+    otherwise eat indentation and merge consecutive spaces)."""
     return f"```\n{text}\n```"
 
 
-# ── R166: rich card primitives (column_set + colored fonts) ──────
+# ── rich card primitives (column_set + colored fonts) ──────
 
 
 def col_cell(content: str, weight: int = 1) -> dict:
@@ -103,31 +83,22 @@ def col_cell(content: str, weight: int = 1) -> dict:
 
 def column_set_3(cells: list[str]) -> dict:
     """3-cell section rendered as one markdown element with each cell
-    its own paragraph (cells separated by `\\n\\n`).
-
-    R172.b: dropped the `tag:"column_set"` shape because Feishu's
-    current renderer collapses multi-column rows into stacked
-    paragraphs in both v1 and v2 schemas — boss flagged 2026-05-04
-    "对齐都做不好". /health host总览 cells are multi-line
-    (header + value + sub-text), so joining with paragraph breaks
-    keeps each cell visually distinct without trying to enforce a
-    horizontal grid that the renderer ignores anyway. Empty cells
-    are dropped so we don't end with a dangling blank.
-    """
+    its own paragraph (cells separated by `\\n\\n`). Feishu's
+    `tag:"column_set"` renders stacked anyway (no real horizontal
+    grid), so we collapse to paragraphs and accept the layout. Empty
+    cells dropped so the body doesn't end with a dangling blank."""
     parts = [c for c in cells if c.strip()]
     return {"tag": "markdown",
             "content": "\n\n".join(parts) if parts else " "}
 
 
 def column_set_2(left: str, right: str, **_legacy_kwargs) -> dict:
-    """2-cell row rendered as a single markdown line — `<left>: <right>`.
+    """2-cell row rendered as a single markdown line `<left>: <right>`.
 
-    Same R172.b rationale as `column_set_3`: column_set rendering is
-    broken in current Feishu, so we collapse to one line. The colon +
-    space separator keeps the label visually distinct from the value
-    while staying alignment-proof. `**Bold**` left labels still bold
-    naturally in markdown; the right cell can carry `<font color='…'>`
-    spans + monospace `\` markers.
+    Same rationale as `column_set_3`: Feishu's `column_set` tag does
+    not render side-by-side in current builds, so we collapse to one
+    line. `**Bold**` left labels stay bold naturally; the right cell
+    can carry `<font color='…'>` spans + monospace ` markers.
     """
     return {"tag": "markdown", "content": f"{left}：{right}"}
 
@@ -155,17 +126,9 @@ def remaining_color(pct: float) -> str:
 def rich_card(title: str, elements: list, *, color: str = "blue") -> dict:
     """Card v2 with a pre-built `body.elements` list — for handlers
     that need multi-section layouts (/usage, /health) that
-    `simple_card`'s single-element body can't express.
-
-    R172.b: stays on v2 schema (`schema:"2.0"` + `body.elements`)
-    since column_set was dropped — every row is now a plain markdown
-    element, and v2 gives us GFM features (fenced blocks, nested
-    lists, `<font color>` HTML) that v1 silently degrades. R172.a
-    briefly flipped to v1 thinking column_set rendered side-by-side
-    in v1 but not v2; reality is neither schema renders column_set
-    side-by-side in current Feishu, so the schema-flip was useless
-    and we keep v2 for its other wins.
-    """
+    `simple_card`'s single-element body can't express. v2 gives us
+    GFM features (fenced blocks, nested lists, `<font color>` HTML)
+    that v1's `lark_md` silently degrades."""
     return {
         "schema": "2.0",
         "header": {

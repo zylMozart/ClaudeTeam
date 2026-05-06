@@ -1,36 +1,34 @@
 """`claudeteam router`
 
 Long-running event subscriber: spawns `lark-cli event +subscribe`
-(direct binary preferred, npx fallback — see `feishu/lark.resolve_cli_prefix`,
-R86 + R139) and feeds each NDJSON line into the routing loop
-(`feishu/subscribe.process_lines`).
+(direct binary preferred, npx fallback — see
+`feishu/lark.resolve_cli_prefix`) and feeds each NDJSON line into
+the routing loop (`feishu/subscribe.process_lines`).
 
 Boot order:
-  1. Validate chat_id + agents (fast-fail BEFORE pidlock so up.py can
-     detect "no pid written" and surface the boot error — R62).
-  2. Acquire `state_dir/router.pid` via pidlock so two routers can't
-     fight.
-  3. Replay `pending_lines(chat_id)` to backfill anything received while
-     the daemon was down (catchup-on-restart cursor).
-  4. Spawn the subscribe subprocess in its own session (so SIGTERMing
-     the daemon kills the entire npx → node → lark-cli tree via
-     killpg).
-  5. Spawn a daemon thread that polls the subscribe child's exit code
-     every ~20s and self-SIGTERMs when it dies (R52: lark-cli sometimes
-     dies silently while npm-exec parent keeps stdout open, blocking
-     readline forever).
+  1. Validate chat_id + agents (fast-fail BEFORE pidlock so up.py
+     can detect "no pid written" and surface the boot error).
+  2. Acquire `state_dir/router.pid` via pidlock so two routers
+     can't fight.
+  3. Replay `pending_lines(chat_id)` to backfill anything received
+     while the daemon was down (catchup-on-restart cursor).
+  4. Spawn the subscribe subprocess in its own session (so
+     SIGTERMing the daemon kills the entire npx → node → lark-cli
+     tree via killpg).
+  5. Spawn a daemon thread that polls the subscribe child's exit
+     code every ~20s and self-SIGTERMs when it dies (lark-cli
+     occasionally exits silently while npm-exec parent keeps
+     stdout open, blocking readline forever).
   6. Drive `process_lines` over the subscribe stdout iterator.
 
 Stops on:
   - Ctrl-C → SIGINT
-  - SIGTERM → registered handler reaps the subscribe group, releases
-    pidlock, exits 0.
+  - SIGTERM → handler reaps subscribe group, releases pidlock, exit 0
   - subscribe child dies → watchdog thread SIGTERMs us; same cleanup.
 
-Writes the daemon's pid to `state_dir/router.pid` so watchdog can
-supervise via `runtime.watchdog.is_alive`. Watchdog separately reaps
-orphan `+subscribe` processes left by a SIGKILL'd predecessor before
-respawning (R65 `reap_orphans`).
+Writes pid to `state_dir/router.pid` so `runtime.watchdog.is_alive`
+can supervise. Watchdog separately reaps orphan `+subscribe`
+processes left by a SIGKILL'd predecessor before respawning.
 """
 from __future__ import annotations
 
@@ -53,13 +51,10 @@ def _build_subscribe_cmd(profile: str, *,
                          resolve_prefix=lark.resolve_cli_prefix) -> list[str]:
     """Build the lark-cli `event +subscribe` argv.
 
-    Round-139: prefix comes from `lark.resolve_cli_prefix` (direct
-    binary first, `npx @larksuite/cli` fallback) instead of hardcoding
-    npx. The hardcode predated R86's direct-binary work and was an
-    invisible perf miss — every router restart paid the npx
-    package-lookup overhead even though the equivalent `call()` path
-    had skipped it for months. Tests inject `resolve_prefix=` so the
-    argv shape is deterministic regardless of what's installed locally.
+    Prefix comes from `lark.resolve_cli_prefix` (direct binary first,
+    `npx @larksuite/cli` fallback). Tests inject `resolve_prefix=`
+    so the argv shape is deterministic regardless of what's
+    installed locally.
 
     Note on --force: previously included to bypass the single-instance
     lock from a possibly-zombie previous daemon. lark-cli 1.0.21+ docs
@@ -84,14 +79,11 @@ def _build_subscribe_cmd(profile: str, *,
 def _build_agent_adapters(agents_dict: dict) -> dict:
     """Resolve every team-known agent to its CliAdapter once.
 
-    R153: ROUTE/BROADCAST events go through `_inject_to_pane` which
-    calls `deps.adapter_for_agent(agent)` per target — without this
-    map, each call goes `agent_cli → agent_config → load_team()` and
-    pays a disk read. Pre-building keeps the per-target inject path
-    disk-read-free for cached agents. Adapters whose `cli` value is
-    bogus get skipped (no entry); the apply call falls back to the
-    config-driven lookup which surfaces the KeyError as a per-agent
-    warning instead of a build-time abort.
+    Pre-building this map keeps `_inject_to_pane`'s per-target adapter
+    lookup disk-read-free for cached agents. Adapters whose `cli`
+    value is bogus get skipped (no entry); the apply call falls back
+    to the config-driven lookup which surfaces the KeyError as a
+    per-agent warning instead of a build-time abort.
     """
     from claudeteam.agents import get_adapter
     adapters: dict = {}
@@ -109,28 +101,20 @@ def _make_apply_with_wake(*, session: str, chat_id: str, profile: str,
                           lazy_agents: frozenset):
     """Build the per-event deliver wrapper with hot-path config pre-bound.
 
-    R147: chat_id / lark_profile / session / agent_names are deployment-
-    time stable — the daemon already had to read them at boot to filter
-    the subscribe stream and acquire the pidlock. Without this closure,
-    `deliver.apply` re-reads `runtime_config.json` (chat_id + profile)
-    AND `team.json` (session + agent_names) on every inbound event,
-    falling through `config.<getter>()` defaults. For a chatty deploy
-    that's 4 disk reads per message; for a hot SLASH command rebroadcast
-    it compounds across `_apply_slash`'s own getters.
+    chat_id / lark_profile / session are deployment-stable; binding
+    them in a closure here saves 2-4 disk reads per inbound message
+    compared to letting `deliver.apply` re-resolve via `config.<getter>()`
+    each time. The pre-built `agent → CliAdapter` map plays the same
+    role for `_inject_to_pane` — unknown agents (not in the cached
+    map) fall back to a config-driven lookup so a typo surfaces as a
+    per-agent warning instead of dropping the whole event.
 
-    R153: also threads a pre-built `agent → CliAdapter` map through the
-    `adapter_for_agent` injection point, so per-target adapter resolution
-    in `_inject_to_pane` skips the same load_team() bounce on every
-    inbound message. Unknown agents (not in the cached map) fall back to
-    `_default_adapter_for_agent` which surfaces the typo as a per-agent
-    warning instead of dropping the whole event.
-
-    Closing over the values bound at daemon startup matches reality:
-    operator changes to runtime_config.json or team.json don't propagate
-    into a running daemon today anyway (subscribe is bound to the
-    startup chat_id, the pidlock prevents a second daemon picking up
-    new config). If those values change, operator runs
-    `claudeteam down + up`.
+    Operator edits to `chat_id` need a `claudeteam down + up` to take
+    effect (subscribe is bound to the startup chat_id, pidlock
+    prevents a parallel daemon). Per-agent fields like `lazy` /
+    `card_color` / `specialty` ARE live-readable through other code
+    paths (slash handlers via `_live_agents()`, identity via
+    `claudeteam reidentify`).
     """
     def lookup_adapter(agent: str):
         cached = agent_adapters.get(agent)
@@ -265,14 +249,14 @@ def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event,
 
     Two failure modes covered:
 
-    (a) `lark-cli event +subscribe` exits silently — Round B Smoke +
-        round-52 smoke both saw the lark-cli grandchild vanish while
-        npm-exec parent stayed running. With npm-exec still holding
-        stdout open, the main thread's `process_lines(proc.stdout, ...)`
-        would block forever on readline, never noticing.
+    (a) `lark-cli event +subscribe` exits silently — the lark-cli
+        grandchild can vanish while npm-exec parent stays running.
+        With npm-exec still holding stdout open, the main thread's
+        `process_lines(proc.stdout, ...)` would block forever on
+        readline, never noticing.
 
     (b) `lark-cli` subprocess stays alive but the WebSocket silently
-        stops delivering events (host_smoke 2026-05-06 caught this).
+        stops delivering events.
         proc.poll() is None, the npm tree looks healthy in `ps`, but
         no inbound events reach process_lines for hours. Detected by
         comparing `last_event_at[0]` to wall-clock; threshold from
@@ -359,13 +343,13 @@ def main(argv: list[str]) -> int:
         if proc.stdout is None:
             return error_exit("❌ lark-cli started without stdout pipe")
 
-        # R147 + R153 + R158: bind deployment-stable config values into
-        # apply_fn at daemon startup. session_name reads team.json the
-        # same way `chat` / `agents` already did; one extra read here
-        # removes 1-4 disk reads per inbound event from deliver.apply's
-        # hot path. R153 pre-builds the agent→adapter map. R158
-        # pre-computes the lazy-agents set so /team's card render does
-        # zero disk reads (was 1 per /team event for lazy detection).
+        # Bind deployment-stable config values into apply_fn at daemon
+        # startup so deliver.apply doesn't re-resolve them on every
+        # inbound event (saves 1-4 disk reads per message). The
+        # agent→adapter map plays the same role for the inject path.
+        # `lazy_agents` is still pre-computed and threaded into
+        # SlashContext for back-compat, but slash handlers now use
+        # `_live_agents()` themselves so config edits are live.
         team_data = config.load_team()
         agents_dict = team_data.get("agents", {})
         apply_fn = _make_apply_with_wake(
