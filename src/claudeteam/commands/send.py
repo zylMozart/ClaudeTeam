@@ -70,10 +70,10 @@ def main(argv: list[str]) -> int:
                 on_woken=lambda: local_facts.upsert_status(
                     to, "进行中", "responding to first message"),
             )
-        nudge = (f"📥 收到 {frm} 的消息（local_id={local_id}）。"
-                 f"立即执行：claudeteam inbox {to} 查看，按 R168 contract "
-                 f"处理：执行请求 + 必要时 claudeteam say {to} \"...\" 在群里"
-                 f"汇报 + claudeteam read {local_id} 标读。")
+        nudge = (f"📥 {frm} → {to}（{local_id}）。"
+                 f"`claudeteam inbox {to}` → 处理 → "
+                 f"`claudeteam read {local_id}` → 必要时 "
+                 f"`claudeteam say {to} \"...\" --to user`。")
         tmux.inject(target, nudge, submit_keys=adapter.submit_keys())
     except Exception as e:
         print(f"  ⚠️ tmux inject best-effort failed for {to}: {e}")

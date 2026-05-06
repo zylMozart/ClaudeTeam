@@ -201,6 +201,30 @@ claudeteam team
 - **员工迟未 say 反馈**：超过 ~3-5 分钟没动静，单点提醒
   `claudeteam send <agent> manager "请同步状态"`。
 
+## 硬约束：集合类指令必须 dispatch，不得代替汇总
+
+当老板（或任何人）发来下列任一类指令时：
+
+- **集合类**："所有员工报道" / "全员报到" / "全队集合" / "all hands"
+- **广播类**："大家都 XXX" / "每个人都 XXX" / "全员 XXX" / "@team" / "@all"
+
+**你必须对 `team.json` 里除 manager 外每个 agent 逐一执行**：
+
+```bash
+claudeteam send <agent> manager "<原指令精简转述>" 高
+```
+
+然后简短 `claudeteam say manager "<已派给 N 位员工，等他们各自响应>" --to user`，
+等员工自己在群里 say。
+
+⚠️ **你自己绝不代替员工发汇总、绝不一条 say 代替 N 次 send**。老板要
+的是每个员工各自的响应，不是你的代笔。若员工迟未响应：
+
+- ~3-5 分钟无动静 → 单发 `claudeteam send <agent> manager "请同步状态"`
+- 单点提醒后仍未响应 → 直接 `claudeteam peek <agent>` 看现场，必要时再
+  补投 / 改派 / 拆小步骤；**仍不得代发员工的响应**
+- 员工真离线 / 限流 → 在最后汇总里如实标注"worker_X 暂时未响应（原因）"
+
 ## 快速参考
 - `claudeteam inbox manager` — 你的未读
 - `claudeteam read <local_id>` — 标已读

@@ -1,338 +1,232 @@
 # ClaudeTeam (rebuild)
 
-A multi-agent CLI orchestrator: gives a team of LLM coding agents (Claude
-Code, OpenAI Codex, Moonshot Kimi) one place to read each other's
-inbox, status, logs, and tasks; bridges to a Feishu (Lark) chat group so
-a human can talk to the team and the team can talk back.
+> *Harness your Claude Code.*
 
-This branch is a **clean-slate rebuild**.  The previous implementation
-(on `fix/stabilize-claudeteam-runtime` / `main`) accumulated ~33 K LOC
-across ~200 files; we are rebuilding with the smallest possible
-footprint, pulling modules from the old tree only when a concrete
-capability requires them.  Run `python3 tests/run.py` for the live test count
-on whichever commit you have; the baseline is "all green, 0 failed".
+A clean-slate rebuild of [ClaudeTeam](https://github.com/zylMozart/ClaudeTeam):
+multiple Claude Code agents in tmux, coordinated through a Feishu group
+chat, with one Python module per command and a small dependency
+footprint.
+
+This branch (`rebuild/minimal`) is ~9 K LOC + tests vs. ~33 K on the
+original `main`. Same UX, fewer moving parts.
+
+> **One-click deploy — paste this into a fresh `claude` session in this
+> repo:**
+>
+> ```
+> Read CLAUDE.md and docs/DEPLOYMENT.md, then walk me through bringing
+> up a ClaudeTeam deployment. Ask for the Feishu app credentials and
+> chat_id when you need them.
+> ```
+
+---
+
+### Screenshots
+
+**Feishu group chat — control your AI team in real time**
+
+<table><tr>
+<td><img src="docs/media/example/feishu_example1.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example2.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example3.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example4.jpg" width="200" /></td>
+<td><img src="docs/media/example/feishu_example5.jpg" width="200" /></td>
+</tr></table>
+
+**tmux backend — Claude Code agents running in parallel**
+
+<p><img src="docs/media/example/tmux_example.png" width="800" /></p>
+
+---
+
+## What it does
+
+```
+You (Feishu group chat)
+  ↕  WebSocket
+Router (long-poll subscribe → classify → deliver)
+  ↕
+┌──────────┬──────────┬──────────┐
+│ manager  │ worker_X │ worker_Y │  ← tmux windows running Claude Code / Codex / Kimi / ...
+│(routes)  │(executes)│(executes)│
+└──────────┴──────────┴──────────┘
+  ↕
+Local store (inbox / status / logs / tasks / durable memory)
+```
+
+The boss talks to **manager** in the group chat. Manager dispatches work
+to workers, watches their tmux panes, summarises back to the group.
+Workers say-back when they finish. Everything is auditable on disk;
+nothing depends on a remote DB.
+
+---
+
+## Features
+
+- **One config file** — `claudeteam.toml` (Cargo-style, comment-friendly).
+  Replaces the old `team.json` + `runtime_config.json` split.
+- **R174 single-interface routing** — every group message goes to the
+  manager only; workers never get a raw boss message. Manager is the
+  sole orchestrator.
+- **`[chat.publish]` filter** — sender→receiver visibility per channel.
+  Silence noisy traffic without losing the audit log.
+- **Multi-CLI** — `claude-code` / `codex-cli` / `kimi-code` /
+  `gemini-cli` / `qwen-code` in the same team.
+- **Durable memory** — `claudeteam remember` / `recall` writes survive
+  `/clear` and pane respawn, auto-injected on next wake.
+- **Watchdog** — daemons respawn with cooldown + Feishu chat alert when
+  cooldown trips.
+- **Slash commands from chat** — `/help /team /health /usage /tmux
+  /send /compact /clear /stop /peek /say /remember /recall`.
+- **Stdlib-only test runner** — `python3 tests/run.py` in 30 seconds.
+
+---
 
 ## Prerequisites
 
-- Python 3.10+ (the project pins `requires-python = ">=3.10"`)
-- `tmux`, `node` + `npx` (for `lark-cli`)
-- At least one of: `claude` (Claude Code CLI), `codex` (OpenAI Codex CLI),
-  `kimi` (Moonshot Kimi CLI) on `$PATH` — whichever your `team.json` agents
-  declare via the `cli` field. The team.json `cli` identifiers map as:
-  `claude-code` → `claude`, `codex-cli` → `codex`, `kimi-code` → `kimi`.
+| Need | Version | Why |
+| ---- | ------- | --- |
+| Python | 3.10+ | `pyproject.toml` pins it |
+| tmux | any | one window per agent |
+| Node + npx | 18+ | `lark-cli` is a node binary |
+| At least one CLI | latest | `claude` / `codex` / `kimi` / `gemini` / `qwen` |
+| Feishu enterprise | — | custom app with `im:message` + WebSocket subscription |
 
-`team.json` per-agent fields — only `cli` is meaningful for spawning;
-`role` shows up in the rendered `identity.md`; `model` falls back to the
-top-level `default_model` (then `CLAUDETEAM_DEFAULT_MODEL`, then `"opus"`)
-and is silently ignored by adapters that don't honor it (Kimi).
+For Docker: just Docker 20.10+ and Compose v2 (CLIs come with the
+container or via bind-mount).
+
+---
 
 ## Quick start
 
 ```bash
-# 0. Shell setup — set ONCE per terminal, before any claudeteam command.
-#    For persistence, add to your shell rc (~/.zshrc / ~/.bashrc).
-export CLAUDETEAM_STATE_DIR="$PWD/state"   # else state goes to ~/.claudeteam
-export LARK_CLI_NO_PROXY=1                 # required if you have HTTPS_PROXY set
-export CLAUDETEAM_LARK_SEND_AS=bot         # required for headless / smoke runs;
-                                           # without it `say` defaults to user
-                                           # OAuth and fails when OAuth expires
+git clone https://github.com/zylMozart/ClaudeTeam.git --branch rebuild/minimal
+cd ClaudeTeam
 
-# 1. Install (editable from the repo, in a venv)
-#    Many hosts ship Python under uv / Homebrew / system manager that PEP 668
-#    blocks bare `pip install` against; a venv side-steps that.
-python3 -m venv .venv
-source .venv/bin/activate
+# Shell env (per terminal — add to ~/.zshrc to persist)
+export CLAUDETEAM_STATE_DIR="$PWD/state"
+export LARK_CLI_NO_PROXY=1
+export CLAUDETEAM_LARK_SEND_AS=bot
+
+# Install
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# 2. Bootstrap config files in the current directory
-claudeteam init                  # writes team.json + runtime_config.json
-$EDITOR runtime_config.json      # set chat_id + lark_profile when ready
+# Config
+claudeteam init                  # writes claudeteam.toml
+$EDITOR claudeteam.toml          # set chat_id + agents
+claudeteam install-hooks         # claude-code slash commands
 
-# 3. Install slash commands BEFORE up (claude-code caches them at pane startup)
-claudeteam install-hooks         # writes .claude/commands/{inbox,team,...}.md
-                                 # — running this AFTER `up` means existing
-                                 # panes won't pick them up; install-hooks
-                                 # warns when it detects an active session.
-
-# 4. Bring up the whole team in one shot (tmux + agents + router + watchdog)
-claudeteam up
-claudeteam health                # green/yellow/red snapshot — no surprises
-
-# 5. Inspect the local inbox / status (these are LOCAL ONLY — see "Two transports" below)
-claudeteam send worker_codex manager "review the auth module"   # writes inbox.json
-claudeteam inbox worker_codex
-claudeteam status worker_codex 进行中 "auditing auth"
-claudeteam team                  # shows ♥ heartbeat per agent
-
-# 6. Talk in the Feishu chat (the only path that injects into a worker pane)
-#    `say` returns the Feishu message_id — capture it for `--reply` or audit.
-claudeteam say manager "标题党：smoke test #$(date +%s)"
-# → ✅ manager → chat (message_id=om_xxxxxxxx)
-
-# 7. Tear it all down
-claudeteam down
+# Launch
+claudeteam up                    # tmux + agents + router + watchdog
+claudeteam health                # green/yellow/red snapshot
 ```
 
-## Two transports — `send` is *not* `say`
+Chat with the team in your Feishu group. Manager handles dispatch.
 
-Two ways a message can travel inside a deployment, and they don't reach
-the same place:
+For detailed setup, Docker, multi-team isolation, and troubleshooting
+see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
-| command | what it does | reaches the worker's tmux pane? |
-|---|---|---|
-| `claudeteam send <to> <from> <msg>` | append a row to the local `inbox.json` | **no** — only `claudeteam inbox <to>` reads it back |
-| `claudeteam say <agent> <msg>` | post into the Feishu chat as that agent | only if the router daemon is running and routes the message back |
-| Feishu group → router → `deliver.apply` | inbound chat → inbox row + tmux pane inject | **yes** — this is the only path that wakes the worker |
+---
 
-If you want a worker pane to actually receive a task, the message has to
-travel through Feishu (humans @-mention from the chat → router picks it
-up, OR `claudeteam say <peer>` posts a chat message that mentions the
-target). Pure `claudeteam send` writes to the inbox file but does not
-touch tmux — that's a deliberate split between persistence and delivery.
+## Multi-CLI adapter
 
-### `say --to <role>` and `[chat.publish]`
+Different agents can run different CLIs in the same team:
 
-`claudeteam say <agent> "<msg>" --to <role>` labels the receiver so the
-group filter knows the intent. `--to` accepts `user` (the boss),
-`manager`, or `worker_<name>`; the audit log keeps every `say` regardless,
-but whether the card actually posts to the Feishu group is decided by:
+| Adapter | Identifier | Install |
+| ------- | ---------- | ------- |
+| Claude Code | `claude-code` (default) | `npm i -g @anthropic-ai/claude-code` |
+| Codex CLI | `codex-cli` | `npm i -g @openai/codex` |
+| Kimi Code | `kimi-code` | `uv tool install kimi-cli` |
+| Gemini CLI | `gemini-cli` | `npm i -g @google/gemini-cli` |
+| Qwen Code | `qwen-code` | `npm i -g qwen-code` |
+
+In `claudeteam.toml`:
 
 ```toml
-# claudeteam.toml — `claudeteam init` defaults (everything visible)
-[chat.publish]
-user_to_manager   = "always"   # boss → manager always lands
-manager_to_user   = "always"   # manager → boss always lands
-manager_to_worker = true       # show dispatch cards in group
-worker_to_manager = true       # show worker progress in group
-worker_to_user    = true       # show worker completions in group
-worker_to_worker  = true       # show inter-worker pings in group
-```
+[team.agents.manager]
+cli = "claude-code"
+model = "opus"
+role = "团队主管"
 
-Keys are `{sender_role}_to_{receiver_role}`. Defaults are all true / always
-(boss preference: "测试阶段多看到一些东西比较好"). Flip a key to `false`
-when you want that channel silenced — audit log still keeps it, the
-Feishu group just doesn't get the card. Per-agent overrides go on the
-agent itself:
-
-```toml
 [team.agents.worker_codex]
-publish_overrides = { worker_to_user = false }   # this one worker silent;
-                                                  # other workers still post
+cli = "codex-cli"
+model = "gpt-5.5"
+role = "数据分析员工"
+
+[team.agents.worker_kimi]
+cli = "kimi-code"
+role = "策划员工"
 ```
 
-Agents are taught (via their identity.md) to **always pass `--to`** so
-the filter can distinguish answer-the-boss vs internal-progress traffic.
+---
 
-### Closed-loop end-to-end test
+## Documentation
 
-To verify the whole pipeline (Feishu → router → pane → worker reply):
+| Doc | What's in it |
+| --- | ------------ |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Host + Docker setup, config schema, multi-team isolation, troubleshooting |
+| [`CLAUDE.md`](CLAUDE.md) | Building rules + active work order — read before changing code |
+| [`tests/scenarios/host_smoke.md`](tests/scenarios/host_smoke.md) | One-minute smoke for fresh deploys |
+| [`tests/scenarios/round_c_real_task.md`](tests/scenarios/round_c_real_task.md) | Real-task end-to-end (manager dispatches, workers say-back) |
+| [`tests/scenarios/slash_matrix.md`](tests/scenarios/slash_matrix.md) | Per-slash expected card behaviour |
+| [`tests/scenarios/reidentify.md`](tests/scenarios/reidentify.md) | Identity re-injection after prompt change |
+
+For Feishu app setup itself (creating the bot, scopes, callbacks),
+see the original `main` branch's
+[Feishu bot setup guide](https://github.com/zylMozart/ClaudeTeam/blob/main/docs/setup_feishu_bots.md)
+or the
+[Playwright auto-creator script](https://github.com/zylMozart/ClaudeTeam/tree/main/scripts/feishu_bot_creator).
+
+---
+
+## FAQ
+
+**Q: How does this differ from `main`?**
+A: Same UX, fewer files. `main` accumulated 33 K LOC across ~200
+files; this rebuild is ~9 K with one Python module per subcommand
+(`src/claudeteam/commands/<name>.py`). Single config file
+(`claudeteam.toml`), no Bitable / kanban projection, stdlib test
+runner, no compatibility shims.
+
+**Q: Does it work with non-Anthropic models?**
+A: Yes — the multi-CLI adapter table above shows the supported CLIs.
+Each agent picks one in `claudeteam.toml`.
+
+**Q: Can I use Slack / Discord instead of Feishu?**
+A: Not out of the box. The chat layer is Feishu-specific
+(`src/claudeteam/feishu/`).
+
+**Q: How many agents can I run?**
+A: Tested up to 5. Each Claude Code pane uses ~200-400 MB; 8 GB host
+RAM is comfortable for 5.
+
+**Q: An agent crashed — do I lose context?**
+A: No. Inbox + status + logs + durable memory live on disk. Watchdog
+respawns the daemon; `claudeteam reidentify <agent>` re-injects the
+identity prompt with prior memory pre-loaded.
+
+**Q: How much does it cost?**
+A: ClaudeTeam is MIT-licensed and free. Costs come from your CLI's
+API usage. Feishu free tier and `lark-cli` are free.
+
+---
+
+## Contributing
+
+This is a rebuild branch — see [`CLAUDE.md`](CLAUDE.md) for the building
+rules (two-use rule, single-file ceiling ~300 LOC, every new module
+ships its own unit test in the same commit, etc.).
+
+Test gate must stay green:
 
 ```bash
-# 1. From the Feishu group, post a message tagging a worker with a clear
-#    instruction. From the host, you can do this AS YOUR USER OAuth:
-claudeteam say boss "@worker_cc 收到这条立刻执行 claudeteam say worker_cc \"[reply] ok\"" --as user
-
-# 2. Wait ~90s (lark-cli +subscribe pulls the event, router classifies,
-#    deliver.apply injects into the worker_cc tmux pane, worker reads
-#    the prompt, runs the embedded say command, lark-cli posts back).
-
-# 3. Verify worker_cc replied:
-LARK_CLI_NO_PROXY=1 npx -y @larksuite/cli --profile $LARK_CLI_PROFILE \
-    im +chat-messages-list --chat-id $CHAT_ID --page-size 5 --as bot --format json \
-    | grep '\[worker_cc\]'
+python3 tests/run.py     # → tests: N passed, 0 failed
 ```
 
-Expected: a `[worker_cc] [reply] ok` row newer than the boss message.
-If the loop breaks anywhere, `claudeteam health` + `state/router.cursor`
-+ `tmux capture-pane -t ClaudeTeam:worker_cc -p` localize the failure.
+PRs welcome. Major changes please open an issue first to discuss the
+design — `rebuild/minimal` actively resists scope creep.
 
-## Docker
+## License
 
-```bash
-docker compose build
-docker compose up -d
-docker compose exec claudeteam claudeteam install-hooks
-docker compose exec claudeteam claudeteam up
-docker compose exec claudeteam claudeteam health
-docker compose exec claudeteam tmux attach -t ClaudeTeam   # see panes
-```
-
-`./team-data/` (mounted at `/data`) holds `team.json` +
-`runtime_config.json` + state across container restarts.
-`~/.lark-cli/` is mounted read-only so the OAuth profile is reused.
-
-The base image deliberately does NOT bake in `claude` / `codex` /
-`kimi` CLIs — each has its own auth + licence, and shipping all three
-locks the image to one provider stack. Derive from `claudeteam:dev`
-and `RUN` the install you actually need (or bind-mount the host
-binary into the container's `$PATH`).
-
-See `tests/scenarios/docker_deploy.md` for the full playbook.
-
-## Operator notes
-
-- **venv must be active in the parent shell** before `claudeteam up`.
-  Spawned panes inherit `PATH` from the launching shell. If you start
-  a *fresh* terminal (or a fresh `claude` instance from outside the
-  project) and try `claudeteam …`, you'll get `command not found`
-  unless you `source .venv/bin/activate` first.
-- **lark-cli is invoked via npx**, not installed globally. For boss-side
-  debug commands, use `npx -y @larksuite/cli ...`. The first invocation
-  takes ~30 s while npm fetches the package.
-- **`tmux list-windows` markers** — names like `worker_codex-` or
-  `worker_kimi*` are tmux's last-active / active markers, not part of
-  the window name. `tmux display-message -p '#W'` returns the clean
-  name from inside a pane.
-- **Per-pane `claudeteam` calls stay in the pane's cwd.** Workers' agent
-  identities (`identity.md`) tell them not to `cd` anywhere because
-  `runtime_config.json` lives next to the spawn cwd. If a worker
-  responds with `chat_id not set`, it's almost always a stray `cd` in
-  its first attempt.
-
-## Commands
-
-```
-bootstrap & ops
-  claudeteam init [--session NAME] [--force]    write team.json + runtime_config.json
-  claudeteam version                            print installed package version
-  claudeteam up                                 start + router + watchdog (idempotent)
-  claudeteam down                               graceful inverse of up
-  claudeteam health [--json]                    one-shot deployment-state check
-                                                (--json for {ok, bad, warn, lines} dict)
-  claudeteam usage [--view V] [--days N] [--json]  ccusage wrapper for claude-code agents
-                                                (--json for {view, claude_code, other_clis, ...})
-
-local store / inbox
-  claudeteam send <to> <from> <message> [priority]
-  claudeteam inbox <agent>
-  claudeteam read <local_id>
-  claudeteam status <agent> [<state> <task> [blocker]]
-  claudeteam log <agent> <kind> <content> [ref]
-  claudeteam team [--json]                      status + ♥ heartbeat per agent
-                                                (--json for machine-readable list[dict])
-  claudeteam workspace <agent> [--limit N]
-
-team lifecycle
-  claudeteam start                              tmux session + per-agent panes
-  claudeteam hire <agent>                       add a new pane (lazy-aware)
-  claudeteam fire <agent>
-  claudeteam switch [<team-dir>]                print env exports for multi-team UX
-                                                (eval the output to switch shells)
-
-feishu transport
-  claudeteam say <agent> <message> [--reply <message_id>] [--as user|bot]
-                                   [--no-local] [--to user|manager|worker_<name>]
-  claudeteam router                             daemon: chat events → inbox + pane
-
-supervision
-  claudeteam watchdog                           respawns dead daemons
-
-task tracking
-  claudeteam task create <assignee> <title> [--by <agent>] [--desc <text>]
-  claudeteam task update <id> [--status S] [--assignee A] [--title T] [--desc D]
-  claudeteam task list   [--status S] [--assignee A]
-  claudeteam task get    <id>
-  claudeteam task done   <id>
-```
-
-## Layout
-
-```
-src/claudeteam/
-├── cli.py             single console-scripts entry; dispatch only
-├── util.py            shared helpers: now_ms, fmt_time_ms, ago_ms,
-│                      pop_flag, pop_bool_flag, read_json, write_json,
-│                      print_json, atomic_write_text, flock, env_path,
-│                      env_str, help_requested, maybe_print_help,
-│                      reject_extra_args, usage_error, error_exit, warn
-├── commands/          one module per subcommand (~30-300 LOC each)
-├── store/
-│   ├── local_facts.py inbox / status / log / heartbeats (JSON + JSONL, file-locked)
-│   └── tasks.py       coordination cards
-├── agents/
-│   ├── base.py        CliAdapter abstract base
-│   ├── claude_code.py / codex_cli.py / kimi_code.py — concrete adapters
-│   └── identity.py    per-agent identity.md template renderer
-├── runtime/
-│   ├── config.py      team.json + runtime_config.json
-│   ├── paths.py       env-driven $CLAUDETEAM_STATE_DIR layout
-│   ├── tmux.py        pane / window / inject wrappers
-│   ├── wake.py        lazy-pane wake (capture + spawn + poll-for-ready)
-│   ├── lifecycle.py   pane provisioning shared between start + hire
-│   ├── pidlock.py     single-instance daemon lock (acquire / release)
-│   └── watchdog.py    process supervisor (specs + orphan-reap + supervise)
-└── feishu/
-    ├── lark.py        npx @larksuite/cli wrapper (call())
-    ├── chat.py        send_text / send_card / list_recent
-    ├── pane_state.py  parse pane buffer → emoji + brief status
-    ├── router.py      pure event → Decision classifier
-    ├── slash.py       zero-LLM slash command dispatch (/help /team /tmux /...)
-    ├── deliver.py     Decision → write inbox + inject pane (rate-limit aware)
-    ├── subscribe.py   NDJSON event loop (drives `claudeteam router`)
-    └── catchup.py     replay missed messages on router restart (cursor-based)
-
-tests/
-├── unit/              pure-module tests (mocked I/O via attr_patch)
-├── integration/       end-to-end in-process tests
-├── scenarios/         operator-run regression playbooks (markdown)
-├── helpers.py         isolated_env() + run_cli() + env_patch / attr_patch /
-│                      tmux_patch + FakeProc / CallRecorder
-└── run.py             stdlib-only runner (no pytest dep)
-```
-
-## Building rules
-
-1. Every new module ships its own unit test in the same commit.
-2. Every new public command ships a smoke scenario (markdown) in the same commit.
-3. Modules pulled from the old tree are simplified before they land —
-   no over-decomposition (the old `supervision/` 11-file layout is now
-   one ~200 LOC `runtime/watchdog.py`).
-4. No "compatibility wrappers".  If old call sites break, they break —
-   we are rebuilding, not migrating.
-
-## Test gate
-
-```bash
-python3 tests/run.py
-```
-
-Stdlib-only runner.  No pytest dependency.  Discovers `tests/unit/test_*.py`
-and `tests/integration/test_*.py`, runs every `test_*` function, prints a
-summary; non-zero exit on any failure.
-
-Output shape (N grows with each round; gate is "0 failed", not the absolute count):
-
-```
-tests: N passed, 0 failed
-```
-
-## What's missing
-
-Documented honestly because some of it is needed for production use:
-
-- **Multi-team isolation polish**: still env-var-based at the runtime
-  level; `claudeteam switch <team-dir>` now emits the three exports
-  in one shell-evaluable line, but operators still need unique tmux
-  session names per team (set in each team.json's `session` field).
-- **Bitable / kanban projection**: skipped by design — local facts only
-
-What's done that earlier revisions of this list flagged as missing:
-image / file / audio / sticker Feishu messages route as
-placeholder text instead of dropping; `/compact` schedules a 45 s
-delayed identity re-injection so agents reload `identity.md` after
-self-compacting; slash-command interceptors via
-`claudeteam install-hooks`; `claudeteam usage` (ccusage wrapper);
-rate-limit detection (adapter `rate_limit_markers()` +
-deliver-skips-when-rate-limited); zero-LLM router-level slash
-dispatch (`/help /team /tmux /send /compact /stop /clear /usage
-/health` — main's 9-command surface, R172.b dropped /recall and
-/forget); broadcast routing (`@team` / `@all` / `全体X`); per-agent
-durable memory with `claudeteam remember / recall / forget` (CRUD
-slice, `--kind K` filter, `KNOWN_KINDS` soft validation; CLI only
-post-R172.b); manager-from-pane fast paths (`claudeteam peek <agent>`,
-`claudeteam reidentify --all`, `say --card`); 5/5 CLI adapter parity
-(claude-code / codex-cli / gemini-cli / kimi-code / qwen-code).
-
-The rebuild is on `rebuild/minimal`; it does not share history with
-`main`.  See `tests/scenarios/*.md` for natural-language scenarios
-covering each feature (operator-run regression playbooks).
+[MIT](LICENSE)

@@ -144,26 +144,16 @@ def _compose_inject_text(agent: str, decision: Decision,
         summary_hint = (f" 这条似乎需要 manager 汇总，处理完后**额外**"
                         f"发一句 `claudeteam send manager {agent} \"<结果>\"` "
                         f"让 manager inbox 知道你的进度。")
-    # R174.c: any placeholder in the hint (`<回复>`, `...`, `<reply>`)
-    # gets copy-pasted literally by claude into `claudeteam say`,
-    # ending up as e.g. "<回复>" or "..." in chat. Show a CONCRETE
-    # realistic example instead — the model will adapt the content
-    # to the actual situation rather than echoing template syntax.
+    # 简短引导 — 长解释属于 identity.md 的职责，不是每次注入都重复一遍。
+    # 关键指示：哪个频道回 + 怎么 mark read（如果 local_id 已知）+ 是否需
+    # 要 send manager 让其汇总。具体命令格式 / --to 选择交给 identity 教。
     if sender == "user" or not sender:
-        hint = (f"[群聊消息·发送者=老板] ⚠️ 这条消息只到了你的 inbox，"
-                f"老板看不到你 pane 里直接打的字。"
-                f"想让老板看见，必须用 `claudeteam say {agent}` 命令"
-                f"加上一段引号字符串发回群里。"
-                f"举例（请用实际处理结果替换内容、不要原样复制）："
-                f"`claudeteam say {agent} \"收到，正在处理\"`。"
-                f"{summary_hint}{read_hint}")
+        hint = (f"[群聊·老板] 用 `claudeteam say {agent} \"...\" --to user` "
+                f"回群。{summary_hint}{read_hint}")
     else:
-        hint = (f"[同事消息·发送者={sender}] 这条来自员工/同事，"
-                f"想回复 {sender} 用 `claudeteam send {sender} {agent} "
-                f"\"实际回复内容\"`；想公告到老板群用 "
-                f"`claudeteam say {agent} \"实际公告内容\"`。"
-                f"举例：`claudeteam say {agent} \"已确认收到 worker_cc 的进度\"`。"
-                f"{read_hint}")
+        hint = (f"[同事·{sender}] 回 `claudeteam send {sender} {agent} "
+                f"\"...\"`；要公告到群用 `claudeteam say {agent} "
+                f"\"...\" --to user`。{read_hint}")
     return f"{hint}\n\n{decision.text}"
 
 

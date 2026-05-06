@@ -46,6 +46,23 @@ def test_render_substitutes_name_role_cli_model():
     assert "gpt-5.5" in text
 
 
+def test_manager_has_collective_dispatch_hard_constraint():
+    """Boss-flagged 2026-05-06: main 分支主管 identity 里"硬约束：集合类
+    指令必须 dispatch，不得代替汇总" 这段非常重要——每个 manager 都得
+    学会。rebuild 派活流程提到了，但要作为带关键词触发器 + 强约束语
+    的独立 hard-constraint 段呈现，不只是 R174 路由说明顺带带过。"""
+    text = identity.render("manager", role="主管", cli="claude-code", model="opus")
+    # 独立小节标题（强强约束）
+    assert "硬约束" in text
+    assert "集合类指令" in text or "集合类" in text
+    # 触发关键词列表（main 的原 5 条 + rebuild 自己加的 @team / @all）
+    for kw in ("全员", "all hands", "@team", "大家都", "每个人都"):
+        assert kw in text, f"missing trigger keyword: {kw}"
+    # 严厉约束语
+    assert "绝不代替员工发汇总" in text
+    assert "绝不一条 say 代替 N 次 send" in text
+
+
 def test_render_argument_order_contract_present_in_manager():
     text = identity.render("manager", role="r", cli="c", model="m")
     assert "claudeteam send <recipient> <sender>" in text

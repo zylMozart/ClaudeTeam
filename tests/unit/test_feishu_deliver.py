@@ -344,7 +344,7 @@ def test_compose_inject_text_user_message_says_use_claudeteam_say():
     out = _compose_inject_text("worker_cc", _decision("hello there"))
     assert "claudeteam say worker_cc" in out
     assert "hello there" in out
-    assert "[群聊消息" in out
+    assert "[群聊·老板]" in out
 
 
 def test_compose_inject_text_peer_message_uses_send_back_to_sender():
@@ -354,7 +354,7 @@ def test_compose_inject_text_peer_message_uses_send_back_to_sender():
         "worker_cc", _decision("question for you", sender="manager"))
     assert "claudeteam send manager worker_cc" in out
     assert "question for you" in out
-    assert "[同事消息" in out
+    assert "[同事·manager]" in out
 
 
 def test_compose_inject_text_includes_local_id_for_mark_read():
