@@ -83,6 +83,23 @@ async function loadCookies(context) {
   return true;
 }
 
+// Poll page.url() until it contains `pattern` (string substring or
+// RegExp). Returns true on match, false on timeout. Used instead of
+// page.waitForURL because Feishu SPA routes navigate without firing
+// the 'load' event that waitForURL waits for by default — the URL
+// changes but the page never "loads", and waitForURL times out even
+// though navigation succeeded.
+async function pollForUrl(page, pattern, timeoutMs = 30000) {
+  const isRegex = pattern instanceof RegExp;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const u = page.url();
+    if (isRegex ? pattern.test(u) : u.includes(pattern)) return true;
+    await page.waitForTimeout(400);
+  }
+  return false;
+}
+
 async function gotoWithRetry(page, url, opts = {}) {
   // Feishu open-platform has flaky load behavior under chromium —
   // first goto after launch occasionally returns ERR_CONNECTION_CLOSED
@@ -106,7 +123,10 @@ async function gotoWithRetry(page, url, opts = {}) {
 
 async function ensureLoggedIn(page, context) {
   await gotoWithRetry(page, 'https://open.feishu.cn/app');
-  await page.waitForTimeout(2000);
+  // 500 ms is enough for the redirect to flush; the prior 2 s was
+  // padding "to be safe" but it added 7 s to drive cold-start once
+  // gotoWithRetry already waited for domcontentloaded.
+  await page.waitForTimeout(500);
   if (page.url().includes('accounts.feishu.cn')) {
     log('Not logged in. Please scan QR code...');
     await page.waitForURL('**/open.feishu.cn/app**', { timeout: 120000 });
@@ -150,6 +170,94 @@ function findMostRecentApp() {
 
 // --- helpers ---
 
+// Capture App Secret from the Credentials & Basic Info page. Feishu
+// hides the secret behind a "Show" / "查看" button (eye icon); we
+// click any matching button, then scan all inputs for an
+// alphanumeric token of secret-like length (Feishu app secrets are
+// 32 chars). Returns the secret string or null if extraction fails
+// (selectors may shift between Feishu releases — best-effort, the
+// caller falls back to telling the user to copy by hand).
+async function captureAppSecret(page, appId) {
+  // The credentials page is /info (not /safe — /safe is IP whitelist).
+  // App Secret renders as a `<span class="secret-code__code">` masked
+  // with `∗∗∗∗∗∗...`; revealing it requires clicking the
+  // `data-icon="VisibleOutlined"` SVG inside `.secret-code__btns`.
+  await gotoWithRetry(page, `https://open.feishu.cn/app/${appId}/info`);
+  // The label "App Secret" appears only after the credentials block
+  // hydrates — wait for it explicitly rather than fixed sleep.
+  try {
+    await page.locator('text=App Secret').first().waitFor({ timeout: 30000 });
+  } catch (e) {
+    log(`   captureAppSecret: "App Secret" label never appeared`);
+    return null;
+  }
+  await page.waitForTimeout(800);
+
+  // Click the eye icon to unmask. Feishu wraps it in a <span>, not a
+  // <button> — so we look for the SVG by data-icon and click its
+  // parent span. The Copy icon shares the same wrapper class so we
+  // disambiguate by data-icon.
+  const eyeIcon = page.locator('[data-icon="VisibleOutlined"]').first();
+  if ((await eyeIcon.count()) === 0) {
+    log(`   captureAppSecret: VisibleOutlined icon not found on /info`);
+    return null;
+  }
+  // Click the icon's parent .secret-code__btn span (the SVG itself
+  // doesn't get the click handler, the wrapper does).
+  try {
+    await eyeIcon.locator('xpath=ancestor::*[contains(@class,"secret-code__btn")][1]')
+      .first().click({ timeout: 2000 });
+  } catch (e) {
+    // fallback: click the icon directly with force
+    await eyeIcon.click({ force: true, timeout: 2000 }).catch(() => {});
+  }
+  await page.waitForTimeout(800);
+
+  // Read the unmasked text out of .secret-code__code
+  const codeSpans = await page.locator('.secret-code__code').all();
+  for (const span of codeSpans) {
+    const text = ((await span.textContent()) || '').trim();
+    if (looksLikeRealSecret(text)) return text;
+  }
+
+  // Fallback: click the Copy icon and read clipboard. Feishu copies
+  // even from the masked state.
+  try {
+    const copyIcon = page.locator('[data-icon="CopyOutlined"]').first();
+    if ((await copyIcon.count()) > 0) {
+      await copyIcon.locator('xpath=ancestor::*[contains(@class,"secret-code__btn")][1]')
+        .first().click({ timeout: 2000 });
+      await page.waitForTimeout(500);
+      const fromClipboard = await page.evaluate(
+        () => navigator.clipboard.readText().catch(() => ''));
+      if (looksLikeRealSecret(fromClipboard.trim())) {
+        return fromClipboard.trim();
+      }
+    }
+  } catch (e) {}
+
+  // Final diagnostic for failure path
+  try {
+    const codeText = await page.locator('.secret-code__code').first()
+      .textContent().catch(() => '');
+    log(`   captureAppSecret diag: .secret-code__code text = "${(codeText||'').substring(0,40)}..."`);
+  } catch (e) {}
+  return null;
+}
+
+// Tighter shape: Feishu app secrets are exactly 32 random
+// alphanumeric chars AND contain at least one digit and at least one
+// lowercase letter — random base62-ish strings rarely lack either.
+// English-word concatenations on the page (UI labels, profile names)
+// usually fail the digit check.
+function looksLikeRealSecret(s) {
+  if (!s || s.length !== 32) return false;
+  if (!/^[a-zA-Z0-9]+$/.test(s)) return false;
+  if (!/[0-9]/.test(s)) return false;
+  if (!/[a-z]/.test(s)) return false;
+  return true;
+}
+
 // Feishu pages use nested scrollable containers (not window scroll).
 // Find every scrollable element and scroll it to the bottom.
 async function scrollToBottom(page) {
@@ -171,15 +279,18 @@ async function scrollToBottom(page) {
 async function stage_create_app(page, _ctx, state) {
   log('Stage 1/7 create-app: creating custom app...');
   await gotoWithRetry(page, 'https://open.feishu.cn/app');
-  await page.waitForTimeout(2000);
-  await page.getByRole('button', { name: 'Create Custom App' }).click();
   await page.waitForTimeout(1000);
+  await page.getByRole('button', { name: 'Create Custom App' }).click();
+  await page.waitForTimeout(800);
   await page.getByRole('textbox', { name: /\/32/ }).fill(state.appName);
   await page.locator('textarea').fill(state.appDescription);
   await page.getByRole('button', { name: 'Create', exact: true }).click();
-  await page.waitForURL('**/capability/**', { timeout: 10000 });
+  // Poll URL — Feishu SPA changes location without firing 'load',
+  // so page.waitForURL would 10 s-timeout even after navigation.
+  const navigated = await pollForUrl(page, '/capability/', 30000);
+  if (!navigated) throw new Error('app creation: never navigated to capability page');
   const appId = page.url().match(/\/app\/(cli_[a-z0-9]+)\//)?.[1];
-  if (!appId) throw new Error('Failed to extract app ID from URL');
+  if (!appId) throw new Error('app creation: URL did not contain cli_ id');
   state.appId = appId;
   log(`App created: ${appId}`);
 }
@@ -187,9 +298,10 @@ async function stage_create_app(page, _ctx, state) {
 async function stage_add_bot(page, _ctx, state) {
   log('Stage 2/7 add-bot: adding Bot capability...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/capability`);
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1500);
   await page.getByRole('button', { name: 'Add' }).first().click();
-  await page.waitForURL('**/bot**', { timeout: 5000 });
+  const navigated = await pollForUrl(page, '/bot', 30000);
+  if (!navigated) throw new Error('add-bot: never navigated to bot page');
   log('Bot capability added');
 }
 
@@ -338,7 +450,9 @@ async function stage_publish(page, _ctx, state) {
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/version`);
   await page.waitForTimeout(2000);
   await page.getByRole('button', { name: 'Create Version' }).first().click();
-  await page.waitForURL('**/version/create**', { timeout: 5000 });
+  if (!await pollForUrl(page, '/version/create', 30000)) {
+    throw new Error('publish: never navigated to version/create');
+  }
   await page.waitForTimeout(1000);
   await scrollToBottom(page);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -453,22 +567,20 @@ Feishu Bot Creator
 
 Drive mode — RECOMMENDED entry point for AI agents:
   node create_feishu_bot.js drive <name> <desc>
-                  Opens chromium ONCE. If cookies are missing the
-                  user scans QR (~30 s); cookies persist so future
-                  drives skip this. Then runs the first incomplete
-                  stage and blocks on .state/<name>.cmd. Agent
-                  advances by writing one of:
-                    echo next            > .state/<name>.cmd
+                  Opens chromium ONCE, runs all 7 stages back-to-back
+                  with NO pauses on the happy path. After publish it
+                  auto-navigates to the credentials page, extracts
+                  the App Secret, writes it to .state/<name>.json,
+                  and exits cleanly. The user only scans QR on first
+                  ever run (cookies persist).
+                  Pauses ONLY when a stage fails — then the agent
+                  writes one of:
                     echo skip            > .state/<name>.cmd
-                    echo "redo events"   > .state/<name>.cmd
+                    echo "redo <stage>"  > .state/<name>.cmd
                     echo quit            > .state/<name>.cmd
-                  - next: run the next incomplete stage
-                  - skip: agent finished current stage manually in
-                          the open browser; mark it done and move on
-                  - redo X: re-run stage X (un-mark, then loop picks
-                            it again)
-                  - quit: close browser, exit
-                  Browser stays open the whole time.
+                  - skip: agent fixed it manually in the open browser
+                  - redo: drive re-runs that stage
+                  - quit: close browser and exit
 
 Login only (rarely needed; drive auto-logs in):
   node create_feishu_bot.js login
@@ -542,44 +654,58 @@ async function cmd_drive(name, desc) {
       const next = nextIncompleteStage(state);
       if (!next) {
         log(`🎉 All 7 stages complete for ${name} (${state.appId})`);
-        // Navigate to the credentials page so the user / agent can
-        // copy App ID + App Secret out of the open browser without
-        // re-launching anywhere. Then stay parked here until the
-        // agent sends `quit` — closing chromium prematurely would
-        // force the user to re-login somewhere else just to read
-        // the secret, which defeats "drive does it all in one go".
+        // Auto-capture App Secret so the agent doesn't need to ask
+        // the user to copy it out of the browser. We click any
+        // reveal-style button on /safe, then scan inputs for an
+        // alphanumeric token of secret-like shape. Best-effort — if
+        // it fails (selectors shifted), fall back to leaving the
+        // browser parked on /safe and asking for `quit`.
         try {
-          await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/safe`);
-          log(`   📋 Browser is now on the Credentials page.`);
-          log(`      Click "Show" next to App Secret in the open chromium`);
-          log(`      window, copy both values, then send 'quit' to close.`);
+          const secret = await captureAppSecret(page, state.appId);
+          if (secret) {
+            state.appSecret = secret;
+            saveState(state);
+            log(`   🔑 App Secret captured: ${secret.substring(0, 6)}...${secret.substring(secret.length - 4)}`);
+            log(`   📋 Full credentials saved to ${statePath(state.appName)}`);
+            log(`      App ID: ${state.appId}`);
+            log(`      App Secret: ${secret}`);
+            log('👋 Drive done; closing browser.');
+            break;
+          }
+          log(`   ⚠️ Could not auto-extract App Secret (UI may have shifted).`);
+          log(`      Browser parked on https://open.feishu.cn/app/${state.appId}/safe`);
+          log(`      Click "Show" next to App Secret, copy it, then send 'quit'.`);
         } catch (e) {
-          log(`   ⚠️ Could not auto-navigate to safe page: ${e.message.split('\n')[0]}`);
-          log(`      Open https://open.feishu.cn/app/${state.appId}/safe manually.`);
+          log(`   ⚠️ secret extraction error: ${e.message.split('\n')[0]}`);
+          log(`      Browser parked on /safe; copy secret manually + 'quit'.`);
         }
         const cmd = await waitForCmd(name, ['quit']);
         if (cmd === 'quit') log('👋 Quitting drive (browser closing).');
         break;
       }
+      let stageFailed = false;
       try {
         await runStage(page, context, next, state);
       } catch (e) {
-        log(`❌ Stage [${next.id}] failed: ${e.message}`);
-        log(`   Browser stays open — fix the page manually, then send:`);
-        log(`     'skip' if you completed [${next.id}] by hand → drive moves on`);
-        log(`     'redo ${next.id}' if you want drive to re-try the same stage`);
-        log(`     'next' if you want to skip without doing it (UNSAFE)`);
+        stageFailed = true;
+        log(`❌ Stage [${next.id}] failed: ${e.message.split('\n')[0]}`);
+        log(`   Browser stays open. Fix the page manually then send:`);
+        log(`     'skip'        — you completed [${next.id}] by hand, mark done`);
+        log(`     'redo ${next.id}' — drive re-tries the same stage`);
+        log(`     'quit'        — close browser and exit`);
       }
-      const cmd = await waitForCmd(name, ['next', 'skip', 'redo', 'quit']);
+      // Happy path: stage just succeeded → loop straight into the next
+      // stage. Only block on a command file when something failed (or
+      // we hit the all-done branch above). This keeps drive driving —
+      // no manual `echo next` between every stage on a clean run.
+      if (!stageFailed) continue;
+
+      const cmd = await waitForCmd(name, ['skip', 'redo', 'quit']);
       if (cmd === 'quit') {
         log('👋 Quitting drive (browser closing).');
         break;
       }
       if (cmd === 'skip') {
-        // Agent took over and finished `next.id` manually in the live
-        // browser (e.g. stage 3 import-scopes Monaco click failed and
-        // they pasted the JSON by hand). Mark it done so the loop
-        // moves to the next stage.
         if (!state.completedStages.includes(next.id)) {
           state.completedStages.push(next.id);
         }
@@ -598,7 +724,6 @@ async function cmd_drive(name, desc) {
         saveState(state);
         log(`🔁 Will re-run stage [${redoId}].`);
       }
-      // 'next' (default) → loop body picks the next incomplete stage.
     }
   });
 }
