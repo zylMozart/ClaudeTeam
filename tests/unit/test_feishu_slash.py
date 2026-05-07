@@ -782,6 +782,34 @@ def test_compact_skips_reidentify_when_inject_fails():
     assert "45s 后自动重注 identity" not in reply
 
 
+def test_compact_detects_llm_rejection_marker_and_skips_reidentify():
+    """Claude 2.x refuses programmatically-injected slash commands with
+    'It can't be triggered from inside a response'. The handler should
+    peek the pane after inject and surface that rejection instead of
+    optimistically claiming success + scheduling a useless reidentify.
+    Caught 2026-05-07 host smoke."""
+    scheduled = []
+
+    def fake_inject(target, text, **kw):
+        return True
+
+    def fake_capture(target, *, lines=80):
+        return ("⏺ /compact is a built-in CLI command — please run it "
+                "yourself in the terminal.\n  It can't be triggered from "
+                "inside a response.")
+
+    def capture_bg(fn):
+        scheduled.append(fn)
+
+    with tmux_patch(inject=fake_inject, capture_pane=fake_capture):
+        reply = slash.dispatch("/compact worker_cc", _ctx(background=capture_bg))
+    assert scheduled == [], "no reidentify should be scheduled when LLM rejected /compact"
+    assert "⚠️" in reply
+    assert "claude" in reply.lower() or "/clear" in reply
+    assert "已让 agent 自压缩上下文" not in reply, \
+        "must not falsely claim compact succeeded"
+
+
 # ── /stop ────────────────────────────────────────────────────────
 
 

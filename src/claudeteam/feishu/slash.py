@@ -574,10 +574,22 @@ def _handle_send(args: str, ctx: SlashContext) -> str:
     return f"{glyph} /send → {ctx.session}:{agent}\n内容: {msg}"
 
 
+_COMPACT_REJECT_MARKER = "can't be triggered from inside a response"
+
+
 def _handle_compact(args: str, ctx: SlashContext) -> str:
     """Send /compact to agent's pane, then schedule a background
     re-identify so the agent reloads its identity.md after compaction
-    settles (Round B.2 — post-compact identity reread)."""
+    settles (post-compact identity reread).
+
+    Claude 2.x has a guard that treats programmatically-injected slash
+    commands as plain text when it detects a response is in flight,
+    answering "/compact is a built-in CLI command — please run it
+    yourself in the terminal · It can't be triggered from inside a
+    response." We can't bypass that guard from a tmux send-keys path,
+    so settle a beat after inject and peek the pane: if the LLM rejected
+    it, surface that to chat instead of the optimistic
+    "已让 agent 自压缩上下文" line."""
     parts = args.split()
     agent = (parts[0] if parts else _default_agent(ctx)).strip()
     if (warn := _bad_agent(agent, ctx)):
@@ -586,7 +598,16 @@ def _handle_compact(args: str, ctx: SlashContext) -> str:
     ok = tmux.inject(target, "/compact")
     glyph = "✅" if ok else "❌"
     if not ok:
-        return f"{glyph} /compact → {ctx.session}:{agent} · 已让 agent 自压缩上下文"
+        return f"❌ /compact → {ctx.session}:{agent} · tmux inject 失败"
+    # Brief settle so claude has a chance to either start compacting
+    # (REPL slash route) or hand the message to the LLM (text route).
+    # 2s is enough to surface the rejection marker without blocking the
+    # chat reply long enough to time out.
+    ctx.sleep(2.0)
+    pane = tmux.capture_pane(target, lines=20) or ""
+    if _COMPACT_REJECT_MARKER in pane:
+        return (f"⚠️ /compact → {ctx.session}:{agent} · claude 把 /compact 当成"
+                f"消息文本回了（autoinjected 时常见，2.x 行为）。建议 /clear 替代。")
     # Schedule the re-identify on a background thread so the bot reply
     # comes back to chat immediately (no 45s block).
     init_msg = identity.init_prompt(agent)
