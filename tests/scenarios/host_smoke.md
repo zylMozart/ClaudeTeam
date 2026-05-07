@@ -125,16 +125,21 @@ for m in json.load(sys.stdin)['data']['messages'][:12]:
 下面 4 条会真改 worker 状态，只在你愿意承担副作用时跑：
 
 ```bash
-SEND "/send worker_cc smoke ping"   # 直接注入 pane，worker_cc 会回「收到」
-SEND "/compact worker_cc"           # 触发对话压缩，约 30-45 秒不可用
-SEND "/clear worker_cc"             # 清掉历史对话上下文
-SEND "/stop worker_cc"              # 杀 pane，需要 `claudeteam hire worker_cc` 复活
+SEND "/send worker_cc smoke ping"   # 注入 pane；worker_cc LLM 会简短 ack（"收到 / pong / ready"）
+SEND "/compact worker_cc"           # ⚠️ 已知不稳：claude 2.x 把自动注入的 /compact 当文本，
+                                    # LLM 回 "can't be triggered from inside a response"。建议
+                                    # 用 /clear 替代清上下文。
+SEND "/clear worker_cc"             # 清历史 + 重新注入 identity（rehire 等价）
+SEND "/stop worker_cc"              # 送 C-c 中断当前动作（不杀 pane；slash 自身 help 写的是"中断"）
 ```
 
 ## 4. 普通文本路由（验证 R174）
 
-证明任何文本——加 @ 也好、广播触发词也好——都只到 manager，最终在群里被
-manager 反应一次（不是被 worker 直接抢答）。
+证明 router 把 4 条人话都只投给 manager 的收件箱。manager 之后**可以**主动
+派单给 worker（「你在吗」之类的简单问，他可能懒得自己 echo 而 dispatch 给
+worker_cc 直接答；这是 manager 的判断力，不算契约破）。R174 真正禁止的是
+**router 跳过 manager、把 worker 当独立接口直接送投递**——这条用 inbox 文件
+查最严谨。
 
 ```bash
 SEND "你好"                              # 无 @ 无前缀
@@ -143,28 +148,29 @@ SEND "@team 全员同步进度"                # 广播触发词
 SEND "全体注意：smoke ping $(date +%s)"  # 中文广播 + 时间戳锚定
 ```
 
-**通过条件（看群里）**：
+**通过条件**：
 
-1. 4 条都能在群里看到 **manager 的回复卡**（manager 配色蓝色），不超过 60 秒
-2. **没有任何 worker 直接发卡回应**——只有 manager。如果你看到 worker_cc
-   或 worker_codex 直接对这 4 条人话发卡回，R174 契约破了
-3. manager 第 4 条的回复卡里**应当能看到那个时间戳**——证明它真的处理了
-   你这条具体的消息，而不是回复以前的指令
+1. 群里能看到 manager 的回复卡（manager 配色蓝色），第 4 条带时间戳——证明
+   manager 真处理了具体消息，不是回复以前的指令；不超过 60 秒
+2. `state/facts/inbox.json` 里这 4 条的 `to` 字段**全部是 manager**，没有
+   `to=worker_cc` / `to=worker_codex` 的人话条目（manager dispatch 后产生的
+   `from=manager, to=worker_cc` 是合法派单，不计在 R174 之内）
 
 ```bash
-# 验证抓取最近的卡：
-LARK_CLI_NO_PROXY=1 lark-cli im +chat-messages-list --chat-id "$CHAT" \
-  --as bot --page-size 8 --format json | python3 -c "
-import json,sys
-for m in json.load(sys.stdin)['data']['messages'][:8]:
-    role = (m.get('sender') or {}).get('id_type','?')
-    print(f\"[{m['create_time']}] {role:10} {m.get('msg_type'):11} {m.get('content','')[:90]}\")"
+# 严谨验证：直接看 inbox 投递记录
+python3 -c "
+import json
+msgs = json.load(open('state/facts/inbox.json'))['messages']
+for m in msgs[-12:]:
+    print(f\"to={m['to']:13} from={m['from']:10}  {(m.get('text') or '')[:70]}\")"
+# 期望最近 4 条人话 to= manager, from= user。
+# 任何 to=worker_*, from=user 的条目就是 R174 破了。
 ```
 
-**失败排查**（**只在群里没看到预期卡时才看**）：
+**失败排查**（仅当 inbox 里出现 `to=worker_*, from=user` 才看）：
 
-- 群里 worker_cc 直接回了——R174 没生效；查 `feishu/router.classify_event` 是否被回退
-- 群里 manager 没回——manager pane 卡住或没在工作。先 `tmux capture-pane -t ClaudeTeam:manager -p | tail -30` 看 LLM 状态；再 `claudeteam inbox manager` 看消息有没有进来；再看 `state/router.log` 看路由是不是 ROUTE 到 manager
+- 查 `feishu/router.classify_event` 有没有被回退到老的 @-mention 路由
+- 群里 manager 没回——manager pane 卡住或没在工作。先 `tmux capture-pane -t ClaudeTeam:manager -p | tail -30` 看 LLM 状态；再看 `state/router.log` 看路由是不是 ROUTE 到 manager
 
 ## 5. Worker → manager 反向路由（R174 的例外分支）
 
