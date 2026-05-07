@@ -9,6 +9,8 @@ READY_NO_INIT / SPAWN_FAILED).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from helpers import attr_patch, env_patch, isolated_env, tmux_patch
 from claudeteam.runtime import lifecycle, tmux, wake
 from claudeteam.runtime.lifecycle import (
@@ -172,12 +174,69 @@ def test_provision_returns_config_error_on_unknown_cli():
 
 
 def test_ensure_claude_agent_home_does_not_raise_when_data_missing():
-    """On hosts without /data (macOS, test runners), the helper is a
-    silent no-op — the per-agent home setup is container-only. Boss-
-    flagged 2026-05-05: don't crash claudeteam start outside Docker."""
+    """On hosts without /data (macOS, test runners), the helper falls
+    back to <state_dir>/agent-home/<agent>. Boss-flagged 2026-05-05:
+    don't crash claudeteam start outside Docker."""
     import os
     if os.path.exists("/data"):
         return  # skip on Linux containers; helper does real work there
-    # Must not raise on missing /data
+    # Must not raise on missing /data — falls back to state_dir
     lifecycle._ensure_claude_agent_home("manager")
     lifecycle._ensure_claude_agent_home("worker_cc")
+
+
+def test_ensure_claude_agent_home_writes_keychain_extract_as_regular_file():
+    """macOS host: when `security find-generic-password` succeeds, write
+    the result as a *regular file* (not a symlink). Earlier impl
+    symlinked to ~/.claude/.credentials.json which (a) goes stale
+    versus the live keychain and (b) gets atomic-replaced by claude on
+    refresh, defeating the share intent. 2026-05-07 host smoke ate
+    'refreshToken: ""' for breakfast — pin the regular-file invariant."""
+    import os
+    import platform
+    if platform.system() != "Darwin":
+        return  # macOS-only path
+    import subprocess
+    fresh_creds = ('{"claudeAiOauth":{"accessToken":"a-tok",'
+                   '"refreshToken":"r-tok","expiresAt":9999999999000}}')
+    def fake_run(argv, **kw):
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout=fresh_creds, stderr="")
+    with isolated_env(team={"agents": {"manager": {"cli": "claude-code"}}}), \
+            attr_patch(subprocess, run=fake_run):
+        lifecycle._ensure_claude_agent_home("manager")
+        from claudeteam.agents.claude_code import agent_home
+        cred = Path(agent_home("manager")) / ".claude" / ".credentials.json"
+        assert cred.exists(), "creds file not materialised"
+        assert not cred.is_symlink(), "expected regular file, got symlink"
+        assert "r-tok" in cred.read_text(), \
+            "expected fresh keychain content, got stale"
+
+
+def test_ensure_claude_agent_home_overwrites_stale_creds_each_call():
+    """Re-extract on every call: prior stale snapshot is overwritten so
+    `claudeteam down && claudeteam up` actually re-materialises from
+    keychain. Old impl gated on `if not cred_link.exists()` so the
+    file never refreshed once written."""
+    import os
+    import platform
+    if platform.system() != "Darwin":
+        return
+    import subprocess
+    tokens = iter(["v1-tok", "v2-tok"])
+    def fake_run(argv, **kw):
+        tok = next(tokens, "vN-tok")
+        body = ('{"claudeAiOauth":{"accessToken":"a","refreshToken":"%s",'
+                '"expiresAt":9999999999000}}' % tok)
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout=body, stderr="")
+    with isolated_env(team={"agents": {"manager": {"cli": "claude-code"}}}), \
+            attr_patch(subprocess, run=fake_run):
+        lifecycle._ensure_claude_agent_home("manager")
+        from claudeteam.agents.claude_code import agent_home
+        cred = Path(agent_home("manager")) / ".claude" / ".credentials.json"
+        assert "v1-tok" in cred.read_text()
+        lifecycle._ensure_claude_agent_home("manager")
+        # Second call must replace the file with v2's content
+        assert "v2-tok" in cred.read_text(), \
+            "stale snapshot not overwritten on re-provision"
