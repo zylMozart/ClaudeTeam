@@ -164,7 +164,24 @@ def subprocess_env() -> dict[str, str]:
     env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     token = _ensure_tenant_token()
     if token:
-        env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] = token
+        # lark-cli refuses to start if TENANT_ACCESS_TOKEN is set without a
+        # matching LARKSUITE_CLI_APP_ID/SECRET pair — token alone gets
+        # `Error: blocked by env: LARKSUITE_CLI_TENANT_ACCESS_TOKEN is set
+        # but LARKSUITE_CLI_APP_ID is missing`; token+app_id-only fails
+        # the WebSocket subscribe with `app_id or app_secret is null`
+        # (lark-cli's persistent-connection SDK re-auths off env-vars,
+        # not just the cached token). Both caught 2026-05-07 host smoke.
+        # Propagate all three together; if app_id/secret aren't available
+        # in env, skip injection and let lark-cli's profile/keychain
+        # path take over.
+        app_id = (env_str("LARKSUITE_CLI_APP_ID")
+                  or env_str("FEISHU_APP_ID"))
+        app_secret = (env_str("LARKSUITE_CLI_APP_SECRET")
+                      or env_str("FEISHU_APP_SECRET"))
+        if app_id and app_secret:
+            env["LARKSUITE_CLI_TENANT_ACCESS_TOKEN"] = token
+            env["LARKSUITE_CLI_APP_ID"] = app_id
+            env["LARKSUITE_CLI_APP_SECRET"] = app_secret
     return env
 
 

@@ -589,8 +589,59 @@ def test_subprocess_env_skips_token_injection_when_unavailable():
     """Host without env app_id/secret + no cache → env stays clean,
     macOS keychain path takes over downstream. Don't litter the env
     with empty strings."""
-    with env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
-                   FEISHU_APP_ID=None, FEISHU_APP_SECRET=None,
-                   LARKSUITE_CLI_APP_ID=None, LARKSUITE_CLI_APP_SECRET=None):
-        env = lark.subprocess_env()
+    import tempfile
+    from helpers import attr_patch
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)  # empty path; no cache file
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=cache), \
+             env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID=None, FEISHU_APP_SECRET=None,
+                       LARKSUITE_CLI_APP_ID=None, LARKSUITE_CLI_APP_SECRET=None):
+            env = lark.subprocess_env()
     assert "LARKSUITE_CLI_TENANT_ACCESS_TOKEN" not in env
+
+
+def test_subprocess_env_pairs_token_with_app_id_and_secret():
+    """When TENANT_ACCESS_TOKEN is injected, LARKSUITE_CLI_APP_ID *and*
+    APP_SECRET must travel with it — lark-cli refuses on token-only
+    (`blocked by env ... LARKSUITE_CLI_APP_ID is missing`) and the
+    persistent-connection SDK then refuses on token+id-only with `app_id
+    or app_secret is null` because it re-auths off env-vars not the
+    cached token. 2026-05-07 host-smoke walked into both."""
+    import json
+    import tempfile
+    from helpers import attr_patch
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with open(cache, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"token": "t-paired", "expire_at": 9999999999}))
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=cache), \
+             env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID="cli_paired", FEISHU_APP_SECRET="s-x",
+                       LARKSUITE_CLI_APP_ID=None,
+                       LARKSUITE_CLI_APP_SECRET=None):
+            env = lark.subprocess_env()
+        assert env.get("LARKSUITE_CLI_TENANT_ACCESS_TOKEN") == "t-paired"
+        assert env.get("LARKSUITE_CLI_APP_ID") == "cli_paired"
+        assert env.get("LARKSUITE_CLI_APP_SECRET") == "s-x"
+
+
+def test_subprocess_env_skips_token_when_no_app_id_resolvable():
+    """If a stale cache hands back a token but no app_id is in env (cache
+    doesn't track which app the token came from), don't inject a
+    half-pair — lark-cli would reject it. Prefer falling back to the
+    profile/keychain auth path."""
+    import json
+    import tempfile
+    from helpers import attr_patch
+    with tempfile.TemporaryDirectory() as td:
+        cache = _cache_path(td)
+        with open(cache, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"token": "t-orphan", "expire_at": 9999999999}))
+        with attr_patch(lark, _TENANT_TOKEN_CACHE=cache), \
+             env_patch(LARKSUITE_CLI_TENANT_ACCESS_TOKEN=None,
+                       FEISHU_APP_ID=None, FEISHU_APP_SECRET=None,
+                       LARKSUITE_CLI_APP_ID=None, LARKSUITE_CLI_APP_SECRET=None):
+            env = lark.subprocess_env()
+        assert "LARKSUITE_CLI_TENANT_ACCESS_TOKEN" not in env
+        assert "LARKSUITE_CLI_APP_ID" not in env
