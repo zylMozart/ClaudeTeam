@@ -207,15 +207,40 @@ def test_codex_query_parses_codex_cli_usage_output():
     assert result["metrics"][1]["used_pct"] == 35
 
 
-def test_codex_query_returns_failure_when_tool_missing():
-    """R173: if codex-cli-usage isn't on PATH (host dev mac without
-    `uv tool install`), surface a clear missing-tool note."""
+def test_codex_query_returns_failure_when_tool_missing_and_no_auth():
+    """If codex-cli-usage isn't on PATH AND ~/.codex/auth.json doesn't
+    exist, surface a clear missing-login note. Both prereqs absent →
+    user genuinely has nothing logged in for Codex."""
+    import shutil
+    import tempfile
+    from helpers import attr_patch
+    with tempfile.TemporaryDirectory() as td:
+        with attr_patch(shutil, which=lambda t: None):
+            result = _usage_mod._query_codex_usage(
+                home=Path(td), runner=_make_runner())
+    assert result["ok"] is False
+    assert "不存在" in result["note"] or "登录" in result["note"]
+
+
+def test_codex_query_falls_back_to_auth_json_summary_when_tool_missing():
+    """When codex-cli-usage isn't installed but ~/.codex/auth.json IS
+    present (real host dev case), fall back to the JWT summary helper
+    so the user sees their login status instead of a "未安装" wall."""
     import shutil
     from helpers import attr_patch
-    with attr_patch(shutil, which=lambda t: None):
-        result = _usage_mod._query_codex_usage(runner=_make_runner())
-    assert result["ok"] is False
-    assert "未安装" in result["note"] or "uv tool install" in result["note"]
+    payload = {
+        "https://api.openai.com/auth": {
+            "chatgpt_plan_type": "pro",
+            "chatgpt_subscription_active_until": "2026-05-20T00:00:00+00:00",
+        },
+    }
+    with _fake_home(codex_auth={"tokens": {"id_token": _fake_jwt(payload)}}) \
+            as home, attr_patch(shutil, which=lambda t: None):
+        result = _usage_mod._query_codex_usage(
+            home=home, runner=_make_runner())
+    assert result["ok"] is True
+    assert "已登录" in result["note"]
+    assert "Pro" in result.get("plan", "") or "Pro" in result["note"]
 
 
 def test_codex_query_returns_failure_on_nonzero_exit():
@@ -344,10 +369,11 @@ def test_usage_probes_codex_kimi_when_team_has_no_matching_agent():
     def fake_opener(req, timeout):
         raise OSError("no net in tests")
 
-    # R173: codex query is now a subprocess shell-out to codex-cli-usage,
-    # not JWT decode. On test host (no codex-cli-usage installed) the
-    # codex section reports ok=False with "未安装" note — still rendered,
-    # which is the behavior we want.
+    # codex-cli-usage missing → fall back to auth.json JWT summary
+    # (now that auth.json exists in the fake home, the codex section
+    # reports ok=True with the login summary, instead of the old
+    # "未安装" failure). Kimi has no upstream tool path — so its
+    # opener-failure still surfaces as ok=False.
     import shutil
     from helpers import attr_patch
     with _fake_home(
@@ -356,10 +382,11 @@ def test_usage_probes_codex_kimi_when_team_has_no_matching_agent():
             attr_patch(shutil, which=lambda t: None):
         data = _usage_mod._build_data(
             "daily", "", {"claude-code"}, home=home, opener=fake_opener)
-    # Codex section IS produced (because cred file existed) but reports
-    # tool-missing on this test host
+    # Codex section IS produced (because cred file existed) AND succeeds
+    # via the auth.json fallback path
     assert data["codex"] is not None
-    assert data["codex"]["ok"] is False
+    assert data["codex"]["ok"] is True
+    assert "已登录" in data["codex"].get("note", "")
     # Kimi probed too; opener throws so ok=False, section still rendered
     assert data["kimi"] is not None
     assert data["kimi"]["ok"] is False
