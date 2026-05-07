@@ -76,30 +76,45 @@ def _ensure_claude_agent_home(agent: str) -> None:
     # though the keychain entry exists for the user. Export it to a file
     # the first time so each pane has working OAuth.
     cred_link = claude_dir / ".credentials.json"
-    if not cred_link.exists():
+    # macOS host: prefer the live keychain over a (potentially-stale) host
+    # ~/.claude/.credentials.json. Claude refreshes OAuth into the keychain
+    # but only writes the file occasionally, so a symlink to the host file
+    # can hand the pane a `refreshToken` the server has already revoked.
+    # 2026-05-07 caught: pane symlinked to stale host file, refresh
+    # round-tripped 401, claude blanked the field, pane logged "401
+    # Invalid auth credentials". Re-extract on every provision and write
+    # a *regular file* — not a symlink — because claude's atomic-write
+    # of credentials replaces the symlink target with a plain file on
+    # first refresh anyway, defeating the original sharing intent.
+    import platform
+    keychain_extracted = False
+    if platform.system() == "Darwin":
+        import subprocess
+        try:
+            out = subprocess.run(
+                ["security", "find-generic-password",
+                 "-s", "Claude Code-credentials", "-w"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                if cred_link.is_symlink() or cred_link.exists():
+                    cred_link.unlink()
+                cred_link.write_text(out.stdout)
+                keychain_extracted = True
+        except Exception:
+            # Subprocess fake in tests / missing `security` / empty
+            # keychain → silent skip and fall through to the host-file
+            # branch below.
+            pass
+    if not keychain_extracted and not cred_link.exists():
         user_creds = Path.home() / ".claude" / ".credentials.json"
         if user_creds.exists():
             try:
-                cred_link.symlink_to(user_creds)
+                # Copy, not symlink: claude's atomic-write replaces the
+                # symlink with a plain file anyway, so start with one.
+                cred_link.write_bytes(user_creds.read_bytes())
             except OSError:
                 pass
-        else:
-            import platform, subprocess
-            if platform.system() == "Darwin":
-                # Best-effort: any failure (subprocess fake in tests, missing
-                # `security`, empty keychain, attr errors from a Popen mock) →
-                # silent skip; pane will surface "Not logged in" if the OAuth
-                # really is unreachable, which is louder than a stack trace.
-                try:
-                    out = subprocess.run(
-                        ["security", "find-generic-password",
-                         "-s", "Claude Code-credentials", "-w"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if out.returncode == 0 and out.stdout.strip():
-                        cred_link.write_text(out.stdout)
-                except Exception:
-                    pass
     user_claude_json = Path.home() / ".claude.json"
     claude_json = home / ".claude.json"
     if user_claude_json.exists() and not claude_json.exists():
