@@ -1,47 +1,35 @@
-# Runtime data (generated inside container)
-agents/
-workspace/
-team.json
-CLAUDE.md
+# Keep the build context small + reproducible.
 
-# Runtime config (mounted via volume)
-scripts/runtime_config.json
-scripts/sync_manifest.json
-scripts/.router_seen_ids.json
-scripts/.token_cache.json
-scripts/.router.pid
-scripts/.*.pid
-scripts/.router.cursor
-
-# Credentials (injected via env or volume)
-.env
-.env.*
-.kimi-credentials/
-.codex-credentials/
-.gemini-credentials/
-.qwen-credentials/
-.lark-cli-credentials/
-.claude-credentials/
-.live-smoke-credentials/
-state/
-
-# Git
-.git/
-.gitignore
-
-# OS / Editor
-.DS_Store
-.vscode/
-.idea/
-*.swp
-
-# Python cache
+# Local debris
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+build/
+dist/
 .pytest_cache/
 
-# Other
-*.db
-.playwright-mcp/
-tools/
+# Tests + docs aren't needed inside the runtime image; devs who want
+# them bind-mount the repo at /app.
+tests/
+projects/
+workspace/
+scripts/
+
+# Per-deployment state — never bake into an image
+state/
+team-data/
+*.pid
+*.cursor
+
+# Editor / VCS / OS clutter
+.git/
+.github/
+.vscode/
+.idea/
+.DS_Store
+
+# Local team config from the host shouldn't leak into images
+team.json
+runtime_config.json
+.claude/

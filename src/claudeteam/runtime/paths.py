@@ -1,39 +1,74 @@
-#!/usr/bin/env python3
-"""Runtime state path helpers.
+"""Single source of truth for runtime filesystem paths.
 
-Mutable process state must not live under scripts/ because production hardened
-containers mount the application code read-only.  State defaults to
-CLAUDETEAM_STATE_DIR when set, then /app/state for container installs, and
-workspace/shared/state for local development.
+All paths derive from `$CLAUDETEAM_STATE_DIR` (re-read on every call so
+tests get isolation by setting the env, not by monkey-patching).  When
+not set, falls back to `~/.claudeteam`.
+
+Layout:
+    $CLAUDETEAM_STATE_DIR/
+        facts/             ← inbox.json, status.json, logs.jsonl, heartbeats.json
+        agents/<name>/     ← per-agent identity.md
+        router.pid         ← daemon pid files
+        watchdog.pid
+        router.cursor      ← catchup replay state
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SCRIPT_DIR = PROJECT_ROOT / "scripts"
+from claudeteam.util import env_path
 
 
-def runtime_state_dir() -> Path:
-    env_dir = os.environ.get("CLAUDETEAM_STATE_DIR", "").strip()
-    if env_dir:
-        return Path(env_dir)
-    if str(PROJECT_ROOT) == "/app" or str(PROJECT_ROOT).startswith("/app/"):
-        return Path("/app/state")
-    return PROJECT_ROOT / "workspace" / "shared" / "state"
+def state_dir() -> Path:
+    """Top-level directory for all runtime state."""
+    return env_path("CLAUDETEAM_STATE_DIR") or Path.home() / ".claudeteam"
 
 
-def runtime_state_file(name: str) -> str:
-    path = runtime_state_dir() / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return str(path)
+def facts_dir() -> Path:
+    """Where local_facts stores inbox / status / log / heartbeats."""
+    return state_dir() / "facts"
 
 
-def legacy_script_state_file(name: str) -> str:
-    return str(SCRIPT_DIR / name)
+def state_file(name: str) -> Path:
+    """A file under state_dir. Caller is responsible for mkdir before writing
+    — pure path resolution, no I/O side effects."""
+    return state_dir() / name
 
 
-def ensure_parent(path: str) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+def router_pid_file() -> Path:
+    return state_file("router.pid")
+
+
+def router_cursor_file() -> Path:
+    return state_file("router.cursor")
+
+
+def router_log_file() -> Path:
+    return state_file("router.log")
+
+
+def router_seen_file() -> Path:
+    return state_file("router.seen")
+
+
+def config_file() -> Path:
+    """Path to the unified TOML config file (replaces team.json +
+    runtime_config.json). Override via CLAUDETEAM_CONFIG_FILE env, else
+    looks for `./claudeteam.toml` relative to cwd."""
+    from claudeteam.util import env_path
+    return env_path("CLAUDETEAM_CONFIG_FILE") or Path.cwd() / "claudeteam.toml"
+
+
+def watchdog_pid_file() -> Path:
+    return state_file("watchdog.pid")
+
+
+def watchdog_log_file() -> Path:
+    return state_file("watchdog.log")
+
+
+def ensure_state_dir() -> Path:
+    """Create state_dir if missing and return it. Use when about to write."""
+    sd = state_dir()
+    sd.mkdir(parents=True, exist_ok=True)
+    return sd

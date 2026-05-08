@@ -1,10 +1,3 @@
-"""ClaudeTeam source package."""
+"""ClaudeTeam — multi-agent CLI orchestrator (clean-slate rebuild)."""
 
-__all__ = [
-    "runtime",
-    "storage",
-    "messaging",
-    "cli_adapters",
-    "integrations",
-    "commands",
-]
+__version__ = "0.0.0"

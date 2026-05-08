@@ -1,3 +1,6 @@
 node_modules/
 .feishu_cookies.json
 package-lock.json
+# per-deploy stage progress; keeps a row per app you're creating so
+# `next` / `status` know where to resume.
+.state/

@@ -1,2 +1,0 @@
-# lark-cli handles all Feishu API calls (npm install -g @larksuite/cli)
-# No Python HTTP dependencies needed

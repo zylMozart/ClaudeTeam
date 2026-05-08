@@ -1,49 +1,47 @@
-# ── 凭证与密钥（绝不入库）──
-.env
-.env.*
-!.env.example
-scripts/.token_cache.json
-
-# ── 运行时配置（绝不入库）──
-scripts/runtime_config.json
-scripts/sync_manifest.json
-scripts/.router_seen_ids.json
-scripts/.*.pid
-scripts/.router.cursor
-scripts/.team.json.prev
-
-# ── 运行时生成的文件与目录 ──
-CLAUDE.md
-agents/
-workspace/
-team.json
-
-# ── 数据库 ──
-*.db
-
-# ── Python ──
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+build/
+dist/
 .pytest_cache/
 
-# ── macOS ──
+# Python venv — per-developer; `pip install -e .` populates this
+.venv/
+
+# macOS noise
 .DS_Store
 
-# ── 编辑器 ──
-.vscode/
-.idea/
-*.swp
+# runtime state — anchor to repo root so src/claudeteam/agents/ isn't swallowed
+/workspace/
+/agents/
+/projects/
+/state/
+# scripts/feishu_bot_creator/ is checked in (Playwright bot creator);
+# its own .gitignore handles node_modules + cookies. Allow this dir.
+# Watch git status when adding under scripts/ so legacy state files
+# from old main checkouts don't sneak in (caught round-79).
+.claude/scheduled_tasks.lock
+# `claudeteam install-hooks` output — regenerated per deploy
+/.claude/commands/
+team.json
+runtime_config.json
 
-# ── 其他 ──
-.playwright-mcp/
-tools/
-docker-compose.override.yml
-.kimi-credentials/
-.codex-credentials/
-.gemini-credentials/
-.qwen-credentials/
-.lark-cli-credentials/
-.claude-credentials/
-.live-smoke-credentials/
-state/
+# docker compose env (contains secrets)
+.env
+/team-data/
+/docker-compose.override.yml
+
+# unrelated tool caches that drift into the repo root
+/.playwright-mcp/
+# claudeteam unified config — per-deploy file, like runtime_config.json
+/claudeteam.toml
+/claudeteam.toml.bak
+AGENTS.md
+
+# Personal dev convenience — operator-specific Makefile + creds helper.
+# Hardcodes a private chat_id / lark profile, so kept out of the open
+# source repo. Use the documented `claudeteam` commands instead.
+/Makefile
+/bin/
+/generated/

@@ -1,1 +1,0 @@
-"""External integrations for ClaudeTeam."""
