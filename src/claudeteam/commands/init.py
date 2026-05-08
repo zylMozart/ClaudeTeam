@@ -97,9 +97,17 @@ ready_marker_timeout_s = 60
 
 # ── [router]  路由器守护进程 ───────────────────────────────
 [router]
-stale_event_threshold_s = 600
-lark_call_timeout_s     = 90
-alarm_card_color        = "red"
+stale_event_threshold_s        = 600    # 多久没事件就 self-SIGTERM 让 watchdog 重生
+lark_call_timeout_s            = 90     # 单次 lark-cli 调用超时
+alarm_card_color               = "red"  # 守护进入 cooldown 时报警卡片颜色
+seen_max_lines                 = 5000   # router.seen 去重表 trim 阈值
+subscribe_watchdog_period_s    = 20.0   # 内部订阅子进程健康检查周期
+
+# ── [watchdog]  daemon 守护循环 ────────────────────────────
+[watchdog]
+check_interval_s        = 30    # 守护 tick 周期 (查 router 是否还活)
+cred_check_interval_s   = 300   # 多久查一次 Claude OAuth 是否快过期
+cred_refresh_ahead_s    = 1800  # 剩余 < 此值时强制 refresh OAuth
 
 # ── [feishu]  飞书桥接 ─────────────────────────────────────
 [feishu]

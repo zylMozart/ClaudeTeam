@@ -1,8 +1,9 @@
 """`claudeteam watchdog`
 
 Long-running supervisor that keeps the router (and any future daemons)
-alive.  Runs `runtime.watchdog.supervise` every CHECK_INTERVAL seconds
-until SIGTERM / Ctrl-C.
+alive. Runs `runtime.watchdog.supervise` every
+`watchdog.check_interval_s` seconds (claudeteam.toml; default 30) until
+SIGTERM / Ctrl-C.
 
 Self-locks via state_dir/watchdog.pid so two watchdogs can't fight.
 
@@ -22,12 +23,14 @@ Claude OAuth keep-alive:
 - Bind-mounted claude .credentials.json expires during idle and
   the in-pane claude only refreshes on API call (not idle), which
   killed boss-message routing after long silences. Watchdog now
-  proactively reads `expiresAt` every CRED_CHECK_INTERVAL_SECS; if
-  the token's < CRED_REFRESH_AHEAD seconds from expiry, run
-  `claude -p "Return only OK"` once. That triggers claude to refresh
-  the token in-place (file is bind-mounted RW so the new token
-  persists back to host). All agent panes share the same file via
-  per-agent symlink, so one refresh covers the whole team.
+  proactively reads `expiresAt` every
+  `watchdog.cred_check_interval_s` seconds (default 300); if
+  the token's < `watchdog.cred_refresh_ahead_s` (default 1800) from
+  expiry, run `claude -p "Return only OK"` once. That triggers
+  claude to refresh the token in-place (file is bind-mounted RW so
+  the new token persists back to host). All agent panes share the
+  same file via per-agent symlink, so one refresh covers the whole
+  team.
 
 All alert paths are best-effort: chat send / card send failures are
 swallowed at the alert_fn level (and runtime/watchdog's supervise
@@ -45,17 +48,10 @@ from pathlib import Path
 
 from claudeteam.feishu import chat as _chat
 from claudeteam.feishu.cards import simple_card
-from claudeteam.runtime import config, paths, pidlock, watchdog
+from claudeteam.runtime import config, paths, pidlock, tunables, watchdog
 from claudeteam.util import maybe_print_help
 
 
-CHECK_INTERVAL_SECS = 30
-# Keep-alive cadence for claude OAuth refresh. Claude tokens
-# typically expire ~12h; we refresh whenever < 30min remain so we
-# never serve a request to an expired token. Check every 5min so the
-# refresh fires within ±5min of the threshold.
-CRED_CHECK_INTERVAL_SECS = 300
-CRED_REFRESH_AHEAD_SECS = 1800
 _CRED_PATH = Path.home() / ".claude" / ".credentials.json"
 # Resolves to /root/.claude/.credentials.json in Docker (HOME=/root) — same
 # path the host-keychain bind-mount lands on — and to ~/.claude/... on host.
@@ -120,17 +116,19 @@ def main(argv: list[str]) -> int:
     states: dict = {}
     alert_fn = _make_alert_fn()
     alert_msg = "with chat alerts" if alert_fn else "no chat alerts (chat_id unset)"
-    print(f"🐕 watchdog supervising {[s.name for s in specs]} every {CHECK_INTERVAL_SECS}s ({alert_msg})")
+    check_interval_s = int(tunables.tunable("watchdog.check_interval_s", 30))
+    cred_check_interval_s = int(tunables.tunable("watchdog.cred_check_interval_s", 300))
+    print(f"🐕 watchdog supervising {[s.name for s in specs]} every {check_interval_s}s ({alert_msg})")
 
     last_cred_check = 0.0
     try:
         while True:
             watchdog.supervise(specs, states, alert_fn=alert_fn)
             now = time.time()
-            if now - last_cred_check >= CRED_CHECK_INTERVAL_SECS:
+            if now - last_cred_check >= cred_check_interval_s:
                 _maybe_refresh_claude_oauth(now)
                 last_cred_check = now
-            time.sleep(CHECK_INTERVAL_SECS)
+            time.sleep(check_interval_s)
     except KeyboardInterrupt:
         print("watchdog stopped")
         return 0
@@ -140,10 +138,11 @@ def main(argv: list[str]) -> int:
 
 def _maybe_refresh_claude_oauth(now: float) -> None:
     """If the bind-mounted claude .credentials.json expires within
-    CRED_REFRESH_AHEAD_SECS, force-refresh by spawning a brief
-    `claude -p "Return only OK"`. That subprocess hits the Anthropic
-    API which makes claude rotate the access token in-place. File is
-    bind-mounted RW so the new token persists to host.
+    `watchdog.cred_refresh_ahead_s` (claudeteam.toml; default 1800),
+    force-refresh by spawning a brief `claude -p "Return only OK"`.
+    That subprocess hits the Anthropic API which makes claude rotate
+    the access token in-place. File is bind-mounted RW so the new
+    token persists to host.
 
     Best-effort: any failure (file missing, parse error, claude crashes,
     network down) logs a warning but doesn't kill the watchdog. Worst
@@ -162,7 +161,8 @@ def _maybe_refresh_claude_oauth(now: float) -> None:
         print(f"  ⚠️ cred-refresh: read {_CRED_PATH} failed: {e}")
         return
     remaining = expires_ms / 1000 - now
-    if remaining > CRED_REFRESH_AHEAD_SECS:
+    cred_refresh_ahead_s = int(tunables.tunable("watchdog.cred_refresh_ahead_s", 1800))
+    if remaining > cred_refresh_ahead_s:
         return  # plenty of time; skip
     print(f"  🔑 claude token expires in {int(remaining)}s — forcing refresh")
     try:

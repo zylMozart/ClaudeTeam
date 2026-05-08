@@ -43,7 +43,7 @@ from typing import Callable
 from claudeteam.feishu import catchup, lark
 from claudeteam.feishu.deliver import apply as _deliver_apply
 from claudeteam.feishu.subscribe import process_lines
-from claudeteam.runtime import config, paths, pidlock, wake
+from claudeteam.runtime import config, paths, pidlock, tunables, wake
 from claudeteam.util import error_exit, maybe_print_help, warn
 
 
@@ -155,14 +155,11 @@ def _terminate_subscribe_group(proc: subprocess.Popen) -> None:
             pass
 
 
-_SEEN_MAX_LINES = 5000   # truncate router.seen file when it grows past this
-
-
 def _load_seen_msg_ids() -> set[str]:
-    """Load persisted dedup set from disk, truncating to the most recent
-    SEEN_MAX_LINES entries to bound the file. Returns empty set if the
-    file is missing or unreadable — best-effort, never fails the daemon.
-    """
+    """Load persisted dedup set from disk, truncating to
+    `router.seen_max_lines` (claudeteam.toml; default 5000) to bound the
+    file. Returns empty set if missing or unreadable — best-effort,
+    never fails the daemon."""
     path = paths.router_seen_file()
     try:
         if not path.exists():
@@ -171,10 +168,11 @@ def _load_seen_msg_ids() -> set[str]:
             ids = [line.strip() for line in f if line.strip()]
     except OSError:
         return set()
-    if len(ids) > _SEEN_MAX_LINES:
+    seen_max = int(tunables.tunable("router.seen_max_lines", 5000))
+    if len(ids) > seen_max:
         # Truncate file in place so it doesn't grow unbounded.
         try:
-            kept = ids[-_SEEN_MAX_LINES:]
+            kept = ids[-seen_max:]
             path.write_text("\n".join(kept) + "\n", encoding="utf-8")
             ids = kept
         except OSError:
@@ -209,12 +207,6 @@ def _make_on_progress(last_event_at: list[float]) -> Callable:
             except OSError:
                 pass  # best-effort; in-memory set still dedups in this run
     return _on_progress
-
-
-# How often the subscribe-watchdog thread checks whether the lark-cli
-# child is still alive. Short enough to detect a silent death in <30s,
-# long enough not to busy-loop.
-_SUBSCRIBE_WATCHDOG_PERIOD_S = 20.0
 
 
 def _stale_event_threshold_s() -> float:
@@ -273,7 +265,11 @@ def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event,
     reaps the subscribe group cleanly. Watchdog respawns from there.
     """
     threshold = _stale_event_threshold_s()
-    while not stop_event.wait(_SUBSCRIBE_WATCHDOG_PERIOD_S):
+    # Short enough to detect a silent subscribe death in <30s, long
+    # enough not to busy-loop. Toml-overridable via
+    # router.subscribe_watchdog_period_s.
+    period_s = float(tunables.tunable("router.subscribe_watchdog_period_s", 20.0))
+    while not stop_event.wait(period_s):
         if proc.poll() is not None:
             print(f"  ⚠️ subscribe child exited (rc={proc.returncode}); router will exit so watchdog can respawn")
             os.kill(os.getpid(), signal.SIGTERM)
