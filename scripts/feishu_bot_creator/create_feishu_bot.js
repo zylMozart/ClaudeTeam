@@ -278,6 +278,18 @@ async function scrollToBottom(page) {
 
 async function stage_create_app(page, _ctx, state) {
   log('Stage 1/7 create-app: creating custom app...');
+  // Client-side check: bot name must be ≤32 chars. Feishu form validates
+  // this with a red "Enter up to 32 characters" notice and refuses to
+  // navigate, but our pollForUrl just times out and we threw a useless
+  // "never navigated to capability page". Caught 2026-05-08 dryrun: agent
+  // wasted 3 retries before realizing the name was 35 chars. Throw
+  // upfront with the actual cause.
+  if (state.appName && state.appName.length > 32) {
+    throw new Error(
+      `app creation: appName "${state.appName}" is ${state.appName.length} ` +
+      `chars; Feishu's form rejects names over 32. Shorten and retry ` +
+      `(common abbreviation: drop "ClaudeTeam" prefix or use initials).`);
+  }
   await gotoWithRetry(page, 'https://open.feishu.cn/app');
   await page.waitForTimeout(1000);
   await page.getByRole('button', { name: 'Create Custom App' }).click();
@@ -288,7 +300,22 @@ async function stage_create_app(page, _ctx, state) {
   // Poll URL — Feishu SPA changes location without firing 'load',
   // so page.waitForURL would 10 s-timeout even after navigation.
   const navigated = await pollForUrl(page, '/capability/', 30000);
-  if (!navigated) throw new Error('app creation: never navigated to capability page');
+  if (!navigated) {
+    // If we reach here despite the upfront length check, something
+    // *else* is rejecting (e.g. name collision with existing app, or
+    // the form added a new validator we don't know about). Try to
+    // surface the form's actual error message before throwing generic.
+    const formErr = await page.evaluate(() => {
+      const errs = [...document.querySelectorAll(
+        '[class*="error"], [class*="invalid"], [class*="warning"], '
+        + '[role="alert"]')]
+        .map(e => (e.textContent || '').trim())
+        .filter(t => t.length > 0 && t.length < 200);
+      return [...new Set(errs)].slice(0, 3);
+    }).catch(() => []);
+    const hint = formErr.length ? ` · form errors: ${JSON.stringify(formErr)}` : '';
+    throw new Error(`app creation: never navigated to capability page${hint}`);
+  }
   const appId = page.url().match(/\/app\/(cli_[a-z0-9]+)\//)?.[1];
   if (!appId) throw new Error('app creation: URL did not contain cli_ id');
   state.appId = appId;
@@ -515,8 +542,37 @@ async function stage_callbacks(page, _ctx, state) {
 }
 
 async function stage_publish(page, _ctx, state) {
-  // Version page → "Create Version" → defaults Save → Publish (in
-  // confirmation dialog; .last() to skip the disabled main-page button).
+  // Version create → Save → Publish, with a data-range reconfigure
+  // detour when the version's tenant scopes include any that need
+  // explicit data-range (any organization-level scope does). 2026-05-08
+  // dryrun_docker_v2 caught this — the page-level Save stays disabled
+  // until the operator clicks the "Configure" link next to the red
+  // "Please request the required data permissions" notice, walks
+  // through a side-drawer dialog (sidebar with red-dotted unconfigured
+  // tabs), enters edit mode, picks "All" radio, saves the inner
+  // dialog, and only then page-level Save enables.
+  //
+  // Sequence the publish-stage agent reverse-engineered (with
+  // screenshots):
+  //   1. goto /version  →  Create Version → URL flips to /version/create
+  //   2. wait 6s for the lazy form
+  //   3. scroll bottom; check Save button — if disabled, run data-range
+  //      reconfigure subroutine (see below)
+  //   4. click page-level Save → URL goes to /version/<id> + a "Submit
+  //      the release request?" confirm dialog auto-pops
+  //   5. click that dialog's Publish button → URL back to /version
+  //      list with the new version showing "Released"
+  //
+  // Data-range reconfigure subroutine (inside step 3):
+  //   3a. click outer Configure link (next to red "Please request..." text)
+  //   3b. side dialog opens: sidebar tabs with red-dotted = unconfigured;
+  //       right pane shows "Range of data..." with inner Configure
+  //   3c. click inner Configure to enter edit mode
+  //   3d. click "All" radio (default is "Filter by condition" with
+  //       blank form, which keeps inner Save disabled)
+  //   3e. click inner Save → red dot turns green ✓
+  //   3f. press Escape to close drawer (or it auto-closes)
+  //   3g. scroll bottom again; page-level Save now enabled
   log('Stage 7/7 publish: creating version + publishing...');
   await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}/version`);
   await page.waitForTimeout(2000);
@@ -524,13 +580,117 @@ async function stage_publish(page, _ctx, state) {
   if (!await pollForUrl(page, '/version/create', 30000)) {
     throw new Error('publish: never navigated to version/create');
   }
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(6000);  // form lazy-renders; 1s isn't enough
   await scrollToBottom(page);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await page.waitForTimeout(2000);
-  await page.getByRole('button', { name: 'Publish', exact: true }).last().click();
+  const pageSave = page.getByRole('button', { name: 'Save', exact: true });
+  if (await pageSave.isDisabled().catch(() => false)) {
+    log('  Save disabled — running data-range reconfigure subroutine');
+    // 3a — outer Configure link (Feishu styles it as a button-role with
+    // link visual, hence using getByRole('button', { name: 'Configure' }))
+    await page.getByRole('button', { name: 'Configure', exact: true }).first().click();
+    await page.waitForTimeout(2000);
+    // Side dialog opens. There may be multiple unconfigured tabs in the
+    // sidebar — Contacts is usually pre-configured, others (e.g.
+    // Organization-Resources-Member and Department) need manual config.
+    // Loop: while sidebar has any unconfigured tab (red dot), enter that
+    // tab → inner Configure → All → inner Save.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const dialog = page.locator('[role="dialog"]').first();
+      // Has the right pane shown the "Not configured" red badge?
+      const needsConfig = await dialog.getByText('Not configured', { exact: true })
+        .first().isVisible({ timeout: 1000 }).catch(() => false);
+      if (!needsConfig) break;
+      // Inner Configure → edit mode
+      await dialog.getByRole('button', { name: 'Configure', exact: true }).first()
+        .click({ timeout: 5000 });
+      await page.waitForTimeout(1500);
+      // Pick "All" radio (default is Filter, which stays Save-disabled)
+      await dialog.getByText('All', { exact: true }).first().click();
+      await page.waitForTimeout(1000);
+      // Inner Save
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      await page.waitForTimeout(2500);
+      // If sidebar has another red-dotted tab, click it; otherwise the
+      // dialog will auto-close on the next tick.
+      const nextRedTab = dialog.locator('div[class*="tab"], div[class*="sidebar"]')
+        .filter({ has: page.locator('[class*="red"], [class*="error"], [class*="danger"]') })
+        .first();
+      if (await nextRedTab.isVisible({ timeout: 500 }).catch(() => false)) {
+        await nextRedTab.click().catch(() => {});
+        await page.waitForTimeout(1500);
+      }
+    }
+    // Close side dialog if still open
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(1500);
+    await scrollToBottom(page);
+  }
+  // Now page-level Save should be enabled
+  await pageSave.click({ timeout: 10000 });
   await page.waitForTimeout(3000);
+  // "Submit the release request?" confirm dialog auto-pops
+  const confirmDialog = page.locator('[role="dialog"]').first();
+  await confirmDialog.getByRole('button', { name: 'Publish', exact: true })
+    .click({ timeout: 10000 });
+  await page.waitForTimeout(8000);
   log(`Bot "${state.appName}" (${state.appId}) published.`);
+
+  // Extract App Secret from /baseinfo via the rightmost CopyOutlined
+  // icon. The wrapper is `span.secret-code__btn` (NOT button-role), so
+  // getByRole('button') misses it. Click → secret lands on the OS
+  // clipboard via Feishu's own copy handler; we read it back via
+  // navigator.clipboard.readText() (context already had clipboard-read
+  // permission granted at browser launch).
+  log('Stage 7/7 extract: capturing App Secret from /baseinfo...');
+  await gotoWithRetry(page, `https://open.feishu.cn/app/${state.appId}`);
+  await page.waitForTimeout(4000);
+  const secret = await page.evaluate(async () => {
+    // Two CopyOutlined icons exist (App ID + App Secret); secret is the
+    // one with the larger x-coord (rendered to the right of the secret
+    // mask field, vs App ID's icon higher up).
+    const btns = [...document.querySelectorAll('span.secret-code__btn')]
+      .filter(el => el.querySelector('[data-icon="copy"], svg'))
+      .map(el => ({ el, x: el.getBoundingClientRect().x }))
+      .sort((a, b) => b.x - a.x);  // rightmost first
+    if (!btns.length) return { error: 'no secret-code__btn found' };
+    btns[0].el.click();
+    await new Promise(r => setTimeout(r, 600));
+    try {
+      const text = await navigator.clipboard.readText();
+      return { secret: text };
+    } catch (e) {
+      return { error: 'clipboard read failed: ' + e.message };
+    }
+  });
+  if (secret.error || !secret.secret || secret.secret.length < 20) {
+    throw new Error(`extract-secret: ${secret.error || 'short value: ' + (secret.secret || '').length + ' chars'}`);
+  }
+  state.appSecret = secret.secret;
+  log(`  App Secret captured: ${secret.secret.slice(0, 8)}...${secret.secret.slice(-4)}`);
+
+  // End-to-end verification (task #13): swap app_secret for a real
+  // tenant_access_token via Feishu API. If this fails, the bot was
+  // "published" per UI but isn't actually usable yet — better to fail
+  // loud here than to let drive declare success and have the operator
+  // hit `code: 232034 "app unavailable"` on every downstream call.
+  log('Stage 7/7 verify: swapping app_secret for tenant_access_token...');
+  const verify = await page.evaluate(async ({ appId, appSecret }) => {
+    try {
+      const r = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+      });
+      return await r.json();
+    } catch (e) { return { error: e.message }; }
+  }, { appId: state.appId, appSecret: secret.secret });
+  if (verify.code !== 0 || !verify.tenant_access_token) {
+    throw new Error(
+      `verify: tenant_token swap returned code=${verify.code} msg=${verify.msg}; ` +
+      `bot ${state.appId} probably hasn't fully published or has wrong secret. ` +
+      `Check https://open.feishu.cn/app/${state.appId}/version for status.`);
+  }
+  log(`  tenant_token swap OK · token=${verify.tenant_access_token.slice(0, 12)}...`);
 }
 
 const STAGES = [
