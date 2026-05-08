@@ -50,9 +50,52 @@ def test_acquire_refuses_when_live_process_holds_lock():
     with isolated_env():
         # use *our* pid as the holder — guaranteed alive
         pf = _seed_pid(str(os.getpid()))
-        assert pidlock.acquire(pf, name="router") is False
+        # wait_for_release_s=0 → don't spin-wait, decide immediately
+        assert pidlock.acquire(pf, name="router", wait_for_release_s=0) is False
         # didn't overwrite (still our pid; trivially equal)
         assert pf.read_text(encoding="utf-8").strip() == str(os.getpid())
+
+
+def test_acquire_spin_waits_for_sigterm_in_progress_then_takes_over():
+    """When `claudeteam down` sends SIGTERM and `claudeteam up` runs
+    immediately, the previous router is mid-shutdown — pid still alive
+    in OS but the signal handler hasn't yet released the lock. Without
+    a spin-wait, the new router refuses with 'another already running'.
+    Caught 2026-05-08 host smoke. Simulate by patching pid_alive to
+    flip to False mid-acquire."""
+    import time as _time
+    from claudeteam.runtime import pidlock as plk
+    from helpers import attr_patch
+    with isolated_env():
+        pf = _seed_pid("99999")  # fake old pid
+        # First call returns True (pid alive); after ~150ms, returns False
+        # — simulating the SIGTERM cleanup completing.
+        flip_at = _time.monotonic() + 0.15
+        def flaky_alive(pid):
+            return _time.monotonic() < flip_at
+        with attr_patch(plk, pid_alive=flaky_alive):
+            ok = plk.acquire(pf, name="router", wait_for_release_s=2.0)
+        assert ok is True
+        # Took over with our pid
+        assert pf.read_text(encoding="utf-8").strip() == str(os.getpid())
+
+
+def test_acquire_gives_up_after_wait_when_old_pid_stays_alive():
+    """If the held pid stays alive past the spin-wait window, conclude
+    it really is another instance and refuse. Don't wait forever."""
+    import time as _time
+    from claudeteam.runtime import pidlock as plk
+    from helpers import attr_patch
+    with isolated_env():
+        pf = _seed_pid(str(os.getpid()))
+        t0 = _time.monotonic()
+        with attr_patch(plk, pid_alive=lambda _: True):
+            ok = plk.acquire(pf, name="router", wait_for_release_s=0.3)
+        elapsed = _time.monotonic() - t0
+        assert ok is False
+        # waited approximately the configured window (give 50% slack
+        # so we don't depend on sleep precision)
+        assert 0.3 <= elapsed < 0.6, f"elapsed={elapsed:.3f}s outside expected band"
 
 
 def test_acquire_creates_state_dir_lazily():

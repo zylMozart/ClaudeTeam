@@ -373,12 +373,17 @@ def main(argv: list[str]) -> int:
         # replay after stale-detect / watchdog respawn doesn't re-apply
         # already-handled messages (host_smoke 2026-05-06 caught it).
         seen = _load_seen_msg_ids()
+
+        def _bump_subscribe_alive():
+            last_event_at[0] = time.monotonic()
+
         loop_kwargs = dict(
             team_agents=agents,
             chat_id=chat,
             default_target="manager",
             apply_fn=apply_fn,
             on_progress=_make_on_progress(last_event_at),
+            on_line_received=_bump_subscribe_alive,
             seen_msg_ids=seen,
         )
 

@@ -555,3 +555,57 @@ def test_text_message_extraction_unchanged_after_b1():
     process_lines([line], team_agents=_AGENTS,
                   chat_id="oc_team", apply_fn=applied.append)
     assert applied[0].text == "hello world"
+
+
+def test_on_line_received_fires_for_every_non_empty_line_including_drops():
+    """Subscribe-aliveness ping fires per raw stdout line, BEFORE classify.
+    Bot self-talk + dedup + bad-json all DROP, but subscribe is healthy
+    (lark-cli still emits stdout) — so on_line_received must fire and
+    bump the watchdog's stall timer. Without this, chats with mostly
+    self-talk/dedup traffic trip the 600s stall threshold even though
+    subscribe is alive (caught 2026-05-08 host smoke)."""
+    fires = []
+    bot_self_line = json.dumps({
+        "event": {
+            "message": {
+                "message_id": "om_self",
+                "chat_id": "oc_team",
+                "message_type": "text",
+                "content": json.dumps({"text": "echo"}),
+            },
+            "sender": {"sender_id": {"open_id": "ou_bot"}, "sender_type": "app"},
+        }
+    })
+    bad = "not-valid-json"
+    human_line = json.dumps(_wrapped("om_h", "oc_team", "ou_user", "hi"))
+    stats = process_lines(
+        iter([bot_self_line, bad, human_line]),
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        bot_id="ou_bot",
+        apply_fn=lambda d: None,
+        on_line_received=lambda: fires.append(1),
+    )
+    # 3 non-empty lines → 3 fires regardless of drop/handled
+    assert len(fires) == 3
+    # Confirm 2 of them DID drop (bot_self + bad_json)
+    assert stats.dropped >= 2
+
+
+def test_on_line_received_callback_failure_does_not_kill_loop():
+    """The aliveness callback runs first, before parse. A buggy callback
+    must not kill subscribe — subscribe stalling is a worse outcome
+    than missing one heartbeat. Verifies the try/except wrapper."""
+    fires = []
+    def flaky():
+        fires.append(1)
+        raise RuntimeError("buggy probe")
+    stats = process_lines(
+        iter([json.dumps(_wrapped("om_h", "oc_team", "ou_user", "hi"))]),
+        team_agents=_AGENTS,
+        chat_id="oc_team",
+        apply_fn=lambda d: None,
+        on_line_received=flaky,
+    )
+    assert fires == [1]  # callback ran
+    assert stats.handled == 1  # loop kept going

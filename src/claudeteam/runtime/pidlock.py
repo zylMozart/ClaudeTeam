@@ -56,19 +56,40 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def acquire(pid_file: Path, *, name: str = "") -> bool:
+def acquire(pid_file: Path, *, name: str = "",
+            wait_for_release_s: float = 3.0) -> bool:
     """Claim `pid_file` for the current process.
 
     Returns True on success. Returns False if another **live** process
     already owns the file — prints to stderr in that case. Stale locks
     (pid file present but the recorded pid is dead) are quietly
     overwritten on the assumption a previous run crashed.
+
+    `wait_for_release_s` short-circuits the SIGTERM-in-progress race:
+    when an operator does `claudeteam down` immediately followed by
+    `claudeteam up`, the previous router is mid-shutdown (signal
+    handler running, pidlock not yet released) when the new router
+    runs `acquire`. Without a wait, the new router sees the still-live
+    old pid and refuses with "another instance already running".
+    Spin-poll for up to a few seconds — long enough to ride out the
+    typical sigterm cleanup, short enough that a genuinely-stuck
+    other-instance still surfaces an error promptly. 2026-05-08
+    fresh-host smoke caught this when an agent rapid-cycled the
+    deploy for §6/§7/§9 tests.
     """
     if pid_file.exists():
         old = read_pid(pid_file)
         if old is not None and pid_alive(old):
-            warn(f"❌ another {name or 'instance'} already running (pid {old})")
-            return False
+            if wait_for_release_s > 0:
+                import time
+                deadline = time.monotonic() + wait_for_release_s
+                while time.monotonic() < deadline:
+                    if not pid_alive(old):
+                        break
+                    time.sleep(0.1)
+            if pid_alive(old):
+                warn(f"❌ another {name or 'instance'} already running (pid {old})")
+                return False
         # else: missing-or-corrupt pid file, or stale lock from a dead
         # previous run — quietly overwrite below.
     paths.ensure_state_dir()

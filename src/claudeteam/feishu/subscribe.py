@@ -211,6 +211,7 @@ def process_lines(lines: Iterable[str], *,
                   default_target: str = "manager",
                   apply_fn: Callable = apply,
                   on_progress: Callable | None = None,
+                  on_line_received: Callable | None = None,
                   seen_msg_ids: set[str] | None = None) -> LoopStats:
     """Run the subscribe loop over `lines` (one Feishu event JSON each).
 
@@ -231,6 +232,18 @@ def process_lines(lines: Iterable[str], *,
         line = raw_line.strip()
         if not line:
             continue
+        # Subscribe-aliveness ping: fire on every non-empty stdout line,
+        # before classification. Even DROPs (bot_self / dedup / bad_json)
+        # prove the lark-cli WebSocket is still emitting; only by counting
+        # raw lines, not 'successfully handled events', can the watchdog
+        # tell quiet-but-alive apart from silent-stall. Caught 2026-05-08
+        # host smoke: chats with mostly bot self-talk would trip the 600s
+        # stall threshold even though subscribe was healthy.
+        if on_line_received is not None:
+            try:
+                on_line_received()
+            except Exception:
+                pass  # never let a callback bug kill the subscribe loop
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
