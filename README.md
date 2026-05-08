@@ -1,10 +1,31 @@
-# ClaudeTeam
+<p align="center">
+  <img src="docs/media/hero.png" alt="ClaudeTeam — Dynamic AI Team Orchestration" width="880" />
+</p>
 
-> *Harness your Claude Code.*
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/tests-878%20passing-brightgreen.svg" alt="878 tests passing" />
+  <a href="docs/DEPLOYMENT.md"><img src="https://img.shields.io/badge/docs-deployment-success.svg" alt="Documentation" /></a>
+  <img src="https://img.shields.io/badge/chat-Feishu-1a73e8.svg" alt="Chat: Feishu" />
+</p>
 
-Multiple Claude Code agents running in tmux, coordinated through a
-Feishu group chat. The boss talks to a manager agent in chat; the
-manager dispatches workers, watches their panes, and summarises back.
+<p align="center">
+  <b>Hire & fire AI agents on demand · mix CLIs · manage from your phone via Feishu.</b>
+</p>
+
+<p align="center">
+  Multiple coding agents running in tmux, coordinated through a Feishu group chat. The boss talks to a <b>manager</b> agent; the manager dispatches workers, watches their panes, and summarises back. Everything is auditable on disk; nothing depends on a remote DB.
+</p>
+
+> **One-click deploy — paste this prompt to your coding agent
+> (Claude Code, Codex, Kimi, Gemini, Qwen, …):**
+>
+> ```
+> Clone https://github.com/zylMozart/ClaudeTeam.git, read
+> docs/DEPLOYMENT.md, then walk me through bringing up a team
+> end-to-end (including the Feishu app if I don't have one yet).
+> ```
 
 **Feishu group chat — control your AI team in real time**
 
@@ -19,15 +40,6 @@ manager dispatches workers, watches their panes, and summarises back.
 **tmux backend — Claude Code agents running in parallel**
 
 <p><img src="docs/media/example/tmux_example.png" width="800" /></p>
-
-> **One-click deploy — paste this prompt to your coding agent
-> (Claude Code, Codex, Kimi, Gemini, Qwen, ...):**
->
-> ```
-> Clone https://github.com/zylMozart/ClaudeTeam.git, read
-> docs/DEPLOYMENT.md, then walk me through bringing up a team
-> end-to-end (including the Feishu app if I don't have one yet).
-> ```
 
 ---
 
@@ -227,8 +239,13 @@ added to.
 
 ### Manual
 
-Follow [`docs/setup_feishu_bot.md`](docs/setup_feishu_bot.md) for the
-step-by-step open-platform UI walkthrough.
+Two flavours, pick whichever you prefer:
+
+- [`docs/setup_feishu_bot.md`](docs/setup_feishu_bot.md) — text walkthrough,
+  same 7 stages as the auto-creator, easy to skim.
+- [`docs/setup_feishu_bots_guide.pdf`](docs/setup_feishu_bots_guide.pdf) —
+  screenshot-heavy click-by-click guide for human operators (great if
+  it's your first time touching the Feishu open platform).
 
 ---
 
@@ -237,7 +254,8 @@ step-by-step open-platform UI walkthrough.
 | Doc | What's in it |
 | --- | ------------ |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Host + Docker setup, config schema, multi-team isolation, troubleshooting |
-| [`docs/setup_feishu_bot.md`](docs/setup_feishu_bot.md) | Manual Feishu bot creation walkthrough |
+| [`docs/setup_feishu_bot.md`](docs/setup_feishu_bot.md) | Feishu bot creation — text walkthrough (same 7 stages as the auto-creator) |
+| [`docs/setup_feishu_bots_guide.pdf`](docs/setup_feishu_bots_guide.pdf) | Feishu bot creation — screenshot-heavy guide for human operators |
 | [`CLAUDE.md`](CLAUDE.md) | Building rules — read before changing code |
 
 ---
