@@ -1,1 +1,1 @@
-"""Subcommand handlers for the `claudeteam` CLI."""
+"""Command entrypoint modules."""

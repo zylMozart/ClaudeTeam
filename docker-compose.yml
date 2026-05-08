@@ -1,81 +1,145 @@
-# Minimum-viable compose for ClaudeTeam.
+###############################################################################
+# ClaudeTeam — Docker Compose
 #
-# Mounts a host `./team-data/` directory into /data so team.json,
-# runtime_config.json, and the state dir survive `docker compose down`.
-# Mounts the host's lark-cli OAuth profile so `claudeteam say`/`router`
-# don't need a fresh authentication round inside the container.
+# 推荐用法（新用户，零宿主机依赖）：
+#   1. cp .env.example .env            # 填入 FEISHU_APP_ID / FEISHU_APP_SECRET
+#   2. 写好 team.json                  # 团队成员定义
+#   3. touch scripts/runtime_config.json   # 占位,让 bind mount 生效
+#   4. docker compose build
+#   5. docker compose run --rm team init   # 容器内跑 setup.py,创建飞书资源
+#   6. docker compose up -d                # 启动团队
 #
-# Usage:
-#   mkdir -p team-data && cd team-data && claudeteam init   # bootstrap once
-#   docker compose up -d
-#   docker compose exec claudeteam claudeteam up
-#   docker compose exec claudeteam claudeteam health
+# 常用命令：
+#   查看日志：docker compose logs -f
+#   进入 tmux：docker compose exec team tmux attach -t <session>
+#   停止：docker compose down
 #
-# Network: host mode lets lark-cli's long-poll reach Feishu without
-# NAT timeouts. On Docker Desktop (macOS/Windows) host mode is partially
-# emulated — switch to a bridge port-publish if the long-poll dies.
+# 关于凭证：
+#   - 飞书：FEISHU_APP_ID/SECRET 从 .env 读取,容器内生成 inline config.json,
+#     不再挂宿主机 ~/.lark-cli。这样每个部署的 Feishu 身份完全独立于宿主机。
+#   - Claude：仍然 bind mount 宿主机 ~/.claude/.credentials.json 和
+#     ~/.claude.json —— 这两个是同一个账号的 OAuth,多部署共享没毛病。
+#     或者 .env 里填 ANTHROPIC_API_KEY 走 API 模式。
+###############################################################################
 
 services:
-  claudeteam:
+  team:
     build: .
-    image: claudeteam:dev
-    volumes:
-      # Bind-mount source RW so Python edits hot-reload without
-      # `docker compose build`. Only rebuild for Dockerfile / deps
-      # changes. RW (not :ro) because pip's `*.egg-info` writes into
-      # src/ on first install.
-      - ./src:/app/src
-      - ./team-data:/data
-      # Share the host's lark-cli OAuth profile (config.json + cache)
-      # but keep the per-app fcntl lock dir container-private. Sharing
-      # the lock dir would let a host router + container router race
-      # for the same lock and one would misreport "another instance
-      # running"; keeping locks/ inside the container avoids that.
-      - ${HOME}/.lark-cli/config.json:/root/.lark-cli/config.json
-      - ${HOME}/.lark-cli/cache:/root/.lark-cli/cache
-      # Bind-mount host's claude OAuth so the container reuses it
-      # without an interactive login. On macOS the .credentials.json
-      # file actually lives in keychain — extract once with:
-      #   security find-generic-password -s "Claude Code-credentials" -w \
-      #     > ~/.claude/.credentials.json
-      # before `docker compose up`. RW so token refresh persists back.
-      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json
-      # Read-only mount of host's ~/.claude.json at a side path. Each
-      # agent pane seeds a per-agent copy from this so multiple panes
-      # don't race on writes to the same file (which corrupts JSON).
-      - ${HOME}/.claude.json:/root/host-claude.json:ro
-      # Claude projects/ shared so ccusage finds the usage logs that
-      # the /usage card depends on.
-      - ${HOME}/.claude/projects:/root/.claude/projects
-      # Codex + Kimi credentials so the agent CLIs (and /usage card)
-      # don't need to re-login inside the container. Token refreshes
-      # written in-container persist back to host.
-      - ${HOME}/.codex:/root/.codex
-      - ${HOME}/.kimi:/root/.kimi
-    # Credentials come from `.env` (gitignored). FEISHU_APP_* and
-    # LARKSUITE_CLI_APP_* are aliases — set both. ANTHROPIC_API_KEY is
-    # optional; without it claude uses the bind-mounted host OAuth.
+    # 故意不写 container_name —— 硬编码的 container_name 是全局唯一的,
+    # 同一台机器跑第二个 ClaudeTeam 部署时会和第一个撞名字,Docker 会把旧容器
+    # recreate 掉,等于把前一个团队整个干掉。
+    # 省略后 Compose 自动按 "<project>-<service>-<idx>" 命名 (例 test5-team-1),
+    # project 默认取当前目录 basename, 也可以通过 COMPOSE_PROJECT_NAME 环境变量
+    # 显式指定。scripts/docker-deploy.sh 会自动 export
+    # COMPOSE_PROJECT_NAME=claudeteam-<session> 以获得 claudeteam-<session>-team-1
+    # 这种一眼看得出团队身份的容器名。多团队部署细节见 README.md 的
+    # "Running Multiple Teams on One Host" 章节。
+    restart: unless-stopped
+    env_file:
+      - .env
+    # 以 root 运行: 避免宿主机上 ~/.claude/.credentials.json、
+    # ~/.local/share/lark-cli/master.key 等文件 mode 0600/0700 时容器内非 root
+    # 用户读不到。Claude Code 的 --dangerously-skip-permissions 模式本来就要求
+    # IS_SANDBOX=1 表示受信任环境,以 root 身份运行容器不额外降低安全性。
+    user: "0:0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # ── 环境变量 ──────────────────────────────────────────────
     environment:
-      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
-      - LARKSUITE_CLI_APP_SECRET=${LARKSUITE_CLI_APP_SECRET:-}
-      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
-      - LARKSUITE_CLI_APP_ID=${LARKSUITE_CLI_APP_ID:-}
+      # Claude Code API Key（可选；如果用 ~/.claude/.credentials.json OAuth 可省略）
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Container deploys typically only have bot OAuth (via app_secret
-      # → tenant_token), not user OAuth. Pin send_as=bot so catchup /
-      # say / slash all use bot identity. Override with `user` only
-      # if you've run `lark-cli auth login` inside the container.
-      - CLAUDETEAM_LARK_SEND_AS=${CLAUDETEAM_LARK_SEND_AS:-bot}
-      # macOS Docker Desktop's `network_mode: host` is only partially
-      # emulated and the lark-cli WebSocket goes silent after a few
-      # minutes — set CLAUDETEAM_ROUTER_STALE_S in .env (suggested 300)
-      # to make the router respawn faster on this OS. Linux ignores.
-      - CLAUDETEAM_ROUTER_STALE_S=${CLAUDETEAM_ROUTER_STALE_S:-}
-    network_mode: host
-    tty: true
-    stdin_open: true
-    # Keep the container alive so `docker compose exec` works without
-    # auto-restart loops. Operator-driven lifecycle: `claudeteam up`
-    # starts tmux + daemons inside; `claudeteam down` stops them; the
-    # container itself stays around until `docker compose down`.
-    command: ["sleep", "infinity"]
+      # 飞书 App 凭证(如果在 .env 里填了,entrypoint 会生成 config.json;
+      # 留空则依赖宿主机 ~/.lark-cli volume 挂载的 config.json)
+      - FEISHU_APP_ID=${FEISHU_APP_ID:-}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET:-}
+      - FEISHU_BRAND=${FEISHU_BRAND:-feishu}
+      - CLAUDETEAM_ENABLE_FEISHU_REMOTE=${CLAUDETEAM_ENABLE_FEISHU_REMOTE:-1}
+      - CLAUDETEAM_ENABLE_BITABLE_LEGACY=${CLAUDETEAM_ENABLE_BITABLE_LEGACY:-0}
+      # lazy-eligible agent 名单 (逗号分隔)。manager 不在内 → 强制 eager,
+      # boss 频道常驻。显式空字符串视为禁用 lazy。
+      - CLAUDETEAM_LAZY_AGENTS=${CLAUDETEAM_LAZY_AGENTS-worker_cc,worker_codex,worker_kimi,worker_gemini}
+      # /app/src 内置到 image,这里再保险一次,即使外部覆盖也不丢。
+      - PYTHONPATH=${PYTHONPATH:-/app/src}
+      - TERM=xterm-256color
+      # 强制 HOME 指向 /home/claudeteam — 即使以 root 运行容器(user: "0:0"),
+      # claude / lark-cli 等工具仍然通过 $HOME 读取 ~/.claude、~/.lark-cli,
+      # 这样它们会看到我们挂载的配置,而不是 root 的 /root/.*(空的)。
+      - HOME=/home/claudeteam
+      # F-CRED-3: bind-mount 凭证目录 owner 桥接。
+      # 容器内 root 写入的文件 host 端 owner 也是 root,admin 后续 cp/编辑要 sudo。
+      # .env 里设 HOST_UID=$(id -u) HOST_GID=$(id -g) 后,entrypoint 会把
+      # /home/claudeteam/.{kimi,codex,gemini} chown 回 host admin。
+      # 缺省空串 → entrypoint 见空就跳过 chown,行为完全不变 (老部署兼容)。
+      # 这是 spec §12 "HOST_UID 缺省即跳过" 的边界,不能给 1000 兜底
+      # (那样容器永远看到 HOST_UID=1000,chown 就总跑了)。
+      - HOST_UID=${HOST_UID:-}
+      - HOST_GID=${HOST_GID:-}
+
+    # ── 数据持久化 ────────────────────────────────────────────
+    volumes:
+      # 团队配置（必须）
+      - ./team.json:/app/team.json
+      # 整个 scripts/ 目录 bind mount —— 覆盖镜像 COPY 层。
+      # 好处 1: runtime_config.json 这类容器内生成的文件会自动持久化到宿主机,
+      #         不需要额外为单独文件写 bind mount。
+      # 好处 2: 开发者改脚本后不需要 docker compose build,直接 up 就能看到效果。
+      # 代价: 镜像里打包的 scripts 版本被宿主机的版本覆盖。这对普通 git clone
+      #       用户没问题(宿主机和镜像都是同一个 commit),对编辑过本地 scripts
+      #       的开发者来说正是他们想要的行为。
+      - ./scripts:/app/scripts
+      # Agent 身份目录 + 共享工作空间 — 必须是 bind mount,否则 setup.py 在
+      # 容器里创建的 agents/<name>/identity.md / core_memory.md 在容器重建时丢失,
+      # manager 会降级到 templates/ 读兜底 identity,丢失 /hire 产生的角色差异。
+      - ./agents:/app/agents
+      - ./workspace:/app/workspace
+      # ⚠️ 故意不挂载 ~/.lark-cli / ~/.local/share/lark-cli。
+      # 飞书凭证从 .env 的 FEISHU_APP_ID / FEISHU_APP_SECRET 读取,
+      # 容器启动时由 docker-entrypoint.sh 写入容器内部的 inline config.json。
+      # 这样每个部署的 Feishu 身份只活在容器里,宿主机 ~/.lark-cli 保持干净,
+      # 同机多部署互不干扰。
+      #
+      # 如果你是老用户,已经在宿主机跑过 `lark-cli config init --new` 想复用那份
+      # 凭证,把 .env 里的 FEISHU_APP_ID/SECRET 留空,然后取消下面两行注释:
+      # - ~/.lark-cli:/home/claudeteam/.lark-cli
+      # - ~/.local/share/lark-cli:/home/claudeteam/.local/share/lark-cli
+
+      # Claude Code 凭证与账户状态
+      # - .credentials.json: OAuth access/refresh token
+      # - .claude.json:     oauthAccount / userID / hasCompletedOnboarding 等
+      #                     (Claude Code 在 HOME 目录下,不在 .claude/ 子目录里!)
+      # 两者缺一不可,否则容器内 Claude Code 会显示 "Select login method" 菜单。
+      # 不用 :ro —— Claude Code 需要刷写 OAuth token + 更新 projects 等运行态。
+      # 如果走 API key 路线 (.env 里填 ANTHROPIC_API_KEY),这两行可以去掉。
+      - /home/admin/.claude/.credentials.json:/home/claudeteam/.claude/.credentials.json
+      - /home/admin/.claude.json:/home/claudeteam/.claude.json
+
+      # Kimi Code 凭证持久化 — 避免每次容器重建都要手动 /login
+      # kimi-cli 把 OAuth token + config + sessions 存在 $HOME/.kimi/
+      # 首次 /login 后凭证会同步到宿主机 .kimi-credentials/，后续容器重建自动复用。
+      - ./.kimi-credentials:/home/claudeteam/.kimi
+
+      # Codex CLI 凭证持久化 — auth.json + config 存在 $HOME/.codex/
+      # 首次登录后凭证同步到宿主机 .codex-credentials/，后续容器重建自动复用。
+      - ./.codex-credentials:/home/claudeteam/.codex
+
+      # Gemini CLI 凭证持久化 — oauth_creds.json + settings 存在 $HOME/.gemini/
+      # 首次 OAuth 授权后凭证同步到宿主机 .gemini-credentials/，后续容器重建自动复用。
+      - ./.gemini-credentials:/home/claudeteam/.gemini
+
+    # ── 资源限制 ──────────────────────────────────────────────
+    # 默认值针对 2C/4G 的小机器；大机器上可在 .env 里改 CLAUDETEAM_CPUS/CLAUDETEAM_MEM
+    deploy:
+      resources:
+        limits:
+          memory: ${CLAUDETEAM_MEM:-4G}
+          cpus: "${CLAUDETEAM_CPUS:-2.0}"
+        reservations:
+          memory: 1G
+
+    # ── 安全 ──────────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+
+    # ── 网络（仅需出站访问 Anthropic API + 飞书 API）────────
+    # 无需暴露端口

@@ -1,0 +1,12 @@
+{
+  "session": "your-team-name",
+  "default_model": "sonnet",
+  "default_thinking": "high",
+  "agents": {
+    "manager":       { "role": "团队主管",         "emoji": "🎯", "color": "blue",   "cli": "claude-code", "model": "sonnet", "thinking": "high" },
+    "worker_cc":     { "role": "Claude Code 员工", "emoji": "💎", "color": "purple", "cli": "claude-code", "model": "sonnet" },
+    "worker_codex":  { "role": "Codex 员工",        "emoji": "🟦", "color": "indigo", "cli": "codex-cli",   "model": "gpt-5.4" },
+    "worker_kimi":   { "role": "Kimi 员工",         "emoji": "🟧", "color": "orange", "cli": "kimi-code" },
+    "worker_gemini": { "role": "Gemini 员工",       "emoji": "🟩", "color": "green",  "cli": "gemini-cli" }
+  }
+}
