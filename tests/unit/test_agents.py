@@ -152,6 +152,24 @@ def test_agent_home_default_unchanged_when_override_unset():
     assert home.endswith("/agent-home/worker_x")
 
 
+def test_agent_home_container_default_routes_to_data_when_writable():
+    """Container default path: `/data/agent-home/` writable + no env
+    override → `/data/agent-home/<agent>`. Closes the regression net
+    around the canonical single-team deploy (the host-fallback case
+    is covered by the test above; without this one, a future change
+    that promoted the env override even when unset would silently
+    redirect every existing single-team deploy)."""
+    with env_patch(CLAUDETEAM_AGENT_HOME_BASE=None):
+        from claudeteam.agents import claude_code as cc
+        prev = cc._DATA_WRITABLE
+        cc._DATA_WRITABLE = True
+        try:
+            home = agent_home("manager")
+        finally:
+            cc._DATA_WRITABLE = prev
+    assert home == "/data/agent-home/manager"
+
+
 # ── markers ──────────────────────────────────────────────────────
 
 
