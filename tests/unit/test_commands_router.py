@@ -18,7 +18,6 @@ from claudeteam.commands.router import (
     _make_on_progress,
     _stale_event_threshold_s,
     _watch_subscribe_health,
-    _SEEN_MAX_LINES,
 )
 
 
@@ -205,10 +204,12 @@ def test_watch_subscribe_health_self_terminates_on_stale_events():
     sigterms = []
     real_kill = os.kill
     os.kill = lambda pid, sig: sigterms.append((pid, sig))
-    real_period = _r._SUBSCRIBE_WATCHDOG_PERIOD_S
-    _r._SUBSCRIBE_WATCHDOG_PERIOD_S = 0.05  # speed up loop for test
     try:
-        with env_patch(CLAUDETEAM_ROUTER_STALE_S="0.1"):
+        # env override beats toml + module default in tunable() — speeds
+        # up the loop without depending on whatever sits in the user's
+        # claudeteam.toml.
+        with env_patch(CLAUDETEAM_ROUTER_STALE_S="0.1",
+                       CLAUDETEAM_ROUTER_SUBSCRIBE_WATCHDOG_PERIOD_S="0.05"):
             stop_event = threading.Event()
             # last_event_at far in the past → stale
             last_event_at = [0.0]
@@ -223,7 +224,6 @@ def test_watch_subscribe_health_self_terminates_on_stale_events():
         assert sigterms[0][1] == signal.SIGTERM
     finally:
         os.kill = real_kill
-        _r._SUBSCRIBE_WATCHDOG_PERIOD_S = real_period
 
 
 def test_watch_subscribe_health_self_terminates_on_child_exit():
@@ -240,11 +240,11 @@ def test_watch_subscribe_health_self_terminates_on_child_exit():
     sigterms = []
     real_kill = os.kill
     os.kill = lambda pid, sig: sigterms.append((pid, sig))
-    real_period = _r._SUBSCRIBE_WATCHDOG_PERIOD_S
-    _r._SUBSCRIBE_WATCHDOG_PERIOD_S = 0.05
     try:
-        # Stale threshold high so we know the trigger was the dead child
-        with env_patch(CLAUDETEAM_ROUTER_STALE_S="3600"):
+        # Stale threshold high so we know the trigger was the dead child;
+        # subscribe_watchdog_period_s low so the loop iterates fast.
+        with env_patch(CLAUDETEAM_ROUTER_STALE_S="3600",
+                       CLAUDETEAM_ROUTER_SUBSCRIBE_WATCHDOG_PERIOD_S="0.05"):
             stop_event = threading.Event()
             last_event_at = [time.monotonic()]  # fresh
             t = threading.Thread(
@@ -258,7 +258,6 @@ def test_watch_subscribe_health_self_terminates_on_child_exit():
         assert sigterms[0][1] == signal.SIGTERM
     finally:
         os.kill = real_kill
-        _r._SUBSCRIBE_WATCHDOG_PERIOD_S = real_period
 
 
 # ── persisted dedup set (state/router.seen) ──────────────────────
@@ -287,21 +286,24 @@ def test_load_seen_skips_blank_lines():
 
 def test_load_seen_truncates_huge_file_to_recent_window():
     """Bound the file size — long-running deploy can't grow seen.json
-    indefinitely. Truncate to the last _SEEN_MAX_LINES on load."""
+    indefinitely. Truncate to the last `router.seen_max_lines` on load.
+    Use a tiny override (50) via env so the test stays fast without
+    materialising a 5000-line file."""
     from claudeteam.runtime import paths
-    with isolated_env():
+    cap = 50
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_SEEN_MAX_LINES=str(cap)):
         paths.ensure_state_dir()
         # Write more than the cap; oldest should be dropped.
-        ids = [f"om_{i}" for i in range(_SEEN_MAX_LINES + 200)]
+        ids = [f"om_{i}" for i in range(cap + 200)]
         paths.router_seen_file().write_text("\n".join(ids) + "\n")
         loaded = _load_seen_msg_ids()
-        assert len(loaded) == _SEEN_MAX_LINES
+        assert len(loaded) == cap
         # Oldest dropped, newest kept
         assert "om_0" not in loaded
-        assert f"om_{_SEEN_MAX_LINES + 199}" in loaded
+        assert f"om_{cap + 199}" in loaded
         # File on disk also truncated for next boot
         on_disk = paths.router_seen_file().read_text().strip().splitlines()
-        assert len(on_disk) == _SEEN_MAX_LINES
+        assert len(on_disk) == cap
 
 
 def test_on_progress_appends_msg_id_to_seen_file():

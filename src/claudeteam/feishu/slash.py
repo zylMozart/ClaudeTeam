@@ -49,6 +49,7 @@ from claudeteam.feishu.cards import (
     remaining_color, rich_card, simple_card,
 )
 from claudeteam.runtime import tmux
+from claudeteam.store import local_facts
 from claudeteam.util import fmt_bytes
 
 
@@ -186,6 +187,17 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     rows = []
     tally: Counter[str] = Counter()
     for agent in team_agents:
+        # Fired agents (status="已停止" via `claudeteam fire`) have no pane;
+        # without this branch /team showed them as "🛑 CLI down" — same
+        # as a crashed agent — and operators couldn't tell intentional
+        # firing from a real failure. Caught 2026-05-09.
+        status = local_facts.get_status(agent)
+        if status and status.get("status") == "已停止":
+            note = (status.get("task") or status.get("note")
+                    or status.get("blocker") or "已停止")
+            rows.append((agent, "🚫", f"已停止 ({note})"))
+            tally["🚫"] += 1
+            continue
         target = tmux.Target(ctx.session, agent)
         try:
             buf = tmux.capture_pane(target, lines=80)
@@ -214,8 +226,9 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     body_lines.append(f"**汇总**: {total} agents · {summary}")
 
     # Yellow if any agent looks unhappy (⚠️ awaiting permission, 🛑 CLI down,
-    # ❌ etc.), green otherwise. 💤 idle / 🔄 working / ⏸ lazy are healthy.
-    healthy_glyphs = ("💤", "🔄", "⏸")
+    # ❌ etc.), green otherwise. 💤 idle / 🔄 working / ⏸ lazy / 🚫 fired
+    # are intentional states — keep team header green.
+    healthy_glyphs = ("💤", "🔄", "⏸", "🚫")
     color = ("green" if all(e in healthy_glyphs for e in tally)
              else "yellow")
 

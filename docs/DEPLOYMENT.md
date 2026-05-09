@@ -53,16 +53,23 @@ deployment, the flow is the same:
    **Path A — bot creates an empty group, you join via share link**
    (preferred for agent-driven setup; only mobile click is "Join group"):
    ```bash
-   # bot creates the group; chat_id comes back in stdout
-   lark-cli im +chats-create \
-     --body '{"name":"ClaudeTeam-test","chat_type":"public","description":"ClaudeTeam smoke"}' \
-     --as bot
-   # generate a share link the user can tap
-   lark-cli im +chats-link --chat-id <chat_id> --as bot
+   # bot creates the group + sets itself as group manager. chat_id +
+   # share_link both come back in stdout.
+   lark-cli im +chat-create --as bot --type public \
+     --name "ClaudeTeam-test" \
+     --description "ClaudeTeam smoke" \
+     --set-bot-manager
    ```
-   Open the returned `applink.feishu.cn/...` URL on Feishu mobile and
-   tap **Join Group**. Bot is already in (creator); user is in (joined);
-   chat_id is captured for `claudeteam.toml`.
+   Open the returned `share_link` (`applink.feishu.cn/...`) on Feishu
+   mobile and tap **Join Group**. Bot is already in (creator); user is
+   in (joined); the `chat_id` from the same response goes into your
+   `claudeteam.toml`.
+
+   > Older docs / `lark-cli ≤1.0.25` used `+chats-create --body '{...}'`
+   > and a separate `+chats-link`. As of 1.0.26 both renamed: `+chat-create`
+   > (singular) takes flat `--name` / `--description` / `--type` flags, and
+   > the share link is part of `+chat-create`'s response — `+chats-link`
+   > is gone.
 
    **Path B — manual add to an existing group** (if you want to drop
    the bot into a group that already exists). On Feishu **mobile or
@@ -106,6 +113,7 @@ deployment, the flow is the same:
 | Requirement     | Version | Why                                                              |
 | --------------- | ------- | ---------------------------------------------------------------- |
 | Python          | 3.10+   | `pyproject.toml` pins `requires-python = ">=3.10"`               |
+| `python3-venv`  | apt pkg | **Debian/Ubuntu only**: not bundled with system `python3`. Without it `python3 -m venv .venv` errors `ensurepip is not available`. Install: `sudo apt install -y python3.12-venv` (match your python3 minor version). |
 | tmux            | any     | every agent runs in its own tmux window                          |
 | Node.js + npx   | 18+     | `lark-cli` is a node binary; `npx` is the install fallback       |
 | At least one CLI| latest  | `claude` / `codex` / `kimi` / `gemini` / `qwen` (whichever your team uses) |
@@ -437,6 +445,31 @@ tmux kill-session -t ClaudeTeam
 claudeteam up
 tmux show-environment -g | grep -E "FEISHU_APP_ID|CLAUDETEAM_STATE_DIR"  # verify
 ```
+
+### `lark-cli config init` rejects with "credentials are provided externally"
+
+Symptom (lark-cli 1.0.26+):
+```
+"error": "config" is not supported: credentials are provided externally
+        and do not support interactive management
+```
+Triggered by running `lark-cli config init …` while `FEISHU_APP_ID` /
+`FEISHU_APP_SECRET` (or `LARKSUITE_CLI_*`) are exported in the shell.
+lark-cli treats those env vars as an "external provider" signal and
+disables local config writes — but `~/.lark-cli/config.json` is still
+required for downstream `+chat-create --as bot` / subscribe to fetch a
+tenant token.
+
+Workaround: scrub the env for that one call only:
+
+```bash
+echo -n "$FEISHU_APP_SECRET" | env -i HOME="$HOME" PATH="$PATH" \
+  LARK_CLI_NO_PROXY=1 \
+  lark-cli config init --app-id "$FEISHU_APP_ID" \
+                       --app-secret-stdin --brand feishu
+```
+Once init has written `~/.lark-cli/config.json`, your normal shell
+(env vars present) can call lark-cli without further gymnastics.
 
 ### `worker_codex` shows "pane up but CLI not ready yet"
 

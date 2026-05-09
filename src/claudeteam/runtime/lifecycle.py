@@ -60,6 +60,19 @@ _PROPAGATED_ENV = (
 )
 
 
+def _path_readable(p: Path) -> bool:
+    """Returns True iff `p` can be stat'd. False on PermissionError /
+    not-found / any OSError. deploy-issues 2026-05-08 #1: on Linux host
+    where /root is mode 700, Path("/root/...").exists() raised
+    PermissionError instead of returning False (Python <3.13 behavior),
+    killing `claudeteam up` for non-root deployers. Three /root probes
+    in this module need the soft semantic."""
+    try:
+        return p.exists()
+    except OSError:
+        return False
+
+
 def _ensure_claude_agent_home(agent: str) -> None:
     """Materialise a per-agent claude state dir at /data/agent-home/<agent>.
 
@@ -128,7 +141,7 @@ def _ensure_claude_agent_home(agent: str) -> None:
                 pass
     user_claude_json = Path.home() / ".claude.json"
     claude_json = home / ".claude.json"
-    if user_claude_json.exists() and not claude_json.exists():
+    if _path_readable(user_claude_json) and not claude_json.exists():
         try:
             claude_json.write_bytes(user_claude_json.read_bytes())
         except OSError:
@@ -147,14 +160,14 @@ def _ensure_claude_agent_home(agent: str) -> None:
         )
     cred_link = claude_dir / ".credentials.json"
     cred_target = Path("/root/.claude/.credentials.json")
-    if cred_target.exists() and not cred_link.exists():
+    if _path_readable(cred_target) and not cred_link.exists():
         try:
             cred_link.symlink_to(cred_target)
         except OSError:
             pass
     projects_link = claude_dir / "projects"
     projects_target = Path("/root/.claude/projects")
-    if projects_target.exists() and not projects_link.exists():
+    if _path_readable(projects_target) and not projects_link.exists():
         try:
             projects_link.symlink_to(projects_target)
         except OSError:
@@ -167,7 +180,7 @@ def _ensure_claude_agent_home(agent: str) -> None:
     # update its own session counters without affecting other agents.
     claude_json = home / ".claude.json"
     host_claude_json = Path("/root/host-claude.json")
-    if host_claude_json.exists() and not claude_json.exists():
+    if _path_readable(host_claude_json) and not claude_json.exists():
         try:
             claude_json.write_bytes(host_claude_json.read_bytes())
         except OSError:

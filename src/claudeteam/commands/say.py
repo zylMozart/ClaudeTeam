@@ -28,14 +28,16 @@ USAGE = (
 )
 
 
-# Card colors per agent role conventions. manager → blue (default visual
-# weight), worker_* → green (status updates), boss-tagged → grey (just
-# context). Unknown agents fall back to blue. Round-99: extracted so a
-# future deployment with custom roles can override without touching the
-# render code.
+# Card colors per agent. manager → blue (fixed visual weight, "boss
+# answer" channel). Workers auto-cycle through _WORKER_PALETTE in
+# team-config order so each worker reads as a distinct color in chat —
+# 2026-05-09: previously every worker fell back to "green", making
+# multi-worker dispatch cards visually indistinguishable. Per-agent
+# `card_color` in claudeteam.toml still wins (override).
 _AGENT_CARD_COLORS = {
     "manager": "blue",
 }
+_WORKER_PALETTE = ("green", "purple", "orange", "yellow")
 
 # Default emoji per agent name. Used when claudeteam.toml doesn't
 # provide an explicit `emoji` field. The card sender header
@@ -104,14 +106,23 @@ def _publish_allowed(sender: str, to_target: str) -> bool:
 
 
 def _color_for(agent: str, cfg_color: str | None = None) -> str:
-    """Resolve card header color. Per-agent `color` field in team.json
-    wins; else manager → blue, worker_* → green, fallback blue."""
+    """Resolve card header color. Per-agent `card_color` (or legacy
+    `color`) in claudeteam.toml wins; else manager → blue (fixed);
+    else worker_* → cycle through `_WORKER_PALETTE` in team-config
+    order so multiple workers' cards are visually distinct; else
+    fallback blue."""
     if cfg_color:
         return cfg_color
     if agent in _AGENT_CARD_COLORS:
         return _AGENT_CARD_COLORS[agent]
     if agent.startswith("worker"):
-        return "green"
+        try:
+            agents = config.load_team().get("agents", {}) or {}
+            workers = [n for n in agents if n != "manager" and n.startswith("worker")]
+            idx = workers.index(agent) if agent in workers else 0
+        except Exception:
+            idx = 0
+        return _WORKER_PALETTE[idx % len(_WORKER_PALETTE)]
     return "blue"
 
 
