@@ -11,7 +11,7 @@ What CAN and SHOULD be tested:
 """
 from __future__ import annotations
 
-from helpers import env_patch, isolated_env, run_cli
+from helpers import attr_patch, env_patch, isolated_env, run_cli
 from claudeteam.commands.router import (
     _build_subscribe_cmd,
     _load_seen_msg_ids,
@@ -132,38 +132,47 @@ def test_main_help_returns_zero():
 # ── stale-event self-restart ──────────────────────────────────────
 
 
-def test_stale_threshold_default_is_600s():
-    """Default raised from 180→600 after 2026-05-07 fresh-user smoke
-    caught a quiet chat respawning every 3 min. Original 180 was
-    motivated by a "WS silent stall within minutes" observation in
-    2026-05-06 round, but post-hoc that stall was likely a side-effect
-    of the LARKSUITE_CLI_TENANT_ACCESS_TOKEN missing-app-id bug (fixed
-    separately) — with auth healthy, an actually-quiet chat genuinely
-    has no events, and 180s cratered router uptime.
+def _patch_platform(name: str):
+    """Force platform.system() to return `name` so tests are deterministic
+    across the runner's OS. macOS dev laptop and Linux CI box would
+    otherwise see different defaults (Darwin → 120, else → 600)."""
+    import platform
+    return attr_patch(platform, system=lambda: name)
 
-    isolated_env() fences the test from any repo-root claudeteam.toml
-    that would otherwise feed an old value through the tunable cascade."""
-    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S=None):
+
+def test_stale_threshold_default_linux_is_600s():
+    """Linux WebSocket is stable; default stays 600s. Calibrated value:
+    1200 too lax / 180 too tight (see commit history)."""
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S=None), _patch_platform("Linux"):
         assert _stale_event_threshold_s() == 600.0
 
 
+def test_stale_threshold_default_darwin_is_120s():
+    """macOS lark-cli 1.0.23 WebSocket silently drops without reconnect
+    (verified 2026-05-09 host smoke). Tighter default lets self-restart
+    + catchup recover in ~2 min instead of ~10."""
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S=None), _patch_platform("Darwin"):
+        assert _stale_event_threshold_s() == 120.0
+
+
 def test_stale_threshold_picks_up_env_override():
-    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="60"):
+    """Env override beats platform default — operators can tune."""
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="60"), _patch_platform("Darwin"):
         assert _stale_event_threshold_s() == 60.0
 
 
 def test_stale_threshold_falls_back_to_default_on_garbage():
     """Misconfigured env (`CLAUDETEAM_ROUTER_STALE_S=potato`) should fall
-    back to default rather than raise."""
-    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="potato"):
+    back to platform default rather than raise."""
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="potato"), _patch_platform("Linux"):
         assert _stale_event_threshold_s() == 600.0
 
 
 def test_stale_threshold_ignores_zero_or_negative():
-    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="0"):
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="0"), _patch_platform("Linux"):
         assert _stale_event_threshold_s() == 600.0
-    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="-5"):
-        assert _stale_event_threshold_s() == 600.0
+    with isolated_env(), env_patch(CLAUDETEAM_ROUTER_STALE_S="-5"), _patch_platform("Darwin"):
+        assert _stale_event_threshold_s() == 120.0
 
 
 def test_make_on_progress_refreshes_timestamp_on_each_event():

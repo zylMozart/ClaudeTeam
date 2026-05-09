@@ -209,26 +209,39 @@ def _make_on_progress(last_event_at: list[float]) -> Callable:
     return _on_progress
 
 
+def _platform_default_stale_event_threshold_s() -> float:
+    """Default stale-event threshold split by platform — root cause
+    of the previous 180/600 churn was platform-specific WebSocket
+    behaviour, not a single-knob tuning problem.
+
+    macOS (Darwin) → 120s. lark-cli 1.0.23 WebSocket subscribe silently
+    drops on macOS without reconnecting (verified 2026-05-09 host smoke:
+    subscribe child stayed alive but stopped delivering events; only
+    self-SIGTERM + watchdog respawn + catchup recovers). A tighter
+    threshold lets recovery happen in ~2 min instead of ~10. Quiet-chat
+    overhead is acceptable on a dev laptop.
+
+    Linux (and everything else) → 600s. WebSocket is stable here; quiet
+    chats shouldn't churn through respawns. History on this platform:
+    1200s → too lax (2026-05-06 caught manager not seeing user msg for
+    7+ min); 180s → too tight (2026-05-07 fresh-user smoke caught a
+    genuinely quiet chat respawning every ~3 min, churning router.log
+    into a wall of "no events for 180s; respawning"). 600s is the
+    calibrated middle.
+    """
+    import platform
+    return 120.0 if platform.system() == "Darwin" else 600.0
+
+
 def _stale_event_threshold_s() -> float:
     """Max seconds router will tolerate with no inbound event before
     self-SIGTERM'ing for a watchdog respawn.
 
-    Resolved via runtime.tunables — priority env > claudeteam.toml > default.
+    Resolved via runtime.tunables — priority env > claudeteam.toml >
+    platform-aware default (see `_platform_default_stale_event_threshold_s`).
     Legacy `CLAUDETEAM_ROUTER_STALE_S` env (without `_EVENT_THRESHOLD`) is
     still honored as a backwards-compat alias since it shipped first.
-
-    Default 600s. History: 1200s → too lax (2026-05-06 caught manager not
-    seeing user msg for 7+ min); 180s → too tight (2026-05-07 fresh-user
-    smoke caught a genuinely quiet chat respawning every ~3 min, churning
-    state/router.log into a wall of "no events for 180s; respawning"). The
-    previous WS silent-stall that motivated 180s was likely a side-effect
-    of the LARKSUITE_CLI_TENANT_ACCESS_TOKEN env-pair bug fixed alongside
-    this raise (`fix(lark): subprocess_env 同步注入 APP_ID/APP_SECRET`)
-    and the keychain creds clobber fix — both meant subscribe's tenant
-    auth was rejecting silently. With those fixed, 600s leaves real
-    stalls covered while letting quiet chats stay alive.
     """
-    from claudeteam.runtime import tunables
     # Legacy env-var alias (shipped before the tunables framework).
     legacy = os.environ.get("CLAUDETEAM_ROUTER_STALE_S", "").strip()
     if legacy:
@@ -238,7 +251,9 @@ def _stale_event_threshold_s() -> float:
                 return v
         except ValueError:
             pass
-    return float(tunables.tunable("router.stale_event_threshold_s", 600.0))
+    return float(tunables.tunable(
+        "router.stale_event_threshold_s",
+        _platform_default_stale_event_threshold_s()))
 
 
 def _watch_subscribe_health(proc: subprocess.Popen, stop_event: threading.Event,

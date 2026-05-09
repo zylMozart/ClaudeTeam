@@ -224,14 +224,21 @@ docker compose exec claudeteam claudeteam health
 docker compose exec claudeteam tmux attach -t ClaudeTeam   # see panes; Ctrl+B d to leave
 ```
 
-> **macOS Docker Desktop subscribe stalls:** `network_mode: host` is
-> only partially emulated by Docker Desktop on macOS / Windows. The
-> lark-cli WebSocket subscribe routinely goes silent after a few
-> minutes — events stop reaching the router until it self-restarts and
-> catches up. Set `CLAUDETEAM_ROUTER_STALE_S=300` in `.env` to halve the
-> default 600 s self-restart threshold; events miss less when the router
-> respawns sooner. (Linux container hosts don't need this — `host` mode
-> there is real and the WebSocket is stable.)
+> **macOS subscribe stalls (handled automatically since 2026-05-09):**
+> lark-cli 1.0.23 on macOS — both Docker Desktop (`network_mode: host`
+> partially emulated) and host-native — has a known WebSocket subscribe
+> silent-drop: the subscribe child stays alive but stops delivering
+> events. The router's `_watch_subscribe_health` thread detects this
+> via the `router.stale_event_threshold_s` deadline and self-SIGTERMs
+> for a watchdog respawn; catchup-on-restart then refetches the missed
+> events from Feishu's REST API.
+>
+> The default threshold is **platform-aware**: Darwin → 120 s, Linux →
+> 600 s. Linux WebSocket is stable so the looser default avoids
+> respawning quiet chats; macOS gets a tighter default so the recovery
+> loop completes in ~2 min instead of ~10. Override via toml
+> (`router.stale_event_threshold_s = N`) or env (`CLAUDETEAM_ROUTER_STALE_S=N`)
+> if your network warrants it.
 
 **Compose mounts (read `docker-compose.yml` for the full list):**
 

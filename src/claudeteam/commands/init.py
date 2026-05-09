@@ -97,7 +97,13 @@ ready_marker_timeout_s = 60
 
 # ── [router]  路由器守护进程 ───────────────────────────────
 [router]
-stale_event_threshold_s        = 600    # 多久没事件就 self-SIGTERM 让 watchdog 重生
+# stale_event_threshold_s — 多久没事件就 self-SIGTERM 让 watchdog 重生.
+# 注释掉则用平台默认 (Darwin 120 / Linux 600). 显式设了就用你的值.
+# 为什么 macOS 默认更紧: lark-cli 1.0.23 macOS WebSocket subscribe 会
+# silent-drop 不重连; 紧阈值让 self-restart + catchup 在 ~2 min 内补回
+# 漏的事件而不是 ~10 min. Linux WebSocket 稳定, 600s 避免空闲群被反复
+# 重启 (180s 太紧, 1200s 太松, 都踩过坑).
+# stale_event_threshold_s     = 600
 lark_call_timeout_s            = 90     # 单次 lark-cli 调用超时
 alarm_card_color               = "red"  # 守护进入 cooldown 时报警卡片颜色
 seen_max_lines                 = 5000   # router.seen 去重表 trim 阈值
