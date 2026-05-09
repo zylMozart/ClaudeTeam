@@ -130,12 +130,21 @@ def _ensure_claude_agent_home(agent: str) -> None:
             # `security` missing / keychain locked / subprocess timeout →
             # silent skip and fall through to the host-file branch below.
             pass
-    if not keychain_extracted and not cred_link.exists():
+    if not keychain_extracted:
         user_creds = Path.home() / ".claude" / ".credentials.json"
         if user_creds.exists():
             try:
-                # Copy, not symlink: claude's atomic-write replaces the
-                # symlink with a plain file anyway, so start with one.
+                # Re-read on every provision — same pattern as the macOS
+                # keychain branch above. Without this, the per-agent
+                # `.credentials.json` is frozen at first-provision time;
+                # a later host `claude /login` (or auto-refresh) rotates
+                # the refresh token server-side, invalidating the stale
+                # per-agent copy. Long-running deployments end up with
+                # `claudeteam fire`/`hire` as the only recovery path.
+                # Copy (not symlink) — claude's atomic-write would
+                # replace a symlink with a plain file on first refresh.
+                if cred_link.is_symlink() or cred_link.exists():
+                    cred_link.unlink()
                 cred_link.write_bytes(user_creds.read_bytes())
             except OSError:
                 pass

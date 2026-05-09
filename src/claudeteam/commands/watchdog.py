@@ -110,7 +110,15 @@ def main(argv: list[str]) -> int:
     pid_file = paths.watchdog_pid_file()
     if not pidlock.acquire(pid_file, name="watchdog"):
         return 1
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # Print before exit so the operator sees *why* the watchdog stopped.
+    # The bare `sys.exit(0)` left silence that was indistinguishable from
+    # an abrupt SIGKILL (no exit-cause logging) and made post-mortems
+    # impossible — `claudeteam health` would just report "pid file
+    # present but process dead" with no log breadcrumb.
+    def _on_sigterm(*_):
+        print("🛑 watchdog: received SIGTERM, exiting cleanly", flush=True)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     specs = watchdog.default_specs()
     states: dict = {}
@@ -132,6 +140,19 @@ def main(argv: list[str]) -> int:
     except KeyboardInterrupt:
         print("watchdog stopped")
         return 0
+    except BaseException as e:
+        # Catch *anything* — Python-level exceptions, SystemExit raised
+        # from inside supervise(), even GeneratorExit — and log it before
+        # the process dies. Without this branch the only forensic trail
+        # was an empty pidfile and a `pid file present but process dead`
+        # health-check error.
+        import traceback
+        print(
+            f"💥 watchdog exiting on unhandled {type(e).__name__}: {e!r}",
+            flush=True,
+        )
+        traceback.print_exc()
+        return 1
     finally:
         pidlock.release(pid_file)
 
