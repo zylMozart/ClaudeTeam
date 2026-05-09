@@ -585,6 +585,44 @@ def test_ensure_tenant_token_returns_none_when_fetch_fails():
         assert not os.path.exists(cache)
 
 
+# ── per-state-dir cache (multi-team isolation) ───────────────────
+
+
+def test_tenant_token_cache_path_defaults_to_state_dir():
+    """Two teams in one container with different FEISHU_APP_ID would
+    silently share `/tmp/claudeteam_tenant_token.json` and overwrite
+    each other's token (whoever ran `claudeteam say` last won). The
+    default now derives from `state_dir()` so distinct
+    CLAUDETEAM_STATE_DIR = distinct cache file."""
+    from helpers import isolated_env
+    with isolated_env() as tmp:
+        path = lark._tenant_token_cache_path()
+    assert path.endswith("/lark_tenant_token.json")
+    assert str(tmp) in path
+
+
+def test_tenant_token_cache_path_module_level_override_wins():
+    """attr_patch test contract: setting the module-level constant
+    pins the path (legacy escape hatch + test fixture)."""
+    from helpers import attr_patch
+    with attr_patch(lark, _TENANT_TOKEN_CACHE="/etc/cache/operator_pin.json"):
+        path = lark._tenant_token_cache_path()
+    assert path == "/etc/cache/operator_pin.json"
+
+
+def test_two_state_dirs_get_independent_cache_paths():
+    """Acceptance check for #9: team A and team B running side-by-side
+    on one host write into separate cache files — no cross-contamination."""
+    from helpers import isolated_env
+    with isolated_env() as a:
+        path_a = lark._tenant_token_cache_path()
+    with isolated_env() as b:
+        path_b = lark._tenant_token_cache_path()
+    assert path_a != path_b
+    assert str(a) in path_a
+    assert str(b) in path_b
+
+
 def test_subprocess_env_injects_token_when_available():
     """End-to-end: subprocess_env feeds the token into the lark-cli env
     so every `call()` and the long-running subscribe both pick it up

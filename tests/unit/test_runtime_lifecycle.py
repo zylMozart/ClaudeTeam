@@ -80,6 +80,22 @@ def test_pane_env_prefix_shell_quotes_paths_with_spaces():
     assert "'my profile'" in prefix
 
 
+def test_pane_env_prefix_propagates_multi_team_config_overrides():
+    """Multi-team-same-container: panes spawned by team B must inherit
+    the CLAUDETEAM_CONFIG_FILE pointing at team B's claudeteam.toml,
+    plus CLAUDETEAM_AGENT_HOME_BASE so per-agent claude HOME doesn't
+    collide with team A. Without either var on the prefix, a worker
+    shelling out `claudeteam say` would resolve cwd's toml (team A's
+    chat_id) and write into /data/agent-home/<agent> (team A's HOME
+    snapshot)."""
+    with isolated_env(team={"agents": {"a": {}}}), env_patch(
+            CLAUDETEAM_CONFIG_FILE="/etc/teamB/claudeteam.toml",
+            CLAUDETEAM_AGENT_HOME_BASE="/data/agent-home-b"):
+        prefix = pane_env_prefix()
+    assert "CLAUDETEAM_CONFIG_FILE=/etc/teamB/claudeteam.toml" in prefix
+    assert "CLAUDETEAM_AGENT_HOME_BASE=/data/agent-home-b" in prefix
+
+
 # ── provision_pane: LAZY ──────────────────────────────────────────
 
 

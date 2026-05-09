@@ -32,6 +32,7 @@
 | [slash_matrix.md](slash_matrix.md) | 9 条斜杠 + 路由分类的详细 pass/fail 标准、color 期望、错误诊断 | host_smoke 某条出错时翻这一篇 |
 | [round_c_real_task.md](round_c_real_task.md) | 老板 → manager → workers → 汇总，30-60 分钟真任务派活 | 重大改动后或想压测协作时 |
 | [reidentify.md](reidentify.md) | `claudeteam reidentify` 重新注入身份的几种触发情境 | post-compact 或 worker 记忆乱了 |
+| [multi_team_same_host.md](multi_team_same_host.md) | 同一容器跑两套独立 ClaudeTeam（不同 App + 不同 chat），互不串扰的端到端验收 | 多团队部署上线前 |
 
 ## 归档：`_archive/`
 

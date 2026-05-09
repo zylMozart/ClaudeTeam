@@ -46,13 +46,21 @@ from claudeteam.util import env_str
 # lark-cli profile — a different app — yielding HTTP 400 "Bot/User can
 # NOT be out of the chat" on every `claudeteam say`. Embedding the creds
 # in the spawn-cmd prefix sidesteps the tmux-server-env quirk entirely.
+#
+# CLAUDETEAM_CONFIG_FILE / CLAUDETEAM_AGENT_HOME_BASE added 2026-05-09
+# (multi-team-same-container): operators running team A + team B in the
+# same container point each at a distinct claudeteam.toml and a
+# distinct agent-home base. Worker panes that shell out `claudeteam say`
+# need both env vars to land on the right deployment.
 _PROPAGATED_ENV = (
     "LARK_CLI_PROFILE",
     "LARK_CLI_NO_PROXY",
     "CLAUDETEAM_LARK_SEND_AS",
+    "CLAUDETEAM_CONFIG_FILE",
     "CLAUDETEAM_TEAM_FILE",
     "CLAUDETEAM_RUNTIME_CONFIG",
     "CLAUDETEAM_DEFAULT_MODEL",
+    "CLAUDETEAM_AGENT_HOME_BASE",
     "FEISHU_APP_ID",
     "FEISHU_APP_SECRET",
     "LARKSUITE_CLI_APP_ID",

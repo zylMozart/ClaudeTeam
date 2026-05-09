@@ -317,18 +317,40 @@ defeats the publish filter.
 
 ## Multi-team isolation
 
-Run multiple teams on one host by giving each its own state dir +
-session name:
+Run multiple teams on one host (host machine or single container) by
+giving each its own state dir, config file, lark profile, and tmux
+session name. The full set of knobs:
+
+| Env var | Purpose | Default if unset |
+|---------|---------|------------------|
+| `CLAUDETEAM_STATE_DIR` | facts/, agents/, router.pid, watchdog.pid, **tenant_token cache** | `~/.claudeteam` |
+| `CLAUDETEAM_CONFIG_FILE` | Path to this team's `claudeteam.toml` (chat_id, agents, publish filters) | `./claudeteam.toml` |
+| `CLAUDETEAM_AGENT_HOME_BASE` | Per-agent claude HOME base (avoid `/data/agent-home/<agent>` collision when both teams have a "manager") | `/data/agent-home` if writable, else `<state_dir>/agent-home` |
+| `LARK_CLI_PROFILE` | lark-cli profile pointing at this team's app | empty (uses lark-cli default) |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | Container-side token bootstrap (lark-cli's keychain path doesn't work in Linux containers) | unset (host keychain only) |
 
 ```bash
-# team A
-export CLAUDETEAM_STATE_DIR=/path/to/team-a/state
-cd /path/to/team-a
-claudeteam up   # session "TeamA"
+# team A — terminal 1
+set -a; . /etc/claudeteam-a.env; set +a       # FEISHU_APP_ID/SECRET for app A
+export CLAUDETEAM_STATE_DIR=/srv/team-a/state
+export CLAUDETEAM_CONFIG_FILE=/srv/team-a/claudeteam.toml
+export LARK_CLI_PROFILE=teamA
+# (CLAUDETEAM_AGENT_HOME_BASE unset → /data/agent-home/<agent>)
+cd /srv/team-a
+claudeteam up   # tmux session named per [team].session in toml (e.g. "TeamA")
 
-# team B (different shell)
-export CLAUDETEAM_STATE_DIR=/path/to/team-b/state
-cd /path/to/team-b
+# team B — terminal 2 (start from a clean shell — unset team A vars first)
+unset CLAUDETEAM_STATE_DIR CLAUDETEAM_CONFIG_FILE CLAUDETEAM_TEAM_FILE \
+      CLAUDETEAM_RUNTIME_CONFIG LARK_CLI_PROFILE \
+      FEISHU_APP_ID FEISHU_APP_SECRET \
+      LARKSUITE_CLI_APP_ID LARKSUITE_CLI_APP_SECRET \
+      LARKSUITE_CLI_TENANT_ACCESS_TOKEN
+set -a; . /etc/claudeteam-b.env; set +a       # FEISHU_APP_ID/SECRET for app B
+export CLAUDETEAM_STATE_DIR=/srv/team-b/state
+export CLAUDETEAM_CONFIG_FILE=/srv/team-b/claudeteam.toml
+export CLAUDETEAM_AGENT_HOME_BASE=/data/agent-home-b   # split claude HOMEs
+export LARK_CLI_PROFILE=teamB
+cd /srv/team-b
 claudeteam up   # session "TeamB"
 ```
 
@@ -336,6 +358,16 @@ Each team needs its **own Feishu app** (independent app_id/secret) —
 sharing one app across teams causes credential leakage and event
 routing conflicts. `claudeteam switch <team-dir>` emits the env
 exports as one shell-evaluable line if you switch shells often.
+
+**End-to-end verification**: see
+[`tests/scenarios/multi_team_same_host.md`](../tests/scenarios/multi_team_same_host.md)
+for the operator playbook (ps / tmux ls / state isolation / cross-team
+event leakage checks).
+
+> Single-team deploys are unaffected: leave the new env vars unset and
+> behaviour matches the pre-2026-05-09 layout, except the lark
+> tenant-token cache moved from `/tmp/claudeteam_tenant_token.json`
+> to `<state_dir>/lark_tenant_token.json` (still cached, just per-team).
 
 ---
 

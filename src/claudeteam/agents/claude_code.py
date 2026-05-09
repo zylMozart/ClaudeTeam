@@ -7,6 +7,7 @@ import shlex
 from pathlib import Path
 
 from claudeteam.runtime import paths
+from claudeteam.util import env_str
 
 from .base import CliAdapter, SPINNER_CHARS
 
@@ -33,9 +34,17 @@ def _read_oauth_token(agent: str) -> str | None:
 def agent_home(agent: str) -> str:
     """Per-agent HOME for an isolated ~/.claude.json.
 
-    Container deploys (Dockerfile mounts /data writable) use
-    /data/agent-home/<agent>. Host deploys (macOS firmlink read-only;
-    Linux without that mount) fall back to <state_dir>/agent-home/<agent>.
+    Resolution order:
+      1. `CLAUDETEAM_AGENT_HOME_BASE` env — operator override for
+         multi-team containers where the default `/data/agent-home/`
+         would collide if both teams happen to spawn an agent named
+         "manager". Set per-team to a distinct base
+         (e.g. `CLAUDETEAM_AGENT_HOME_BASE=/data/agent-home-b`) so
+         `~/.claude.json` and the credential snapshot stay split.
+      2. `/data/agent-home/<agent>` when /data is a writable mount —
+         the canonical container path for single-team deploys.
+      3. `<state_dir>/agent-home/<agent>` — host fallback (macOS
+         firmlink read-only; Linux without the /data mount).
 
     Probe writability rather than just existence: a Linux server might
     have /data as a read-only data disk mount where mkdir would fail,
@@ -43,6 +52,9 @@ def agent_home(agent: str) -> str:
     True for in some setups but rejects writes. Cache the probe result
     so we don't pay an os.access call per spawn.
     """
+    override = env_str("CLAUDETEAM_AGENT_HOME_BASE")
+    if override:
+        return f"{override.rstrip('/')}/{agent}"
     if _data_writable():
         return f"/data/agent-home/{agent}"
     return str(paths.state_dir() / "agent-home" / agent)
