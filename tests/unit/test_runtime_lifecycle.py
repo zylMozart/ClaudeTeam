@@ -259,3 +259,39 @@ def test_ensure_claude_agent_home_overwrites_stale_creds_each_call():
         # Second call must replace the file with v2's content
         assert "v2-tok" in cred.read_text(), \
             "stale snapshot not overwritten on re-provision"
+
+
+def test_ensure_claude_agent_home_refreshes_from_host_file_on_each_call():
+    """Linux container path: claude OAuth refresh writes to
+    /root/.claude/.credentials.json (the bind-mount target on host).
+    Each agent has a snapshot at <agent_home>/.claude/.credentials.json
+    — pre-2026-05-10 lifecycle gated `if not cred_link.exists()` so the
+    snapshot was copied ONCE on first spawn and never refreshed.
+    access_token expires ~2h; claude pane spawned with the stale 6h-old
+    snapshot hit '401 Invalid auth credentials' (caught in team B real
+    chat smoke). Fix: always copy host file → per-agent on every spawn,
+    matching the macOS keychain branch's unlink+write semantics."""
+    import platform
+    if platform.system() == "Darwin":
+        return  # this test exercises the Linux fallback branch
+    import tempfile
+    # Stage a fake $HOME with a stale-then-fresh ~/.claude/.credentials.json
+    with tempfile.TemporaryDirectory() as fake_home, \
+            isolated_env(team={"agents": {"manager": {"cli": "claude-code"}}}), \
+            env_patch(HOME=fake_home):
+        host_creds = Path(fake_home) / ".claude" / ".credentials.json"
+        host_creds.parent.mkdir(parents=True)
+        host_creds.write_text('{"claudeAiOauth":{"accessToken":"OLD"}}')
+        # First provision copies the OLD content
+        lifecycle._ensure_claude_agent_home("manager")
+        from claudeteam.agents.claude_code import agent_home
+        cred = Path(agent_home("manager")) / ".claude" / ".credentials.json"
+        assert cred.exists()
+        assert "OLD" in cred.read_text()
+        # Host file rotates (claude OAuth refresh on the host) → NEW token
+        host_creds.write_text('{"claudeAiOauth":{"accessToken":"NEW"}}')
+        # Second provision (claudeteam down + up) MUST overwrite stale snapshot
+        lifecycle._ensure_claude_agent_home("manager")
+        assert "NEW" in cred.read_text(), \
+            "Linux fallback didn't refresh per-agent .credentials.json — pane will 401"
+        assert "OLD" not in cred.read_text()
