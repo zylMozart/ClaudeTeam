@@ -33,6 +33,7 @@
 | [round_c_real_task.md](round_c_real_task.md) | 老板 → manager → workers → 汇总，30-60 分钟真任务派活 | 重大改动后或想压测协作时 |
 | [reidentify.md](reidentify.md) | `claudeteam reidentify` 重新注入身份的几种触发情境 | post-compact 或 worker 记忆乱了 |
 | [multi_team_same_host.md](multi_team_same_host.md) | 同一容器跑两套独立 ClaudeTeam（不同 App + 不同 chat），互不串扰的端到端验收 | 多团队部署上线前 |
+| [multi_team_e2e_smoke.md](multi_team_e2e_smoke.md) | 隔离开了之后链路真打通的复跑：fake-boss canary → manager_b say → 群里看见，含 5 条已踩坑诊断 | 每次动 `_PROPAGATED_ENV` / `lark.py` tenant cache / `agent_home` 时 |
 
 ## 归档：`_archive/`
 
