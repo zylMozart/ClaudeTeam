@@ -48,15 +48,17 @@ DEFAULT_STOP_FILE = "/tmp/multi_team_canary.stop"
 TEAM_A_WATCHDOG_PID_FILE = "/data/state/watchdog.pid"
 
 CANARY_PHRASES = (
-    "@manager_b 报道一下当前进度",
-    "@worker_b 帮我看下今天的工作安排",
-    "@manager_b 周五前能交付的小任务有哪些",
-    "@manager_b 团队当前几个人在跑什么活儿",
-    "@worker_b 简单 say 一句确认你在线",
-    "@manager_b 让 worker_b 数一下当前目录有几个 .py 文件",
-    "@manager_b 总结一下今早进展",
-    "@worker_b 拉个最简单的 README typo PR 演示一下",
+    "报道一下当前任务进度",
+    "今天工作安排是什么",
+    "本周能交付的任务有哪些",
+    "现在团队最大瓶颈在哪",
+    "简单总结一下今早进展",
+    "数一下当前目录有几个 .py 文件",
+    "团队几个人在跑什么活儿",
+    "拉个最简单的 README typo PR 演示一下",
 )
+# 老板原话：群里直接说话默认给 manager 的，不需要这么多 @
+# (router default_target=manager_b 已实现该路由；@ 前缀让 demo 视觉感生硬)
 
 
 def _read_proc_env(pid: int) -> dict[str, str]:
