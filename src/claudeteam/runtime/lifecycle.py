@@ -150,12 +150,32 @@ def _ensure_claude_agent_home(agent: str) -> None:
             # `security` missing / keychain locked / subprocess timeout →
             # silent skip and fall through to the host-file branch below.
             pass
-    if not keychain_extracted and not cred_link.exists():
+    if not keychain_extracted:
         user_creds = Path.home() / ".claude" / ".credentials.json"
         if user_creds.exists():
             try:
                 # Copy, not symlink: claude's atomic-write replaces the
                 # symlink with a plain file anyway, so start with one.
+                #
+                # ALWAYS overwrite — pre-2026-05-10 we skipped if cred_link
+                # already existed, but that meant a per-agent file from a
+                # previous spawn (now hours-old + access_token expired)
+                # stuck around forever. claude pane spawned with an old
+                # token, hit '401 Invalid auth credentials', stuck.
+                # Mirrors the macOS keychain branch above which
+                # unlink+write every provision. Cost: ~500-byte file copy
+                # per provision, negligible.
+                #
+                # 2026-05-10 incident: cred_link can be a SYMLINK (older
+                # deploys symlinked /data/agent-home/<agent>/.claude/.credentials.json
+                # → /root/.claude/.credentials.json). write_bytes on a symlink
+                # writes THROUGH to the target, so a misconfigured test wrote
+                # fake content into /root/.claude/.credentials.json and
+                # 401'd every team A pane. Unlink first (mirroring the
+                # macOS branch above) so the write always lands on a fresh
+                # regular file, never on the symlink target.
+                if cred_link.is_symlink() or cred_link.exists():
+                    cred_link.unlink()
                 cred_link.write_bytes(user_creds.read_bytes())
             except OSError:
                 pass
@@ -178,13 +198,6 @@ def _ensure_claude_agent_home(agent: str) -> None:
             '  }\n'
             '}\n'
         )
-    cred_link = claude_dir / ".credentials.json"
-    cred_target = Path("/root/.claude/.credentials.json")
-    if _path_readable(cred_target) and not cred_link.exists():
-        try:
-            cred_link.symlink_to(cred_target)
-        except OSError:
-            pass
     projects_link = claude_dir / "projects"
     projects_target = Path("/root/.claude/projects")
     if _path_readable(projects_target) and not projects_link.exists():

@@ -301,3 +301,101 @@ def test_ensure_claude_agent_home_overwrites_stale_creds_each_call():
         # Second call must replace the file with v2's content
         assert "v2-tok" in cred.read_text(), \
             "stale snapshot not overwritten on re-provision"
+
+
+def test_ensure_claude_agent_home_refreshes_from_host_file_on_each_call():
+    """Linux container path: claude OAuth refresh writes to
+    /root/.claude/.credentials.json (the bind-mount target on host).
+    Each agent has a snapshot at <agent_home>/.claude/.credentials.json
+    — pre-2026-05-10 lifecycle gated `if not cred_link.exists()` so the
+    snapshot was copied ONCE on first spawn and never refreshed.
+    access_token expires ~2h; claude pane spawned with the stale 6h-old
+    snapshot hit '401 Invalid auth credentials' (caught in team B real
+    chat smoke). Fix: always copy host file → per-agent on every spawn,
+    matching the macOS keychain branch's unlink+write semantics.
+
+    SAFETY (2026-05-10 incident): main 4c01976 `agent_home(<name>)`
+    hardcodes `/data/agent-home/<name>`. Without `attr_patch(agent_home)`
+    this test would write into the REAL host path, and (since deploys
+    typically symlink that file → /root/.claude/.credentials.json) the
+    write would punch through the symlink and clobber the live host
+    OAuth token. attr_patch routes agent_home into the test's
+    isolated_env state_dir so writes stay sandboxed."""
+    import platform
+    if platform.system() == "Darwin":
+        return  # this test exercises the Linux fallback branch
+    import tempfile
+    from claudeteam.agents import claude_code as _cc_adapter
+    from claudeteam.runtime import paths as _paths
+    with tempfile.TemporaryDirectory() as fake_home, \
+            isolated_env(team={"agents": {"manager": {"cli": "claude-code"}}}), \
+            env_patch(HOME=fake_home), \
+            attr_patch(_cc_adapter, agent_home=lambda agent: str(
+                _paths.state_dir() / "agent-home" / agent)):
+        host_creds = Path(fake_home) / ".claude" / ".credentials.json"
+        host_creds.parent.mkdir(parents=True)
+        host_creds.write_text('{"claudeAiOauth":{"accessToken":"OLD"}}')
+        # First provision copies the OLD content
+        lifecycle._ensure_claude_agent_home("manager")
+        cred = Path(_cc_adapter.agent_home("manager")) / ".claude" / ".credentials.json"
+        assert cred.exists()
+        assert "OLD" in cred.read_text()
+        # Host file rotates (claude OAuth refresh on the host) → NEW token
+        host_creds.write_text('{"claudeAiOauth":{"accessToken":"NEW"}}')
+        # Second provision (claudeteam down + up) MUST overwrite stale snapshot
+        lifecycle._ensure_claude_agent_home("manager")
+        assert "NEW" in cred.read_text(), \
+            "Linux fallback didn't refresh per-agent .credentials.json — pane will 401"
+        assert "OLD" not in cred.read_text()
+
+
+def test_ensure_claude_agent_home_does_not_write_through_symlink():
+    """2026-05-10 incident regression net.
+
+    main 4c01976 deploys symlink agent_home cred files → host
+    `~/.claude/.credentials.json`. lifecycle's `cred_link.write_bytes(...)`
+    on a symlink writes THROUGH to the target, so a misconfigured test
+    or a stale provision would clobber the live host OAuth token (caught
+    in production: 8 team-A agents 401-stuck after fake test data
+    landed in /root/.claude/.credentials.json).
+
+    Fix verified here: lifecycle unlinks the symlink before writing the
+    fresh per-agent file, so the host target is preserved. Belt-and-
+    suspenders against any future deploy that symlinks the cred path."""
+    import platform
+    if platform.system() == "Darwin":
+        return
+    import tempfile
+    from claudeteam.agents import claude_code as _cc_adapter
+    from claudeteam.runtime import paths as _paths
+    with tempfile.TemporaryDirectory() as fake_home, \
+            isolated_env(team={"agents": {"manager": {"cli": "claude-code"}}}), \
+            env_patch(HOME=fake_home), \
+            attr_patch(_cc_adapter, agent_home=lambda agent: str(
+                _paths.state_dir() / "agent-home" / agent)):
+        host_creds = Path(fake_home) / ".claude" / ".credentials.json"
+        host_creds.parent.mkdir(parents=True)
+        host_creds.write_text('REAL_HOST_TOKEN_DO_NOT_TOUCH')
+
+        # Deploy-style: pre-create cred_link as a SYMLINK pointing at the
+        # host file. This mirrors how `claudeteam start` used to provision
+        # the per-agent dir on Linux (and what our incident encountered).
+        cred_link = (Path(_cc_adapter.agent_home("manager")) /
+                     ".claude" / ".credentials.json")
+        cred_link.parent.mkdir(parents=True, exist_ok=True)
+        cred_link.symlink_to(host_creds)
+        assert cred_link.is_symlink()
+
+        # Provision: with the unlink-before-write fix, the symlink is
+        # removed and a fresh regular file is written; host file untouched.
+        lifecycle._ensure_claude_agent_home("manager")
+
+        # cred_link is now a regular file with the host's content
+        assert not cred_link.is_symlink(), \
+            "cred_link should be a regular file post-provision, not a symlink"
+        assert cred_link.read_text() == 'REAL_HOST_TOKEN_DO_NOT_TOUCH'
+
+        # CRITICAL: host file content is preserved (no write-through)
+        assert host_creds.read_text() == 'REAL_HOST_TOKEN_DO_NOT_TOUCH', \
+            ("INCIDENT REGRESSION: lifecycle wrote through symlink and "
+             "clobbered host OAuth token — would 401 every team A agent")
