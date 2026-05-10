@@ -44,7 +44,7 @@ def _fake_send():
         title = card.get("header", {}).get("title", {}).get("content", "")
         body = ""
         try:
-            body = card["body"]["elements"][0]["content"]
+            body = card["elements"][0]["text"]["content"]
         except (KeyError, IndexError, TypeError):
             pass
         # Synthesised legacy shape: `[<agent>] <body>`. Title format
@@ -195,7 +195,7 @@ def test_say_card_flag_sends_card_not_text():
     card = st["card_calls"][0]["card"]
     # R169: title is "{emoji} {agent} · {role}" pulled from team.json
     assert card["header"]["title"]["content"] == "🎯 manager · 团队主管"
-    body = card["body"]["elements"][0]["content"]
+    body = card["elements"][0]["text"]["content"]
     assert "重要决策已落地" in body
     # team.json `color: blue` → blue template
     assert card["header"]["template"] == "blue"
@@ -270,7 +270,7 @@ def test_say_default_now_sends_card_after_R168():
     assert st["text_calls"] == []
     card = st["card_calls"][0]["card"]
     assert card["header"]["title"]["content"] == "🎯 manager · 团队主管"
-    body = card["body"]["elements"][0]["content"]
+    body = card["elements"][0]["text"]["content"]
     assert "plain text msg" in body
 
 

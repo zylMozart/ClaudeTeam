@@ -34,23 +34,40 @@ def _normalised_color(color: str) -> str:
 
 
 def simple_card(title: str, body: str, *, color: str = "blue") -> dict:
-    """Single-section card v2: header + one markdown body element.
+    """Single-section card v1: header + one lark_md div.
 
-    `body` is rendered through Feishu's card v2 `markdown` element, which
-    supports a fuller GFM subset than v1's `lark_md` text tag — including
-    **fenced code blocks** (triple backticks) and **nested lists**, both
-    of which v1 silently degraded to literal text. Empty `body` becomes
-    a single space so the element validates.
+    Reverted from card v2 (`schema:"2.0"` + `tag:"markdown"`) on 2026-05-10
+    after probe (3 schemas × send + GET /messages):
+
+      | shape  | server fallback                                |
+      |--------|------------------------------------------------|
+      | v1     | none — body content survives                   |
+      | v2     | '请升级至最新版本客户端，以查看内容' injected   |
+      | v2-alt | none — body content survives (lark_md element) |
+
+    Feishu server in the boss's tenant doesn't render the v2 `markdown`
+    element; it replaces the message body with the upgrade-prompt
+    disclaimer (an img + two text tags), so the boss's client renders
+    THAT instead of the actual content. v1 lark_md path is what every
+    other in-tenant bot uses — switching back unblocks card display.
+
+    Trade-off: lark_md silently drops fenced code blocks and nested
+    lists (the original reason for v2). Cards in this codebase don't
+    rely on those — only `/health` and `/usage` use multi-section cards
+    (rich_card / column_set_*) which still use card v1 element types
+    anyway, so no caller regresses. If a future card needs GFM tables,
+    revisit then; for now correctness > markdown breadth.
     """
     return {
-        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"content": title, "tag": "plain_text"},
+            "title": {"tag": "plain_text", "content": title},
             "template": _normalised_color(color),
         },
-        "body": {
-            "elements": [{"tag": "markdown", "content": body or " "}],
-        },
+        "elements": [
+            {"tag": "div",
+             "text": {"tag": "lark_md", "content": body or " "}},
+        ],
     }
 
 

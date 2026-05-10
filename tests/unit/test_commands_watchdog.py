@@ -44,7 +44,7 @@ def test_make_alert_fn_sends_red_card_on_cooldown():
     assert card["header"]["template"] == "red"
     title = card["header"]["title"]["content"]
     assert "router" in title and "cooldown" in title
-    body = card["body"]["elements"][0]["content"]
+    body = card["elements"][0]["text"]["content"]
     assert "router" in body
     assert "600s" in body
     assert "3" in body

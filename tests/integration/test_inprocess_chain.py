@@ -36,7 +36,7 @@ def _fake_chat_send():
         # (was `elements[0].text.content` in v1).
         body = ""
         try:
-            body = card["body"]["elements"][0]["content"]
+            body = card["elements"][0]["text"]["content"]
         except (KeyError, IndexError, TypeError):
             pass
         state["posts"].append({"chat_id": chat_id, "card": card,
