@@ -233,6 +233,40 @@ def _platform_default_stale_event_threshold_s() -> float:
     return 120.0 if platform.system() == "Darwin" else 600.0
 
 
+def _resolve_default_target(agents: list[str]) -> str:
+    """Pick the agent that receives all human messages with no @-target.
+
+    Resolution priority:
+      1. tunable `router.default_target` (claudeteam.toml [router] section
+         or env override) — operator-explicit wins
+      2. literal "manager" if it's in the team — preserves the canonical
+         single-team default; team A keeps working unchanged
+      3. first agent whose name contains "manager" (sorted lex) — covers
+         multi-team-same-container deploys that namespace as `manager_b`
+         / `manager_c` etc. without needing the toml knob
+      4. literal "manager" fallback — same as the pre-fix behavior, so a
+         deploy with no manager-ish agent gets the same broken-but-explicit
+         router.log "agent 'manager' not in team.json" warning instead of
+         silently picking some random worker as the boss-message sink
+
+    Multi-team smoke 2026-05-10 caught this: team B used `manager_b` (to
+    avoid tmux session collision with team A's `manager`); the hardcoded
+    `default_target="manager"` route silently dropped every inbound user
+    message ("inject error for manager: agent 'manager' not in team.json")
+    and `manager_b`'s inbox stayed empty forever. Inferring from team.json
+    fixes the canonical multi-team layout without needing toml config.
+    """
+    explicit = tunables.tunable("router.default_target", None)
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    if "manager" in agents:
+        return "manager"
+    manager_ish = sorted(a for a in agents if "manager" in a)
+    if manager_ish:
+        return manager_ish[0]
+    return "manager"
+
+
 def _stale_event_threshold_s() -> float:
     """Max seconds router will tolerate with no inbound event before
     self-SIGTERM'ing for a watchdog respawn.
@@ -391,7 +425,7 @@ def main(argv: list[str]) -> int:
         loop_kwargs = dict(
             team_agents=agents,
             chat_id=chat,
-            default_target="manager",
+            default_target=_resolve_default_target(agents),
             apply_fn=apply_fn,
             on_progress=_make_on_progress(last_event_at),
             on_line_received=_bump_subscribe_alive,
