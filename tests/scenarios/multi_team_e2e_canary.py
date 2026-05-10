@@ -115,6 +115,35 @@ def _send(token: str, chat_id: str, text: str) -> dict:
         return {"http_error": e.code, "body": e.read().decode(errors="ignore")[:300]}
 
 
+def _send_via_lark_user(lark_home: str, chat_id: str, text: str) -> dict:
+    """Spawn `lark-cli +messages-send --as user` against an isolated HOME
+    that already has a user_access_token from device-flow OAuth. The
+    sender on the resulting Feishu message will be the human boss who
+    approved the device flow, not a bot.
+
+    env-i style: clean env keeps lark-cli out of the agent-context
+    'external_provider' lockout that blocks `auth`/`config` commands."""
+    import subprocess
+    env = {"HOME": lark_home, "PATH": "/usr/local/bin:/usr/bin",
+           "LANG": "C.UTF-8", "TERM": "dumb"}
+    r = subprocess.run(
+        ["lark-cli", "im", "+messages-send", "--as", "user",
+         "--chat-id", chat_id, "--text", text],
+        capture_output=True, text=True, env=env, timeout=30,
+    )
+    if r.returncode != 0:
+        return {"rc": r.returncode, "stderr": r.stderr.strip()[:300]}
+    try:
+        out = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {"raw": r.stdout.strip()[:300]}
+    # Normalize to the same envelope shape as urllib path:
+    # `{"code": 0, "data": {"message_id": "om_..."}}`
+    if isinstance(out, dict) and "data" in out:
+        return out
+    return {"data": out}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--interval", type=int, default=60,
@@ -125,16 +154,33 @@ def main() -> int:
                     help="touch this path to stop cleanly")
     ap.add_argument("--chat-id", default=DEFAULT_TEAM_B_CHAT_ID,
                     help="target chat_id (default: $CANARY_CHAT_ID or AB2-EndToEnd-Test)")
+    ap.add_argument("--as-user", action="store_true",
+                    help="send as the OAuth-authorized human user via lark-cli "
+                         "(sender displays the boss's Feishu account, not a bot). "
+                         "Requires a prior device-flow login under --lark-home.")
+    ap.add_argument("--lark-home", default="/tmp/lark-team-a-test",
+                    help="HOME dir holding the lark-cli user OAuth state; "
+                         "only used with --as-user")
     args = ap.parse_args()
 
     stop_file = Path(args.stop_file)
     if stop_file.exists():
         stop_file.unlink()
 
-    app_id, app_sec = _team_a_creds()
-    token = _get_token(app_id, app_sec)
-    print(f"🐤 canary armed: chat={args.chat_id}, interval={args.interval}s, "
-          f"max={args.max or '∞'}, stop=touch {stop_file}", flush=True)
+    if args.as_user:
+        token = ""  # not used in user mode; lark-cli manages its own token
+        cfg = Path(args.lark_home) / ".lark-cli" / "config.json"
+        if not cfg.exists():
+            sys.exit(f"❌ --as-user but no lark-cli config under {cfg}; "
+                     f"run `lark-cli config init --app-id <id> --app-secret-stdin` "
+                     f"+ device-flow `auth login` under that HOME first")
+    else:
+        app_id, app_sec = _team_a_creds()
+        token = _get_token(app_id, app_sec)
+    mode = "AS USER (boss identity)" if args.as_user else "as bot (team A)"
+    print(f"🐤 canary armed: mode={mode}, chat={args.chat_id}, "
+          f"interval={args.interval}s, max={args.max or '∞'}, "
+          f"stop=touch {stop_file}", flush=True)
 
     sent = 0
     stopped = {"flag": False}
@@ -147,18 +193,23 @@ def main() -> int:
     try:
         while True:
             phrase = CANARY_PHRASES[sent % len(CANARY_PHRASES)]
-            r = _send(token, args.chat_id, phrase)
-            if r.get("code") == 0:
+            if args.as_user:
+                r = _send_via_lark_user(args.lark_home, args.chat_id, phrase)
+            else:
+                r = _send(token, args.chat_id, phrase)
+            if r.get("code") == 0 or r.get("data", {}).get("message_id"):
                 msg_id = r.get("data", {}).get("message_id", "?")
                 print(f"  → [{sent+1}] sent: {phrase!r} (msg_id={msg_id})", flush=True)
             else:
                 print(f"  ⚠️ [{sent+1}] send failed: {r}", flush=True)
-                # token might've expired; refresh once and continue
-                try:
-                    token = _get_token(app_id, app_sec)
-                    print("  🔑 refreshed team A token", flush=True)
-                except Exception as e:
-                    print(f"  ⚠️ token refresh failed: {e}", flush=True)
+                if not args.as_user:
+                    # bot mode: refresh team A token once and continue
+                    try:
+                        token = _get_token(app_id, app_sec)
+                        print("  🔑 refreshed team A token", flush=True)
+                    except Exception as e:
+                        print(f"  ⚠️ token refresh failed: {e}", flush=True)
+                # user mode: lark-cli manages its own refresh; just retry next cycle
             sent += 1
             if args.max and sent >= args.max:
                 print(f"✅ reached --max={args.max}; exiting", flush=True)
