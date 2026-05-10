@@ -197,6 +197,29 @@ cache（见坑点 §3）。
 
 最终去 AB2-EndToEnd-Test 群里肉眼确认那条 say 真出现了。
 
+### 8) 自动化 canary runner（无人值守演示）
+
+如果想让真老板（已加群）被动观看完整链路滚动跑，用 bundled runner：
+
+```bash
+python3 tests/scenarios/multi_team_e2e_canary.py --interval 60 --max 20
+# stop early: touch /tmp/multi_team_canary.stop
+```
+
+机制：runner 借 team A bot creds（从 team A 现役 watchdog 进程 env
+读取，不写盘不进 history），每 `--interval` 秒往 team B 群发一条
+"模拟老板"消息（`@manager_b 报道一下进度` 等业务感 phrase）。sender
+是 team A app（≠ team B 自己），按 im.message.receive_v1 设计本应
+触发 team B router；但因 §6 的 lark-cli ws 协议层 broken，实际靠
+team B 的 catchup HTTP pull 接住（节奏由 `[router].stale_event_threshold_s`
+决定，默认 600 → hotfix 后 60）。
+
+效果：每 ≤60s 老板看到群里"假老板"提问 → ≤60s 后 manager_b 真处理
+→ manager_b say 回群 — 完整链路滚动演示。
+
+⚠️ 这是 canary 演示，不是冒烟测试 — 真冒烟跑 §6 fake event 注入
+（无延迟、无外部依赖），canary 是为"让真老板看见"那一程。
+
 ## 期望
 
 | # | 项 | 通过判据 |
