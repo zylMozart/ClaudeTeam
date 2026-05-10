@@ -38,9 +38,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# Hard-coded for the AB2-EndToEnd-Test deployment. Adjust if you
-# replicate this canary for a different team B chat.
-TEAM_B_CHAT_ID = "oc_d5376be51c652fe9ef7929f870930223"
+# Default for the AB2-EndToEnd-Test deployment. Override at runtime
+# without editing the script via `CANARY_CHAT_ID=oc_xxx` env or
+# `--chat-id`. chat_id is not a credential; the env knob is just
+# defense-in-depth so a different team B deploy doesn't fork the file.
+DEFAULT_TEAM_B_CHAT_ID = os.environ.get(
+    "CANARY_CHAT_ID", "oc_d5376be51c652fe9ef7929f870930223")
 DEFAULT_STOP_FILE = "/tmp/multi_team_canary.stop"
 TEAM_A_WATCHDOG_PID_FILE = "/data/state/watchdog.pid"
 
@@ -118,8 +121,8 @@ def main() -> int:
                     help="stop after N messages (0 = run forever)")
     ap.add_argument("--stop-file", default=DEFAULT_STOP_FILE,
                     help="touch this path to stop cleanly")
-    ap.add_argument("--chat-id", default=TEAM_B_CHAT_ID,
-                    help="target chat_id (default: AB2-EndToEnd-Test)")
+    ap.add_argument("--chat-id", default=DEFAULT_TEAM_B_CHAT_ID,
+                    help="target chat_id (default: $CANARY_CHAT_ID or AB2-EndToEnd-Test)")
     args = ap.parse_args()
 
     stop_file = Path(args.stop_file)
