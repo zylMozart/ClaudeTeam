@@ -175,6 +175,59 @@ def test_stale_threshold_ignores_zero_or_negative():
         assert _stale_event_threshold_s() == 120.0
 
 
+# ── _resolve_default_target ──────────────────────────────────────
+
+
+def test_resolve_default_target_team_with_manager_picks_manager():
+    """Canonical single-team layout (team A): agent name 'manager' wins
+    even if the team also has manager_b-style siblings."""
+    from claudeteam.commands.router import _resolve_default_target
+    with isolated_env():
+        assert _resolve_default_target(["manager", "worker", "worker_dev2"]) == "manager"
+
+
+def test_resolve_default_target_falls_back_to_manager_ish_substring():
+    """Multi-team-same-container (team B): no literal 'manager' but
+    'manager_b' is the obvious boss-message sink. Substring match,
+    sorted lex so the choice is deterministic across deploys."""
+    from claudeteam.commands.router import _resolve_default_target
+    with isolated_env():
+        assert _resolve_default_target(["worker_b", "manager_b"]) == "manager_b"
+        # multiple manager-ish — sorted lex gives stable pick
+        assert _resolve_default_target(["manager_c", "manager_b"]) == "manager_b"
+
+
+def test_resolve_default_target_explicit_toml_override_wins():
+    """Operator-explicit `[router] default_target` in claudeteam.toml
+    overrides every inference. Lets a deploy point boss messages at
+    `worker_dev2` or whatever — even if a 'manager' agent exists."""
+    from claudeteam.commands.router import _resolve_default_target
+    with isolated_env(team={"agents": {"manager": {}, "worker_dev2": {}}},
+                      runtime_config={}):
+        # tunable lookup goes through claudeteam.toml [router] section
+        import os, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as fh:
+            fh.write('[router]\ndefault_target = "worker_dev2"\n')
+            toml = fh.name
+        try:
+            with env_patch(CLAUDETEAM_CONFIG_FILE=toml):
+                assert _resolve_default_target(["manager", "worker_dev2"]) == "worker_dev2"
+        finally:
+            os.unlink(toml)
+
+
+def test_resolve_default_target_no_manager_falls_back_to_literal():
+    """Defensive: a team with neither 'manager' nor 'manager_*' falls
+    back to literal 'manager' so router.log surfaces the same explicit
+    'agent manager not in team.json' inject error pre-fix would have
+    shown — diagnoses misconfig instead of silently picking a worker
+    as the boss-message sink."""
+    from claudeteam.commands.router import _resolve_default_target
+    with isolated_env():
+        assert _resolve_default_target(["worker", "worker_b"]) == "manager"
+        assert _resolve_default_target([]) == "manager"
+
+
 def test_make_on_progress_refreshes_timestamp_on_each_event():
     """Every successful (non-DROP) event should bump last_event_at[0]
     so the watchdog's stale check sees fresh activity. DROP events don't
