@@ -145,6 +145,17 @@ def _ensure_claude_agent_home(agent: str) -> None:
                 # Mirrors the macOS keychain branch above which
                 # unlink+write every provision. Cost: ~500-byte file copy
                 # per provision, negligible.
+                #
+                # 2026-05-10 incident: cred_link can be a SYMLINK (older
+                # deploys symlinked /data/agent-home/<agent>/.claude/.credentials.json
+                # → /root/.claude/.credentials.json). write_bytes on a symlink
+                # writes THROUGH to the target, so a misconfigured test wrote
+                # fake content into /root/.claude/.credentials.json and
+                # 401'd every team A pane. Unlink first (mirroring the
+                # macOS branch above) so the write always lands on a fresh
+                # regular file, never on the symlink target.
+                if cred_link.is_symlink() or cred_link.exists():
+                    cred_link.unlink()
                 cred_link.write_bytes(user_creds.read_bytes())
             except OSError:
                 pass
