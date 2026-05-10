@@ -81,26 +81,35 @@ def col_cell(content: str, weight: int = 1) -> dict:
             "elements": [{"tag": "markdown", "content": content}]}
 
 
+def md_element(content: str) -> dict:
+    """v1 div with lark_md text. Replaces the v2 `tag:"markdown"`
+    element which boss tenant fallbacks to '请升级' disclaimer (cards.py
+    R-2026-05-10). Use this for any text-bearing element inside a
+    rich_card; v1 lark_md supports the same `**bold**` / `<font color>`
+    / inline backtick set we actually use, just no fenced code blocks
+    or nested lists (no current caller relies on those)."""
+    return {"tag": "div",
+            "text": {"tag": "lark_md", "content": content}}
+
+
 def column_set_3(cells: list[str]) -> dict:
-    """3-cell section rendered as one markdown element with each cell
-    its own paragraph (cells separated by `\\n\\n`). Feishu's
-    `tag:"column_set"` renders stacked anyway (no real horizontal
-    grid), so we collapse to paragraphs and accept the layout. Empty
-    cells dropped so the body doesn't end with a dangling blank."""
+    """3-cell section rendered as one lark_md div with each cell its
+    own paragraph (cells separated by `\\n\\n`). Feishu's `column_set`
+    tag does not render horizontal-grid in current builds; collapsing
+    to paragraphs is the same UX. Empty cells dropped so the body
+    doesn't end with a dangling blank."""
     parts = [c for c in cells if c.strip()]
-    return {"tag": "markdown",
-            "content": "\n\n".join(parts) if parts else " "}
+    return md_element("\n\n".join(parts) if parts else " ")
 
 
 def column_set_2(left: str, right: str, **_legacy_kwargs) -> dict:
-    """2-cell row rendered as a single markdown line `<left>: <right>`.
+    """2-cell row rendered as a single lark_md line `<left>: <right>`.
 
-    Same rationale as `column_set_3`: Feishu's `column_set` tag does
-    not render side-by-side in current builds, so we collapse to one
-    line. `**Bold**` left labels stay bold naturally; the right cell
-    can carry `<font color='…'>` spans + monospace ` markers.
+    Same rationale as `column_set_3`: column_set doesn't render
+    side-by-side, collapse to one line. `**Bold**` left labels stay
+    bold; right can carry `<font color='…'>` + monospace ` markers.
     """
-    return {"tag": "markdown", "content": f"{left}：{right}"}
+    return md_element(f"{left}：{right}")
 
 
 def load_color(pct: int) -> str:
@@ -124,17 +133,21 @@ def remaining_color(pct: float) -> str:
 
 
 def rich_card(title: str, elements: list, *, color: str = "blue") -> dict:
-    """Card v2 with a pre-built `body.elements` list — for handlers
+    """Card v1 with a pre-built top-level `elements` list — for handlers
     that need multi-section layouts (/usage, /health) that
-    `simple_card`'s single-element body can't express. v2 gives us
-    GFM features (fenced blocks, nested lists, `<font color>` HTML)
-    that v1's `lark_md` silently degrades."""
+    `simple_card`'s single body can't express.
+
+    Reverted from v2 (`schema:"2.0"` + `body.elements`) on 2026-05-10
+    after the same boss-tenant disclaimer fallback that bit simple_card.
+    Callers are expected to use `md_element(...)` (or
+    `column_set_2/3`) instead of raw `{"tag":"markdown", ...}`; raw
+    markdown elements still trigger the fallback inside a v1 wrapper.
+    """
     return {
-        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": title},
             "template": _normalised_color(color),
         },
-        "body": {"elements": elements or [
-            {"tag": "markdown", "content": "(无内容)"}]},
+        "elements": elements or [md_element("(无内容)")],
     }

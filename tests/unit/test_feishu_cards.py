@@ -94,30 +94,32 @@ def test_col_cell_wraps_content_in_weighted_column():
     assert cell["elements"][0]["content"] == "**hi**"
 
 
-def test_column_set_3_joins_cells_with_paragraph_breaks():
-    """R172.b: column_set rendering is broken in current Feishu (both
-    v1 and v2 collapse it to stacked paragraphs anyway), so column_set_3
-    now returns a single markdown element with cells separated by `\\n\\n`
-    paragraph breaks. Empty/blank cells are dropped."""
+def test_column_set_3_returns_v1_div_lark_md():
+    """2026-05-10: emit v1 div+lark_md element (was v2 markdown).
+    Server fallbacks v2 markdown to '请升级' disclaimer — same root cause
+    as simple_card revert. Cells joined with `\\n\\n` paragraph breaks
+    (column_set tag itself doesn't render side-by-side anyway). Empty
+    cells dropped so body doesn't end with a stray separator."""
     from claudeteam.feishu.cards import column_set_3
     row = column_set_3(["**CPU**\n0%", "", "**Disk**\n10%"])
-    assert row["tag"] == "markdown"
-    assert "**CPU**" in row["content"]
-    assert "**Disk**" in row["content"]
-    # Empty cell didn't leak as a stray separator
-    assert row["content"].count("\n\n") == 1
+    assert row["tag"] == "div"
+    assert row["text"]["tag"] == "lark_md"
+    assert "**CPU**" in row["text"]["content"]
+    assert "**Disk**" in row["text"]["content"]
+    assert row["text"]["content"].count("\n\n") == 1
 
 
-def test_column_set_2_joins_label_value_with_colon():
-    """R172.b: column_set_2 renders as one markdown line `<label>：<value>`
-    (full-width colon) so the bold-label + colored-value pair stays
-    on a single visual row."""
+def test_column_set_2_returns_v1_div_lark_md():
+    """2026-05-10: same v1 revert as column_set_3. One lark_md line
+    `<label>：<value>` (full-width colon) so the bold-label + colored-
+    value pair stays on a single visual row."""
     from claudeteam.feishu.cards import column_set_2
     row = column_set_2("**Total**", "<font color='blue'>**$1.23**</font>")
-    assert row["tag"] == "markdown"
-    assert "**Total**" in row["content"]
-    assert "$1.23" in row["content"]
-    assert "：" in row["content"]
+    assert row["tag"] == "div"
+    assert row["text"]["tag"] == "lark_md"
+    assert "**Total**" in row["text"]["content"]
+    assert "$1.23" in row["text"]["content"]
+    assert "：" in row["text"]["content"]
 
 
 def test_load_color_thresholds():
@@ -141,27 +143,39 @@ def test_remaining_color_inverse_thresholds():
     assert remaining_color(75) == "green"
 
 
-def test_rich_card_emits_v2_schema_with_body_elements():
-    """R172.b: rich_card stays on v2 (`schema:"2.0"` + `body.elements`).
-    R172.a briefly flipped to v1 thinking column_set rendered side-by-
-    side in v1 but not v2; reality is column_set is broken in BOTH
-    schemas in current Feishu, so we dropped column_set entirely
-    (cards.py column_set_2/3 now emit plain markdown rows) and kept
-    v2 for its GFM features (fenced blocks, nested lists, font color
-    HTML)."""
+def test_rich_card_emits_v1_wrapper_with_top_level_elements():
+    """2026-05-10: reverted to v1 wrapper (config + flat elements; no
+    `schema:"2.0"` / `body` indirection) for the same boss-tenant
+    disclaimer fallback that bit simple_card. Pre-built elements list
+    passes through verbatim — caller-supplied `tag:"markdown"` /
+    `tag:"hr"` / `tag:"div"` all render OK once the OUTER wrapper is
+    v1 (probed empirically)."""
     from claudeteam.feishu.cards import rich_card
-    elements = [{"tag": "markdown", "content": "hi"}]
+    elements = [{"tag": "markdown", "content": "hi"}, {"tag": "hr"}]
     card = rich_card("Title", elements, color="purple")
-    assert card["schema"] == "2.0"
+    assert card["config"]["wide_screen_mode"] is True
     assert card["header"]["template"] == "purple"
     assert card["header"]["title"]["content"] == "Title"
-    assert card["body"]["elements"] == elements
+    assert card["elements"] == elements
+    # Reverse-protect against accidental v2 regression
+    assert "schema" not in card
+    assert "body" not in card
 
 
 def test_rich_card_falls_back_to_placeholder_when_elements_empty():
     from claudeteam.feishu.cards import rich_card
     card = rich_card("Title", [], color="blue")
-    assert card["body"]["elements"][0]["content"] == "(无内容)"
+    # v1 placeholder is a div+lark_md (md_element), not v2 markdown
+    assert card["elements"][0]["text"]["content"] == "(无内容)"
+
+
+def test_md_element_returns_v1_div_lark_md():
+    """Helper for callers that need to inline a single text block in
+    rich_card's elements list (replaces the old v2 `tag:"markdown"`
+    inline pattern). Keeps boss-tenant disclaimer at bay."""
+    from claudeteam.feishu.cards import md_element
+    e = md_element("hi **there**")
+    assert e == {"tag": "div", "text": {"tag": "lark_md", "content": "hi **there**"}}
 
 
 def test_simple_card_accepts_purple_after_R166():
