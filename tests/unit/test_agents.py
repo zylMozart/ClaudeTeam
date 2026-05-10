@@ -1,9 +1,10 @@
 """Tests for the CLI adapter registry + each adapter's spawn / markers contract."""
 from __future__ import annotations
 
+from helpers import env_patch, isolated_env
 from claudeteam.agents import get_adapter, known_clis
 from claudeteam.agents.base import CliAdapter
-from claudeteam.agents.claude_code import ClaudeCodeAdapter
+from claudeteam.agents.claude_code import ClaudeCodeAdapter, agent_home
 from claudeteam.agents.codex_cli import CodexCliAdapter
 from claudeteam.agents.kimi_code import KimiCodeAdapter
 
@@ -110,6 +111,63 @@ def test_kimi_spawn_uses_yolo_flag_and_disable_update():
     assert "kimi --yolo" in cmd
     assert "DISABLE_UPDATE_CHECK=1" in cmd
     assert "KIMI_AGENT=worker_kimi" in cmd
+
+
+# ── agent_home env override (multi-team isolation) ───────────────
+
+
+def test_agent_home_env_override_wins_over_data_default():
+    """`CLAUDETEAM_AGENT_HOME_BASE` lets team B in a same-container
+    multi-team deploy point its claude HOMEs at a distinct base —
+    otherwise both teams' "manager" agents would share
+    /data/agent-home/manager and clobber each other's
+    ~/.claude.json + credential snapshot."""
+    with env_patch(CLAUDETEAM_AGENT_HOME_BASE="/data/agent-home-b"):
+        home = agent_home("manager")
+    assert home == "/data/agent-home-b/manager"
+
+
+def test_agent_home_env_override_strips_trailing_slash():
+    """Operators set the base with or without a trailing slash; the
+    join must produce a single separator either way (no
+    `/data/agent-home-b//manager`)."""
+    with env_patch(CLAUDETEAM_AGENT_HOME_BASE="/data/agent-home-b/"):
+        home = agent_home("manager")
+    assert home == "/data/agent-home-b/manager"
+
+
+def test_agent_home_default_unchanged_when_override_unset():
+    """Back-compat: with no env override + no /data probe interference,
+    fall back to state_dir-relative (the host path). Single-team
+    deploys keep their existing layout."""
+    with isolated_env(), env_patch(CLAUDETEAM_AGENT_HOME_BASE=None):
+        # Force the host fallback by patching the cached probe to False.
+        from claudeteam.agents import claude_code as cc
+        prev = cc._DATA_WRITABLE
+        cc._DATA_WRITABLE = False
+        try:
+            home = agent_home("worker_x")
+        finally:
+            cc._DATA_WRITABLE = prev
+    assert home.endswith("/agent-home/worker_x")
+
+
+def test_agent_home_container_default_routes_to_data_when_writable():
+    """Container default path: `/data/agent-home/` writable + no env
+    override → `/data/agent-home/<agent>`. Closes the regression net
+    around the canonical single-team deploy (the host-fallback case
+    is covered by the test above; without this one, a future change
+    that promoted the env override even when unset would silently
+    redirect every existing single-team deploy)."""
+    with env_patch(CLAUDETEAM_AGENT_HOME_BASE=None):
+        from claudeteam.agents import claude_code as cc
+        prev = cc._DATA_WRITABLE
+        cc._DATA_WRITABLE = True
+        try:
+            home = agent_home("manager")
+        finally:
+            cc._DATA_WRITABLE = prev
+    assert home == "/data/agent-home/manager"
 
 
 # ── markers ──────────────────────────────────────────────────────

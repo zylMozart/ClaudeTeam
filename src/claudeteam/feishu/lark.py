@@ -42,8 +42,26 @@ _PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")
 # without an entrypoint script.
 _TENANT_TOKEN_URL = (
     "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
-_TENANT_TOKEN_CACHE = "/tmp/claudeteam_tenant_token.json"
+# `None` (the default) routes through `_tenant_token_cache_path()`,
+# which derives a per-state-dir cache so two teams sharing a host can't
+# clobber each other's token (different FEISHU_APP_ID = different cache
+# file). Tests override via `attr_patch(lark, _TENANT_TOKEN_CACHE=...)`.
+_TENANT_TOKEN_CACHE: str | None = None
 _TENANT_TOKEN_REFRESH_BUFFER_S = 60   # refetch when within 60s of expiry
+
+
+def _tenant_token_cache_path() -> str:
+    """Resolve the tenant_token cache path. Module-level
+    `_TENANT_TOKEN_CACHE` wins when set (test attr_patch / operator
+    pin); otherwise `<state_dir>/lark_tenant_token.json` so each
+    `CLAUDETEAM_STATE_DIR`-scoped deployment owns its own cache.
+    Pre-2026-05-09 default was `/tmp/claudeteam_tenant_token.json`,
+    which silently merged caches across teams sharing one container."""
+    if _TENANT_TOKEN_CACHE:
+        return _TENANT_TOKEN_CACHE
+    from claudeteam.runtime import paths
+    paths.ensure_state_dir()
+    return str(paths.state_dir() / "lark_tenant_token.json")
 
 
 def _fetch_tenant_token(app_id: str, app_secret: str) -> dict | None:
@@ -96,10 +114,10 @@ def _ensure_tenant_token(*, fetch: Callable | None = None,
     import time as _time
     # Resolve cache_path at call time so test patches of the
     # module-level _TENANT_TOKEN_CACHE constant take effect; default
-    # args bind at function-definition time and would freeze the
-    # original /tmp path before any patch could land.
+    # args bind at function-definition time and would freeze any
+    # pre-resolved path before a patch could land.
     if cache_path is None:
-        cache_path = _TENANT_TOKEN_CACHE
+        cache_path = _tenant_token_cache_path()
     existing = env_str("LARKSUITE_CLI_TENANT_ACCESS_TOKEN")
     if existing:
         return existing

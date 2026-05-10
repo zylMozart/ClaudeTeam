@@ -80,6 +80,48 @@ def test_pane_env_prefix_shell_quotes_paths_with_spaces():
     assert "'my profile'" in prefix
 
 
+def test_pane_env_prefix_propagates_multi_team_config_overrides():
+    """Multi-team-same-container: panes spawned by team B must inherit
+    the CLAUDETEAM_CONFIG_FILE pointing at team B's claudeteam.toml,
+    plus CLAUDETEAM_AGENT_HOME_BASE so per-agent claude HOME doesn't
+    collide with team A. Without either var on the prefix, a worker
+    shelling out `claudeteam say` would resolve cwd's toml (team A's
+    chat_id) and write into /data/agent-home/<agent> (team A's HOME
+    snapshot)."""
+    with isolated_env(team={"agents": {"a": {}}}), env_patch(
+            CLAUDETEAM_CONFIG_FILE="/etc/teamB/claudeteam.toml",
+            CLAUDETEAM_AGENT_HOME_BASE="/data/agent-home-b"):
+        prefix = pane_env_prefix()
+    assert "CLAUDETEAM_CONFIG_FILE=/etc/teamB/claudeteam.toml" in prefix
+    assert "CLAUDETEAM_AGENT_HOME_BASE=/data/agent-home-b" in prefix
+
+
+def test_pane_env_prefix_propagates_pythonpath_when_set():
+    """Multi-team real-chat smoke (2026-05-10): when the system
+    `claudeteam` is pinned to main and lacks the multi-team isolation
+    patches, team B operators boot from a host shell with PYTHONPATH
+    pointing at the feature-branch src. Without propagation, worker
+    panes shelling out `claudeteam say` re-enter the unpatched system
+    import path and hit team A's `/tmp/claudeteam_tenant_token.json`
+    cache — sending a team A bot token to a team B chat. The fix is
+    to keep the pane on the same codebase the daemons run."""
+    with isolated_env(team={"agents": {"a": {}}}), env_patch(
+            PYTHONPATH="/data/repo/ClaudeTeam_wt_multi_team/src"):
+        prefix = pane_env_prefix()
+    assert "PYTHONPATH=/data/repo/ClaudeTeam_wt_multi_team/src" in prefix
+
+
+def test_pane_env_prefix_omits_pythonpath_when_unset():
+    """Single-team back-compat: host deploys typically leave PYTHONPATH
+    unset and rely on the installed `claudeteam` package. The prefix
+    must NOT inject an empty PYTHONPATH= (which would clobber the
+    pane's import resolution to ''-based search and break `import
+    claudeteam` in the spawn shell)."""
+    with isolated_env(team={"agents": {"a": {}}}), env_patch(PYTHONPATH=None):
+        prefix = pane_env_prefix()
+    assert "PYTHONPATH=" not in prefix
+
+
 # ── provision_pane: LAZY ──────────────────────────────────────────
 
 
