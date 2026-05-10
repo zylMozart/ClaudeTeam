@@ -11,7 +11,11 @@
 后续 manager 在 #9 主体 done 之后追加"真群聊端到端验证基建"任务，
 最终目标 = 老板加新群被动观看 team B 完整链路滚动演示。
 
-## 5 commit 时间线
+## commit 时间线（不含 summary 自身）
+
+> 本 summary 是 commit #6 (07709c0)，是 meta 档不在下表里；本表只列
+> 落地能力 + 直接配套 doc 的 5 commit。后续 CR follow-up commit 也
+> 不进表（避免动来动去），整体 commit 数以 `git log --oneline 4c01976..` 为准。
 
 | SHA | message | 性质 |
 |---|---|---|
