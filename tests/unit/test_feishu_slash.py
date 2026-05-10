@@ -16,12 +16,27 @@ def _elements(reply):
 
 
 def _all_markdown(reply) -> str:
-    """Concatenate every `tag: markdown` element's content. R172.b:
-    column_set was dropped, so all card body content lives in plain
-    markdown elements — this helper lets tests assert on text
-    substrings without caring about element ordering or layout."""
-    return "\n".join(e.get("content", "") for e in _elements(reply)
-                     if e.get("tag") == "markdown")
+    """Concatenate every text-bearing element's content. Tolerant of:
+      - v2 `tag:"markdown"` element (handler-inline elements like
+        `{"tag":"markdown", "content":"**🖥️ 主机总览**"}` in slash.py
+        still emit v2 — confirmed safe-to-render via 2 send+GET probes
+        om_x100b6f3350887ca0c2d5116ec6916a5 (v1+hr) +
+        om_x100b6f335093ed38c2aa957782967cd (v1+v2-markdown))
+      - v1 `tag:"div"` + nested `text.tag:"lark_md"` (column_set_*
+        post-2026-05-10 revert for boss-tenant disclaimer fix)
+
+    Works for now — caveat: server tolerance of v2 markdown nested in v1
+    wrapper is empirical (boss tenant), no spec backing. Future Feishu
+    server upgrade could tighten — follow-up TODO: full slash.py audit
+    + per-element probe to either rewrite all inline markdown to
+    md_element or document the boundary explicitly."""
+    out = []
+    for e in _elements(reply):
+        if e.get("tag") == "markdown":
+            out.append(e.get("content", ""))
+        elif e.get("tag") == "div" and isinstance(e.get("text"), dict):
+            out.append(e["text"].get("content", ""))
+    return "\n".join(out)
 
 
 def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
