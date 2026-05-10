@@ -6,20 +6,29 @@ from claudeteam.feishu.cards import (
 )
 
 
-def test_simple_card_emits_v2_schema_shape():
-    """R159: card v2 schema — `schema:"2.0"`, `body.elements` list with a
-    single `tag:"markdown"` element. v1's `config.wide_screen_mode` and
-    nested `text.tag:"lark_md"` are gone; v2's markdown element renders
-    fenced code blocks + nested lists which v1 silently dropped."""
+def test_simple_card_emits_v1_lark_md_shape():
+    """2026-05-10: reverted to v1 schema. v2 (schema:'2.0' + tag:'markdown')
+    triggers Feishu server-side fallback — server replaces body with
+    '请升级至最新版本客户端，以查看内容' disclaimer instead of rendering
+    the real content (3-schema send+GET probe verified). v1 lark_md
+    survives unchanged.
+
+    Shape: top-level `config` + `header` + flat `elements` list (no
+    `body` wrapper); each element is a `div` with nested `text.tag='lark_md'`.
+    """
     card = simple_card("Hello", "**bold** body")
-    assert card["schema"] == "2.0"
-    assert card["header"]["title"]["content"] == "Hello"
+    assert card["config"]["wide_screen_mode"] is True
     assert card["header"]["title"]["tag"] == "plain_text"
+    assert card["header"]["title"]["content"] == "Hello"
     assert card["header"]["template"] == "blue"  # default
-    elements = card["body"]["elements"]
+    elements = card["elements"]
     assert len(elements) == 1
-    assert elements[0]["tag"] == "markdown"
-    assert elements[0]["content"] == "**bold** body"
+    assert elements[0]["tag"] == "div"
+    assert elements[0]["text"]["tag"] == "lark_md"
+    assert elements[0]["text"]["content"] == "**bold** body"
+    # 反向防回 v2 schema: 'schema' key + 'body' wrapper 不应出现
+    assert "schema" not in card
+    assert "body" not in card
 
 
 def test_simple_card_accepts_color_override():
@@ -41,7 +50,7 @@ def test_simple_card_empty_body_becomes_space():
     """Feishu rejects elements with empty content; coerce to a single space
     so the card schema still validates instead of failing the send."""
     card = simple_card("Title", "")
-    assert card["body"]["elements"][0]["content"] == " "
+    assert card["elements"][0]["text"]["content"] == " "
 
 
 # ── beijing_stamp helper (R117 / R136-relocated) ─────────────────

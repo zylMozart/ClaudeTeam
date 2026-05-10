@@ -24,6 +24,22 @@ def _all_markdown(reply) -> str:
                      if e.get("tag") == "markdown")
 
 
+def _body_text(reply) -> str:
+    """Pull the first element's text content, tolerant of both card
+    shapes. simple_card reverted to v1 (lark_md div) on 2026-05-10
+    after the v2 markdown element triggered Feishu's '请升级' fallback
+    in the boss's tenant; rich_card stayed v2 (multi-section caller).
+    Tests run mixed handlers so this normaliser keeps assertions
+    short across both shapes."""
+    elts = _elements(reply)
+    if not elts:
+        return ""
+    first = elts[0]
+    if isinstance(first.get("text"), dict):
+        return first["text"].get("content", "")
+    return first.get("content", "")
+
+
 def _ctx(*, agents=("manager", "worker_cc", "worker_codex"),
          session="ClaudeTeam", run=None, sleep=None, background=None,
          lazy_agents=()):
@@ -55,7 +71,7 @@ def test_help_returns_card_listing_all_commands():
     reply = slash.dispatch("/help", _ctx())
     assert isinstance(reply, dict), f"/help should return a card dict, got {type(reply)}"
     assert reply["header"]["title"]["content"] == "🆘 ClaudeTeam 自定义斜杠命令"
-    body = reply["body"]["elements"][0]["content"]
+    body = _body_text(reply)
     for c in ("/help", "/team", "/health", "/usage", "/tmux",
               "/send", "/compact", "/stop", "/clear"):
         assert c in body
@@ -87,7 +103,7 @@ def test_team_classifies_each_pane_state_with_emoji():
     assert isinstance(reply, dict)
     title = reply["header"]["title"]["content"]
     assert "/team" in title and "员工实时状态" in title
-    body = reply["body"]["elements"][0]["content"]
+    body = _body_text(reply)
     assert "💤" in body and "manager" in body         # bypass marker → idle
     assert "🔄" in body and "worker_cc" in body       # esc to interrupt → working
     assert "🔘" in body and "worker_codex" in body    # tail-fallback
@@ -122,7 +138,7 @@ def test_team_card_reflects_live_toml_after_adding_agent():
         # ctx and re-read from disk → see exactly the 2 agents.
         reply1 = slash.dispatch("/team",
                                 _ctx(agents=("manager", "worker_cc")))
-        body1 = reply1["body"]["elements"][0]["content"]
+        body1 = _body_text(reply1)
         assert "2 agents" in body1
         assert "worker_codex" not in body1
 
@@ -145,7 +161,7 @@ def test_team_card_reflects_live_toml_after_adding_agent():
         # Same ctx (stale 2-agent), but handler reads disk → 3 agents.
         reply2 = slash.dispatch("/team",
                                 _ctx(agents=("manager", "worker_cc")))
-        body2 = reply2["body"]["elements"][0]["content"]
+        body2 = _body_text(reply2)
         assert "3 agents" in body2
         assert "worker_codex" in body2
 
@@ -175,7 +191,7 @@ def test_team_card_drops_agent_removed_from_toml_live():
         # 3 agents
         reply1 = slash.dispatch("/team",
                                 _ctx(agents=("manager", "worker_cc", "worker_codex")))
-        body1 = reply1["body"]["elements"][0]["content"]
+        body1 = _body_text(reply1)
         assert "3 agents" in body1
         assert "worker_codex" in body1
 
@@ -191,7 +207,7 @@ def test_team_card_drops_agent_removed_from_toml_live():
         # Stale ctx still says 3 agents, but live read sees 2
         reply2 = slash.dispatch("/team",
                                 _ctx(agents=("manager", "worker_cc", "worker_codex")))
-        body2 = reply2["body"]["elements"][0]["content"]
+        body2 = _body_text(reply2)
         assert "2 agents" in body2
         assert "worker_codex" not in body2
 
@@ -219,7 +235,7 @@ def test_team_card_reflects_lazy_flag_added_to_toml_live():
         reply1 = slash.dispatch("/team",
                                 _ctx(agents=("manager", "worker_cc")))
         assert reply1["header"]["template"] == "yellow"
-        body1 = reply1["body"]["elements"][0]["content"]
+        body1 = _body_text(reply1)
         assert "🛑" in body1
 
         # Operator edits toml: mark worker_cc lazy
@@ -235,7 +251,7 @@ def test_team_card_reflects_lazy_flag_added_to_toml_live():
         reply2 = slash.dispatch("/team",
                                 _ctx(agents=("manager", "worker_cc")))
         assert reply2["header"]["template"] == "green"
-        body2 = reply2["body"]["elements"][0]["content"]
+        body2 = _body_text(reply2)
         assert "⏸" in body2
         assert "🛑" not in body2
 
@@ -307,7 +323,7 @@ def test_team_card_keeps_green_when_only_unhealthy_is_lazy():
                                _ctx(agents=("manager", "worker_lazy"),
                                     lazy_agents={"worker_lazy"}))
     assert reply["header"]["template"] == "green"
-    body = reply["body"]["elements"][0]["content"]
+    body = _body_text(reply)
     # Lazy worker shown with ⏸ glyph (not 🛑) and a "lazy" hint
     assert "⏸" in body
     assert "worker_lazy" in body
@@ -334,7 +350,7 @@ def test_team_card_still_yellow_for_truly_dead_pane():
         reply = slash.dispatch("/team",
                                _ctx(agents=("manager", "worker_cc")))
     assert reply["header"]["template"] == "yellow"
-    body = reply["body"]["elements"][0]["content"]
+    body = _body_text(reply)
     assert "🛑" in body  # honest failure glyph kept
 
 
@@ -650,7 +666,7 @@ def test_tmux_captures_specified_pane():
     title = reply["header"]["title"]["content"]
     assert "/tmux worker_cc" in title
     assert "ClaudeTeam" in title  # session shown in brackets
-    body = reply["body"]["elements"][0]["content"]
+    body = _body_text(reply)
     assert "```" in body  # fenced
     assert "line1\nline2\nline3" in body
 
