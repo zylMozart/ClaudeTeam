@@ -48,7 +48,7 @@ from pathlib import Path
 
 from claudeteam.feishu import chat as _chat
 from claudeteam.feishu.cards import simple_card
-from claudeteam.runtime import config, paths, pidlock, tunables, watchdog
+from claudeteam.runtime import config, paths, pidlock, tunables, watchdog, pane_supervisor
 from claudeteam.util import maybe_print_help
 
 
@@ -124,6 +124,10 @@ def main(argv: list[str]) -> int:
     try:
         while True:
             watchdog.supervise(specs, states, alert_fn=alert_fn)
+            try:
+                pane_supervisor.sweep()
+            except Exception as e:
+                print(f"  ⚠️ watchdog: pane sweep failed: {e}")
             now = time.time()
             if now - last_cred_check >= cred_check_interval_s:
                 _maybe_refresh_claude_oauth(now)

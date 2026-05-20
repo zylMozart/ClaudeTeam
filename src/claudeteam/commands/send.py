@@ -68,7 +68,7 @@ def main(argv: list[str]) -> int:
         cfg = config.agent_config(to) if to in config.agent_names() else {}
         if cfg.get("lazy") and not wake.is_ready(target, adapter):
             from claudeteam.runtime import tunables
-            spawn_cmd = (f"{lifecycle.pane_env_prefix()} "
+            spawn_cmd = (f"{lifecycle.pane_env_prefix(to)} "
                          f"{adapter.spawn_cmd(to, config.agent_model(to))}")
             wake.wake_if_dormant(
                 target, adapter,

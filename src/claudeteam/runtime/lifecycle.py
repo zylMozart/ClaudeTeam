@@ -187,13 +187,16 @@ def _ensure_claude_agent_home(agent: str) -> None:
             pass
 
 
-def pane_env_prefix() -> str:
+def pane_env_prefix(agent: str) -> str:
     """Build a shell env prefix that, prepended to a spawn_cmd, makes the
     spawned process inherit CLAUDETEAM_STATE_DIR and the Feishu env so
     worker agents calling `claudeteam say` write to the project state
     dir, not `~/.claudeteam`.
     """
-    parts = [f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}"]
+    parts = [
+        f"CLAUDETEAM_STATE_DIR={shlex.quote(str(paths.state_dir()))}",
+        f"CLAUDETEAM_AGENT_NAME={shlex.quote(agent)}",
+    ]
     for var in _PROPAGATED_ENV:
         val = env_str(var)
         if val:
@@ -274,7 +277,7 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
         import sys
         print(f"  ⚠️ {agent}: {e}", file=sys.stderr)
         return CONFIG_ERROR
-    cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, model)}"
+    cmd = f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, model)}"
     if not tmux.spawn_agent(target, cmd):
         return SPAWN_FAILED
     # 60s ready timeout (was 20s): fresh container claude panes go

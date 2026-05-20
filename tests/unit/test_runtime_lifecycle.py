@@ -27,14 +27,14 @@ def test_pane_env_prefix_always_includes_state_dir():
     """Even with no other env set, STATE_DIR is always emitted so the
     spawned pane never falls back to ~/.claudeteam."""
     with isolated_env(team={"agents": {"a": {}}}):
-        prefix = pane_env_prefix()
+        prefix = pane_env_prefix("a")
     assert prefix.startswith("CLAUDETEAM_STATE_DIR=")
 
 
 def test_pane_env_prefix_propagates_lark_profile_when_set():
     with isolated_env(team={"agents": {"a": {}}}), env_patch(
             LARK_CLI_PROFILE="prod"):
-        prefix = pane_env_prefix()
+        prefix = pane_env_prefix("a")
     assert "LARK_CLI_PROFILE=prod" in prefix
 
 
@@ -45,7 +45,7 @@ def test_pane_env_prefix_skips_unset_vars():
             LARK_CLI_NO_PROXY=None,
             CLAUDETEAM_LARK_SEND_AS=None,
             CLAUDETEAM_DEFAULT_MODEL=None):
-        prefix = pane_env_prefix()
+        prefix = pane_env_prefix("a")
     # Only state_dir survives (team_file/runtime_config are set by isolated_env)
     assert "LARK_CLI_PROFILE=" not in prefix
     assert "LARK_CLI_NO_PROXY=" not in prefix
@@ -63,7 +63,7 @@ def test_pane_env_prefix_propagates_feishu_app_credentials():
             FEISHU_APP_SECRET="newSecret123",
             LARKSUITE_CLI_APP_ID="cli_NEW",
             LARKSUITE_CLI_APP_SECRET="newSecret123"):
-        prefix = pane_env_prefix()
+        prefix = pane_env_prefix("a")
     assert "FEISHU_APP_ID=cli_NEW" in prefix
     assert "FEISHU_APP_SECRET=newSecret123" in prefix
     assert "LARKSUITE_CLI_APP_ID=cli_NEW" in prefix
@@ -75,7 +75,7 @@ def test_pane_env_prefix_shell_quotes_paths_with_spaces():
     `eval $(...)` in a downstream shell would split on the space."""
     with isolated_env(team={"agents": {"a": {}}}), env_patch(
             LARK_CLI_PROFILE="my profile"):
-        prefix = pane_env_prefix()
+        prefix = pane_env_prefix("a")
     # quoted form: 'my profile' (single quotes) — never raw `my profile`
     assert "'my profile'" in prefix
 

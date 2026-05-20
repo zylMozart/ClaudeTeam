@@ -87,7 +87,7 @@ def _build_wake_args(agent: str, adapter) -> dict:
     (lifecycle.pane_env_prefix, identity.init_prompt, status upsert).
     """
     from claudeteam.runtime import tunables
-    spawn_cmd = f"{pane_env_prefix()} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
+    spawn_cmd = f"{pane_env_prefix(agent)} {adapter.spawn_cmd(agent, config.agent_model(agent))}"
     return {
         "spawn_cmd": spawn_cmd,
         "init_msg": _identity.init_prompt(agent),

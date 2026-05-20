@@ -116,7 +116,7 @@ def test_send_calls_wake_only_for_lazy_agent():
                             has_window=lambda *a, **kw: True,
                             inject=lambda *a, **kw: None):
                 with attr_patch(lifecycle,
-                                pane_env_prefix=lambda: "X=Y"):
+                                pane_env_prefix=lambda agent: "X=Y"):
                     rc, _, _ = run_cli(
                         ["send", "worker_lazy", "manager", "hi"])
     assert rc == 0
