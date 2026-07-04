@@ -164,6 +164,23 @@ class CliAdapter(ABC):
         """
         return False
 
+    def acp_argv(self, agent: str, model: str) -> list[str] | None:
+        """Argv for this CLI's ACP adapter subprocess (JSON-RPC over stdio),
+        or None if the CLI has no ACP support — the agent then runs on the
+        tmux-pane runner. Overriders return e.g. ["claude-code-acp"].
+
+        When this returns non-None the agent DEFAULTS to `runner = "acp"`
+        (see config.agent_runner); the operator can pin `runner = "tmux"`
+        per agent to opt out."""
+        return None
+
+    def acp_env(self, agent: str, model: str) -> dict[str, str]:
+        """Extra env for the ACP subprocess, merged over the inherited
+        environment + the agent_auth credential resolution. Same duties as
+        the env prefix in spawn_cmd (per-agent HOME, model selection,
+        silence-banners flags) but as a dict — no shell quoting."""
+        return {}
+
     def native_memory_path(self, agent: str) -> str | None:
         """Absolute path to this CLI's own always-loaded memory file
         (e.g. claude-code's ~/.claude/CLAUDE.md), or None if the CLI has

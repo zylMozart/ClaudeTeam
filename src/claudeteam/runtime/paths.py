@@ -76,6 +76,13 @@ def agent_home(agent: str) -> str:
     return str(agent_dir(agent) / "home")
 
 
+def acp_agent_dir(agent: str) -> Path:
+    """Per-agent ACP runner state: queue.json (delivery state machine),
+    session.json (sessionId for resume), transcript.log (streamed output,
+    what the viewer pane tails), agent.pid (host-spawned subprocess)."""
+    return state_dir() / "acp" / agent
+
+
 def share_dir() -> Path:
     """Team-shared knowledge space: durable experience the whole team reads
     and writes (distinct from `facts/`, which is live coordination state)."""

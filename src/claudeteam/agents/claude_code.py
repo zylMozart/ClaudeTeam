@@ -47,6 +47,25 @@ class ClaudeCodeAdapter(CliAdapter):
             login_token_env="CLAUDE_CODE_OAUTH_TOKEN",
         )
 
+    def acp_argv(self, agent: str, model: str) -> list[str]:
+        # Zed's official adapter (npm i -g @zed-industries/claude-code-acp),
+        # wraps the claude-agent-sdk and speaks ACP over stdio.
+        return ["claude-code-acp"]
+
+    def acp_env(self, agent: str, model: str) -> dict[str, str]:
+        env = {
+            "HOME": paths.agent_home(agent),
+            "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+            "DISABLE_AUTOUPDATER": "1",
+        }
+        if model:
+            # The SDK under claude-code-acp honours ANTHROPIC_MODEL the same
+            # way the claude CLI does — this is how per-agent `model =` from
+            # claudeteam.toml reaches an ACP agent (no --model flag on the
+            # adapter).
+            env["ANTHROPIC_MODEL"] = model
+        return env
+
     def native_memory_reloads(self) -> bool:
         # claude re-reads ~/.claude/CLAUDE.md after /compact, so an on-disk
         # anchor rewrite reaches the running agent without a re-inject.

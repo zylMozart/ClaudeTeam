@@ -374,6 +374,30 @@ def agent_cli(agent: str) -> str:
     return agent_config(agent).get("cli", "claude-code")
 
 
+def agent_runner(agent: str) -> str:
+    """Which runner drives this agent: "acp" (JSON-RPC subprocess hosted by
+    the router's AcpHost) or "tmux" (legacy pane + send-keys).
+
+    Explicit per-agent `runner = "acp" | "tmux"` in claudeteam.toml wins;
+    otherwise agents whose CLI has an ACP adapter default to "acp" and the
+    rest fall back to "tmux". An unknown `cli` value also resolves "tmux"
+    so the error surfaces on the (existing) adapter-lookup path instead of
+    here."""
+    try:
+        cfg = agent_config(agent)
+    except KeyError:
+        return "tmux"
+    v = str(cfg.get("runner") or "").strip().lower()
+    if v in ("acp", "tmux"):
+        return v
+    from claudeteam.agents import get_adapter
+    try:
+        adapter = get_adapter(cfg.get("cli", "claude-code"))
+    except KeyError:
+        return "tmux"
+    return "acp" if adapter.acp_argv(agent, "") is not None else "tmux"
+
+
 def agent_model(agent: str) -> str:
     """Resolve model: agent-specific → CLAUDETEAM_DEFAULT_MODEL → team default → 'opus'."""
     cfg = agent_config(agent)

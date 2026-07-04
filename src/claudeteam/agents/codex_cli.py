@@ -61,6 +61,15 @@ class CodexCliAdapter(CliAdapter):
             return model
         return "codex 自身配置"
 
+    def acp_argv(self, agent: str, model: str) -> list[str]:
+        # Zed's codex adapter (npm i -g @zed-industries/codex-acp).
+        return ["codex-acp"]
+
+    def acp_env(self, agent: str, model: str) -> dict[str, str]:
+        # Same isolation as spawn_cmd; model stays with codex's own config
+        # (only OpenAI-prefixed names are meaningful — mirrors display_model).
+        return {"CODEX_HOME": codex_home(agent), "CODEX_AGENT": agent}
+
     def native_memory_path(self, agent: str) -> str:
         # Codex reads $CODEX_HOME/AGENTS.md as global memory at session
         # start (AGENTS.override.md wins if present; we don't write it).
