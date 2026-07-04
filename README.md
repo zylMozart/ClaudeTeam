@@ -31,7 +31,7 @@
 > Clone https://github.com/zylMozart/ClaudeTeam.git, read docs/DEPLOYMENT.md and
 > follow its "Deploying with a coding agent" protocol: ask me the intake
 > questions first (which CLIs I have + are logged in, quick vs no-@ Feishu),
-> bring the team up, then verify every agent's pane before telling me it's done.
+> bring the team up, then verify every agent (per its runner) before telling me it's done.
 > ```
 
 ---
@@ -123,12 +123,14 @@ role = "数据分析员工"
 
 ## More
 
+- **ACP runner (default for claude-code / codex)** — the CLI runs headless inside the router speaking the [Agent Client Protocol](https://agentclientprotocol.com/): every message is durably queued with a delivery ACK (survives crashes — kill -9 the router and nothing is lost or doubled), busy/idle state is exact, and `/stop` is a deterministic protocol cancel. The agent's tmux window stays as a live read-only transcript. CLIs without ACP support keep the classic tmux pane runner.
+- **Standup reports** — while work is in flight, the manager inspects every agent on a timer (default 10 min, `[standup]` in the toml) and posts one consolidated progress report to the group: who's doing what, blockers, next step. Idle team = silence; `/standup` fires one on demand.
 - **Single-interface routing** — every group message goes to the manager only; workers never get raw boss messages. The manager is the sole orchestrator.
 - **One config file** — `claudeteam.toml` (Cargo-style, comment-friendly): chat_id, agents, models, card colors, publish filters, all in one place.
 - **Team templates** — start from a ready domain team (software dev, research, marketing, data, content) in [`templates/`](templates/): a `claudeteam.toml` plus a per-role **playbook** that becomes each agent's `CLAUDE.md` / `AGENTS.md`.
 - **`[chat.publish]` filter** — sender→receiver visibility per channel; silence noisy traffic without losing the audit log.
 - **Per-agent space + shared brain** — every agent gets its own `workspace/` scratch dir and isolated CLI home; the team shares a pooled experience log (`remember --team`) and a reusable `skills/` library, both surfaced on wake.
-- **Slash commands from chat** — `/help /team /health /usage /tmux /send /compact /stop /clear /task` + operational `/restart /shutdown /login`.
+- **Slash commands from chat** — `/help /team /health /usage /tmux /send /compact /stop /clear /task /standup` + operational `/restart /shutdown /login`.
 - **Almost zero deps** — standard-library Python (a `tomli` backport only on Python < 3.11); the only external runtime is Node, which powers the bundled Feishu sidecar and the ACP adapters (`lark-cli` is optional — only `--as user` sends need it).
 
 ---

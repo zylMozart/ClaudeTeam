@@ -30,7 +30,7 @@
 > ```
 > 克隆 https://github.com/zylMozart/ClaudeTeam.git，读 docs/DEPLOYMENT_zh.md，按里面
 > 「让 coding agent 替你部署」那套协议走：先问我入场问题（我装了并登录了哪些 CLI、
-> 飞书用 quick 还是免 @），起团队，再逐个 pane 验证过了，才告诉我搞定。
+> 飞书用 quick 还是免 @），起团队，再逐个 agent 验证过了，才告诉我搞定。
 > ```
 
 ---
@@ -120,13 +120,15 @@ role = "数据分析员工"
 
 ## 更多
 
+- **ACP runner（claude-code / codex 默认）** —— CLI 以 headless 方式跑在 router 里，说 [Agent Client Protocol](https://agentclientprotocol.com/)：每条消息都进持久化队列、带投递 ACK（扛得住崩溃——把 router `kill -9` 也不丢一条、不重一条），忙/闲状态精确，`/stop` 是确定性的协议级中断。agent 的 tmux 窗口保留成一个实时的只读 transcript。不支持 ACP 的 CLI 照旧走经典 tmux pane runner。
+- **Standup 定时汇报** —— 活儿在跑的时候，主管按定时器巡视每个 agent（默认 10 分钟，toml 里 `[standup]` 调），往群里发一条合并的进度汇报：谁在干什么、卡点、下一步。团队空闲 = 沉默；`/standup` 随时手动来一轮。
 - **单接口路由** —— 群里任何消息都只进主管；员工不会直接收老板原话。主管是唯一调度入口。
 - **单一配置文件** —— `claudeteam.toml`（Cargo 风格、可写注释）：chat_id / agents / 模型 / 卡片色 / publish 过滤都在一起。
 - **团队模板** —— 从 [`templates/`](../templates/) 里现成的领域团队起步（软件开发 / 科研 / 营销 / 数据 / 内容）：一个 `claudeteam.toml` + 每个角色一份 **playbook**，会成为该 agent 的 `CLAUDE.md` / `AGENTS.md`。
 - **`[chat.publish]` 过滤** —— 按 sender→receiver 维度控可见性，静默噪声但保审计。
 - **每个 agent 自己的空间 + 共享大脑** —— 每个 agent 有自己的 `workspace/` 草稿区和隔离 CLI home；团队共享经验池（`remember --team`）和可复用 `skills/` 库，wake 时都注入。
-- **群里斜杠命令** —— `/help /team /health /usage /tmux /send /compact /stop /clear /task`，外加运维三条 `/restart /shutdown /login`。
-- **几乎零依赖** —— 标准库 Python（仅在 Python < 3.11 上带一个 `tomli` 后备）；唯一外部 runtime 是 `lark-cli`（Node）。
+- **群里斜杠命令** —— `/help /team /health /usage /tmux /send /compact /stop /clear /task /standup`，外加运维三条 `/restart /shutdown /login`。
+- **几乎零依赖** —— 标准库 Python（仅在 Python < 3.11 上带一个 `tomli` 后备）；唯一外部 runtime 是 Node，跑内置飞书 sidecar 和 ACP 适配器（`lark-cli` 可选——只有 `--as user` 发消息需要它）。
 
 ---
 

@@ -10,6 +10,12 @@ projects it into that agent's identity (its native `CLAUDE.md` / `AGENTS.md` /
 knowing how its role actually works, not just a one-line title. You write the role
 content; the say/send/memory mechanics are added automatically.
 
+Agents on `claude-code` / `codex-cli` in these templates run on the **ACP runner**
+by default — install the protocol adapters first
+(`npm i -g @zed-industries/claude-code-acp @zed-industries/codex-acp`; see
+[DEPLOYMENT](../docs/DEPLOYMENT.md)). **Standup** progress reports are also on by
+default; tune the cadence under `[standup]` in `claudeteam.toml`.
+
 ## Use one
 
 1. Copy a folder's contents next to your `claudeteam.toml` — the `playbook` paths

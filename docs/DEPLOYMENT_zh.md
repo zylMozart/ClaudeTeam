@@ -10,7 +10,7 @@
 > **让 coding agent 替你部署？** 别让它自由发挥——我们见到的装崩案例，全是 agent 不问就
 > **瞎猜**一个团队编制，然后 `health` 一绿就说好了、根本没进 pane 看过。它动手前，先把它指到
 > 后面的 **[coding-agent 部署协议](#让-coding-agent-替你部署)**：**先问操作者那几个入场问题**，
-> 起团队后**逐个 pane 验证**，再回报「团队起来了」。
+> 起团队后**逐个 agent 验证**（按各自 runner 的验证面），再回报「团队起来了」。
 
 ---
 
@@ -149,10 +149,28 @@ claudeteam health             # 基础设施自检：binaries / env / tmux / rou
 `health` 应当全绿（容忍一条 `lark_profile blank` ⚠️）。**但 `health` 全绿只代表基础设施起来了——
 先走第 5 步再信任这个团队。**
 
-## 第 5 步 · 逐个 pane 验证
+## 第 5 步 · 验证每个 agent
 
-`health` 全绿 ≠ 团队能用：它从不往 agent *里面*看。每个 CLI 还得真的启动、登录、并吞下自己的
-身份 prompt——所以**每个 pane 都看一眼**。对编制里的**每个** agent：
+两种 runner，两套验证面——先看每个 agent 走的是哪种（`health` 里每个 agent 会打
+`acp ready (…)` 或 `pane ready (…)`）：
+
+**ACP agent**（claude-code / codex-cli 默认走这条）：CLI 以 headless 方式跑在 router 里，
+没有可以目检的 REPL pane——pane 只是个只读 transcript viewer。验证方式是让它*真干一件事*：
+
+```bash
+claudeteam health             # 每个 acp agent："acp ready" / "acp turn in flight" = 正常；
+                              # "pending work but no live host subprocess" = router 没起来 → 先修这个
+# 然后从飞书发一条真实消息（@agent 报到），盯着看：
+claudeteam peek <agent> 40    # transcript 里出现 "===== turn … =====" + 流式输出
+cat state/acp/<agent>/queue.json   # 那一行走 pending → prompting → done（stop_reason=end_turn）
+```
+
+一行永远卡在 `pending` → router 没在跑。turn 落成 `failed` → 读那一行里的报错 +
+`state/facts/logs.jsonl`（认证问题会在这里冒头，比如登录过期）。
+
+**Tmux agent**（kimi / gemini / qwen / … 或钉了 `runner = "tmux"` 的）：`health` 全绿 ≠
+团队能用：它从不往 pane *里面*看。每个 CLI 还得真的启动、登录、并吞下自己的
+身份 prompt——所以**每个 pane 都看一眼**。对编制里的**每个** tmux agent：
 
 ```bash
 claudeteam team               # 每 agent 一行：状态 + ♥ 心跳 —— 但死 pane 不会出现在这里，
@@ -177,8 +195,8 @@ done
 然后 `@manager 你好` → 约 30 秒内回复。可选群里探针：`/team`（每 agent ♥ 心跳 < 30 秒）、
 `/health`（每 agent + router + watchdog 卡片）。
 
-只有当**每个 pane 都 ✅** *并且*群里点名到位了，团队才算真起来了——对操作者要说的是这个，
-不是 `health` 全绿。
+只有当**每个 agent 都验证过**（acp：一个真实 turn 落成 `done`；tmux：pane ✅）*并且*
+群里点名到位了，团队才算真起来了——对操作者要说的是这个，不是 `health` 全绿。
 
 **拆除：** `claudeteam down`（停掉、保留状态）· `claudeteam reset`（连状态一起清）。
 
@@ -187,7 +205,7 @@ done
 ## 让 coding agent 替你部署
 
 一个 coding agent（Claude Code / Codex / …）来驱动这次部署，应当按**三条规则、依次**走——
-它们把上面这 5 步裹上「先问 + 逐个 pane 验证」的纪律，防止一次无人看管的安装悄悄跑歪。
+它们把上面这 5 步裹上「先问 + 逐个 agent 验证」的纪律，防止一次无人看管的安装悄悄跑歪。
 
 ### 规则 1 · 先问再动——入场问题
 
@@ -198,12 +216,14 @@ done
    **能自己测的就别问**——装没装你自己查：
    ```bash
    for c in claude codex gemini qwen kimi; do printf '%s: ' "$c"; command -v "$c" || echo "(未安装)"; done
+   # ACP 适配器——claude-code / codex-cli 的默认 runner 要靠它：
+   for c in claude-code-acp codex-acp; do printf '%s: ' "$c"; command -v "$c" || echo "(未安装——npm i -g @zed-industries/$c，或钉 runner=\"tmux\")"; done
    ```
    每个能解析到的，再问操作者确认它**登录了**（没登录的 CLI 起来就是一个*死 pane*——这是团队
    静默的头号原因）。**团队编制里只放两项都过的 CLI。** `codex` 没装 + 没登录，就别在团队里放
    `codex` worker。从 CLI 外面你*没法*彻底确认「登录了」，所以这仍是个值得问的真问题——它能在你
    建起一堆将来还要拆掉的 pane **之前**先把编制裁好。而且不管操作者怎么答，
-   [第 5 步](#第-5-步--逐个-pane-验证)才是**每个 agent 的最终关卡——包括 `claude` 主管**（没登录的
+   [第 5 步](#第-5-步--验证每个-agent)才是**每个 agent 的最终关卡——包括 `claude` 主管**（没登录的
    CLI 在那里就是个死 pane）：每个都当成**未确认、直到它的 pane 变 ✅**。拿不准时宁可**先少放几个
    agent、每个验通了再加**；别因为操作者说了句「都登录了」就跳过第 5 步。
 2. **团队编制**——默认那套全 `claude` 的 2-agent 团队，[`templates/`](../templates/) 里的领域
@@ -224,12 +244,12 @@ claude 登录上」*——操作者点头了再往下走。
 **读源码是*最后*手段、不是第一手段**——它不是禁区，但只有当你真的把步骤跑过、撞上了上面几步都
 解不了的问题，才去翻它；而且是读来诊断那个具体故障，仍然要把问题抛给操作者，而不是闷头改代码。
 
-### 规则 3 · 回报成功前，逐个 pane 验证
+### 规则 3 · 回报成功前，验证每个 agent
 
-`claudeteam health` 转绿只证明**基础设施**起来了——router、watchdog、tmux——**不**代表每个
-agent 的 CLI 真的启动 + 登录了。`up` 之后，走 [第 5 步](#第-5-步--逐个-pane-验证)、把**每个** pane
-都看一眼。只有当每个 pane 都是健康、已加载身份的 REPL **并且**主管的群里点名到位了，才对操作者
-说「团队起来了」。
+`claudeteam health` 转绿只证明**基础设施**起来了——router、watchdog、tmux、适配器二进制——
+**不**代表每个 agent 真能跑完一个 turn。`up` 之后，走 [第 5 步](#第-5-步--验证每个-agent)：
+ACP agent 推一条真实消息进去、看它的队列行落成 `done`；tmux agent 逐个 pane 目检。只有当
+每个 agent 都过了自己那种 runner 的检查**并且**主管的群里点名到位了，才对操作者说「团队起来了」。
 
 ---
 
@@ -251,12 +271,21 @@ cli = "claude-code"                           # claude-code | codex-cli | gemini
                                               #   | minimax | opencode | codewhale | openclaw | trae | hermes | pi
 role = "团队主管"                             # 渲染进 identity.md
 model = "opus"
+runner = "acp"                                # 可选——acp | tmux。默认：CLI 有 ACP 适配器
+                                              #   （claude-code / codex-cli）就走 acp，否则 tmux。
+                                              #   钉 "tmux" 可强制走旧的 pane 路径。
 specialty  = ["调度", "审阅"]                 # 可选——manager 派单 prompt 里会看到
 tone       = "稳重克制"                       # 可选——影响 LLM 语气
 notes      = "always answer in Chinese"       # 可选——自由形式的 prompt 加料
 playbook   = "manager.md"                     # 可选——角色指令 .md（→ 该 agent 的 CLAUDE.md/AGENTS.md）
 card_color = "blue"
 publish_overrides = { worker_to_user = false } # 单 agent 覆盖 [chat.publish]
+
+[standup]                                     # 定时进度汇报（见 Standup 一节）
+enabled = true
+interval_minutes = 10                         # 干活期间的汇报间隔；团队空闲 = 沉默
+activity_window_minutes = 45
+target = "manager"                            # 谁来巡视全员、向老板汇报
 
 [chat.publish]                                # 谁对谁可见的群过滤
 user_to_manager   = "always"                  # 老板 → 主管（必达）

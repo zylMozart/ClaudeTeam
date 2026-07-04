@@ -6,7 +6,9 @@
 
 For headless / server / multi-team setups. Nothing but Docker on the host — the
 image bakes in `claudeteam`, the Feishu sidecar, and `claude`/`codex`/`kimi`
-(plus `pi`/`hermes`). Shared config, model-backend, commands, and the rest of the
+(plus `pi`/`hermes`). The ACP protocol adapters for `claude-code` / `codex`
+(`claude-code-acp` / `codex-acp` — required by their default runner) are baked in
+too. Shared config, model-backend, commands, and the rest of the
 troubleshooting live in the [Host deploy](DEPLOYMENT.md) guide.
 
 > **macOS:** start Docker Desktop first (`open -a Docker`, wait for the whale to

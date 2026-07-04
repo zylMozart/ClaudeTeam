@@ -13,7 +13,7 @@ on Docker / a server → see [Docker deploy](DEPLOYMENT_docker.md).
 > calling `health` green without ever looking inside the panes. Before it starts,
 > point it at the **[coding-agent deploy protocol](#deploying-with-a-coding-agent)**
 > further down: **ask the operator the intake questions first**, then **verify
-> every agent's pane** before telling them the team is up.
+> every agent** (per its runner) before telling them the team is up.
 
 ---
 
@@ -173,11 +173,31 @@ then kicks the manager to run a group roll-call. `health` should be green (one
 `lark_profile blank` ⚠️ is tolerable). **But green `health` only means the
 infrastructure is up — go to Step 5 before you trust the team.**
 
-## Step 5 · Verify each agent's pane
+## Step 5 · Verify each agent
 
-Green `health` ≠ a working team: it never looks *inside* an agent. Each CLI still
-has to have actually launched, authenticated, and swallowed its identity prompt —
-so **look at every pane**. For **each** agent in your roster:
+Two runners, two verification surfaces — check which one each agent is on
+first (`health` prints `acp ready (…)` vs `pane ready (…)` per agent):
+
+**ACP agents** (claude-code / codex-cli by default): the CLI runs headless
+inside the router, so there is no REPL pane to eyeball — the pane is a
+read-only transcript viewer. Verify by making it *do* something:
+
+```bash
+claudeteam health             # each acp agent: "acp ready" / "acp turn in flight" = good;
+                              # "pending work but no live host subprocess" = router down → fix that first
+# then send one real message through Feishu (@agent 报到) and watch:
+claudeteam peek <agent> 40    # transcript shows "===== turn … =====" + streamed output
+cat state/acp/<agent>/queue.json   # the row goes pending → prompting → done (stop_reason=end_turn)
+```
+
+A row stuck `pending` forever → router isn't running. A turn that settles
+`failed` → read the error in the row + `state/facts/logs.jsonl` (auth issues
+surface here, e.g. an expired login).
+
+**Tmux agents** (kimi / gemini / qwen / … or `runner = "tmux"` pins): green
+`health` ≠ a working team — it never looks *inside* the pane. Each CLI still
+has to have actually launched, authenticated, and swallowed its identity
+prompt — so **look at every pane**. For **each** tmux agent in your roster:
 
 ```bash
 claudeteam team               # one line per agent that reported — but a DEAD pane won't appear here,
@@ -204,8 +224,9 @@ a roll-call** and each worker reports in; then `@manager 你好` → reply in ~3
 Optional in-group probes: `/team` (each agent's ♥ heartbeat < 30 s), `/health`
 (per-agent + router + watchdog card).
 
-Only once **every pane is ✅** *and* the group roll-call landed is the team
-really up — that, not green `health`, is what you tell the operator.
+Only once **every agent is verified** (acp: a real turn completed `done`;
+tmux: pane ✅) *and* the group roll-call landed is the team really up — that,
+not green `health`, is what you tell the operator.
 
 **Tear down:** `claudeteam down` (stop, keep state) · `claudeteam reset` (also wipe state).
 
@@ -215,7 +236,7 @@ really up — that, not green `health`, is what you tell the operator.
 
 A coding agent (Claude Code / Codex / …) driving this deploy should follow
 **three rules, in order** — they wrap the 5 steps above with the ask-first +
-verify-panes discipline that keeps an unattended install from quietly going
+verify-every-agent discipline that keeps an unattended install from quietly going
 wrong.
 
 ### Rule 1 · Ask before you act — the intake
@@ -228,6 +249,8 @@ produces a dead team later.
    Check *install* yourself — don't ask what you can test:
    ```bash
    for c in claude codex gemini qwen kimi; do printf '%s: ' "$c"; command -v "$c" || echo "(not installed)"; done
+   # ACP adapters — required for the DEFAULT runner of claude-code / codex-cli:
+   for c in claude-code-acp codex-acp; do printf '%s: ' "$c"; command -v "$c" || echo "(not installed — npm i -g @zed-industries/$c, or pin runner=\"tmux\")"; done
    ```
    For each that resolves, ask the operator to confirm it's **logged in** (a CLI
    that isn't logged in comes up as a *dead pane* — this is the #1 cause of a
@@ -236,7 +259,7 @@ produces a dead team later.
    *can't* fully verify "logged in" from outside the CLI, so this stays a real
    question worth asking — it prunes the roster **before** you build panes you'd
    have to tear down. And whatever the operator answers,
-   [Step 5](#step-5--verify-each-agents-pane) is the **final gate for every agent
+   [Step 5](#step-5--verify-each-agent) is the **final gate for every agent
    — the `claude` manager included** (a not-logged-in CLI is a dead pane there):
    treat each one as **unconfirmed until its pane is ✅**. When unsure, start with
    fewer agents and add more once each is proven; never skip Step 5 just because
@@ -266,13 +289,14 @@ off-limits, but reach for it only *after* you've actually run the steps and hit
 a problem none of the above resolves; then read to diagnose that specific
 failure, and still surface it to the operator rather than silently editing code.
 
-### Rule 3 · Verify every pane before you declare success
+### Rule 3 · Verify every agent before you declare success
 
 `claudeteam health` going green proves the **infrastructure** is up — router,
-watchdog, tmux — **not** that each agent's CLI actually booted and
-authenticated. After `up`, walk [Step 5](#step-5--verify-each-agents-pane) and
-eyeball **every** pane. Only tell the operator "the team is up" once every pane
-is a healthy, identity-loaded REPL **and** the manager's group roll-call landed.
+watchdog, tmux, adapter binaries — **not** that each agent can actually run a
+turn. After `up`, walk [Step 5](#step-5--verify-each-agent): for ACP agents
+push one real message through and watch its queue row settle `done`; for tmux
+agents eyeball every pane. Only tell the operator "the team is up" once every
+agent passed its runner's check **and** the manager's group roll-call landed.
 
 ---
 
@@ -295,12 +319,21 @@ cli = "claude-code"                           # claude-code | codex-cli | gemini
                                               #   | minimax | opencode | codewhale | openclaw | trae | hermes | pi
 role = "团队主管"                             # rendered into identity.md
 model = "opus"
+runner = "acp"                                # optional — acp | tmux. Default: acp when the CLI has an
+                                              #   ACP adapter (claude-code / codex-cli), else tmux.
+                                              #   Pin "tmux" to force the legacy pane path.
 specialty  = ["调度", "审阅"]                 # optional — manager sees this in dispatch prompt
 tone       = "稳重克制"                       # optional — biases LLM tone
 notes      = "always answer in Chinese"       # optional — free-form prompt addendum
 playbook   = "manager.md"                     # optional — a role-instruction .md (→ its CLAUDE.md/AGENTS.md)
 card_color = "blue"
 publish_overrides = { worker_to_user = false } # per-agent override of [chat.publish]
+
+[standup]                                     # periodic progress reports (see the Standup section)
+enabled = true
+interval_minutes = 10                         # cadence while work is in flight; idle team = silence
+activity_window_minutes = 45
+target = "manager"                            # who inspects everyone and reports to the boss
 
 [chat.publish]                                # who-talks-to-whom group filter
 user_to_manager   = "always"                  # boss → manager (always lands)

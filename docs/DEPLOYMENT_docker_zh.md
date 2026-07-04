@@ -5,8 +5,9 @@
 # Docker 部署
 
 无头 / 服务器 / 多团队用 Docker。宿主上除了 Docker 什么都不要——镜像已烤进 `claudeteam`、
-飞书 sidecar，以及 `claude`/`codex`/`kimi`（+`pi`/`hermes`）。通用的配置、模型后端、命令、
-其余故障排查见 [Host 部署](DEPLOYMENT_zh.md)。
+飞书 sidecar，以及 `claude`/`codex`/`kimi`（+`pi`/`hermes`）。`claude-code` / `codex` 的
+ACP 协议适配器（`claude-code-acp` / `codex-acp`——它们的默认 runner 要用）也一并内置了。
+通用的配置、模型后端、命令、其余故障排查见 [Host 部署](DEPLOYMENT_zh.md)。
 
 > **macOS：** 先启动 Docker Desktop（`open -a Docker`，等鲸鱼图标稳定）。daemon 没起来之前
 > `docker compose` 会报 `failed to connect to the docker API …`——用

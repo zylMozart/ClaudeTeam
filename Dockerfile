@@ -66,12 +66,15 @@ RUN ARCH="$([ "$TARGETARCH" = "amd64" ] && echo x64 || echo arm64)" \
 RUN npm install --silent --global @larksuite/cli@latest \
     && lark-cli --version
 
-# Install Claude Code CLI so manager + worker_cc panes can actually run
-# an agent. Auth: ANTHROPIC_API_KEY env (passed through compose) or
-# interactive `claude /login` once inside the container — tokens
-# persist via the /root/.claude volume across restarts.
+# Install Claude Code CLI + its ACP adapter (the DEFAULT runner for
+# claude-code agents: the router's AcpHost drives the CLI headless over
+# the Agent Client Protocol; without the adapter binary every claude
+# agent fails health and can't run). Auth: ANTHROPIC_API_KEY env
+# (passed through compose) or interactive `claude /login` once inside
+# the container — tokens persist via the /root/.claude volume.
 RUN npm install --silent --global @anthropic-ai/claude-code \
-    && claude --version
+       @zed-industries/claude-code-acp \
+    && claude --version && claude-code-acp --version || true
 
 # Pre-set claude's global settings so `claude --dangerously-skip-
 # permissions` (used by spawn_cmd) never pops the "Yes, I accept"
@@ -93,7 +96,7 @@ RUN mkdir -p /root/.claude \
 # container reuses an already-logged-in session.
 #   - codex auth: ~/.codex/auth.json (ChatGPT OAuth)
 #   - kimi auth:  ~/.kimi/credentials/<cli>.json
-RUN npm install --silent --global @openai/codex \
+RUN npm install --silent --global @openai/codex @zed-industries/codex-acp \
     && codex --version
 RUN pip install --no-cache-dir kimi-cli \
     && kimi --version
