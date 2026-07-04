@@ -415,6 +415,21 @@ def main(argv: list[str]) -> int:
     cmd = _build_subscribe_cmd(profile)
     print(f"🚀 router subscribing on chat {chat} (profile={profile or '<default>'})")
 
+    # ACP agents live as subprocesses of THIS daemon: the host consumes each
+    # agent's delivery queue (written by deliver/send from any process),
+    # drives the ACP turns, and ACKs rows. Started before the subscribe
+    # child so queued backlog begins draining even while catchup runs.
+    from claudeteam.runtime.acp_host import AcpHost
+    acp_host_svc = AcpHost()
+    acp_host_svc.start()
+
+    # Standup ticker: while the team is actively working, nudge the manager
+    # every standup.interval_minutes to inspect everyone and report progress
+    # to the boss. Idle team → silent.
+    from claudeteam.runtime.standup import StandupTicker
+    standup_ticker = StandupTicker()
+    standup_ticker.start()
+
     try:
         # Two precautions on the subscribe child:
         # - env=lark.subprocess_env() strips HTTPS_PROXY under LARK_CLI_NO_PROXY=1
@@ -440,6 +455,8 @@ def main(argv: list[str]) -> int:
     # past the except blocks, never running proc.terminate.)
     def _on_sigterm(*_):
         _terminate_subscribe_group(proc)
+        standup_ticker.stop()
+        acp_host_svc.stop()
         sys.exit(0)
     signal.signal(signal.SIGTERM, _on_sigterm)
 
@@ -539,4 +556,6 @@ def main(argv: list[str]) -> int:
         # node + lark-cli pair per up/down cycle.
         stop_watchdog.set()
         _terminate_subscribe_group(proc)
+        standup_ticker.stop()
+        acp_host_svc.stop()
         pidlock.release(pid_file)

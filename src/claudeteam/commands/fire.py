@@ -64,6 +64,19 @@ def main(argv: list[str]) -> int:
 
     local_facts.upsert_status(agent, local_facts.RETIRED_STATUS, "fired")
 
+    # ACP agent: the CLI subprocess lives in the router's AcpHost, not the
+    # pane we just killed. A durable `stop` row tears it down promptly (the
+    # worker's own retired-check would catch it too, just slower), and the
+    # stale session must not survive into a rehire.
+    if config.agent_runner(agent) == "acp":
+        from claudeteam.store import acp_queue
+        try:
+            acp_queue.enqueue(agent, "", kind="stop")
+            (paths.acp_agent_dir(agent) / "session.json").unlink(missing_ok=True)
+            print(f"  ⏹  {agent}: ACP subprocess stop queued")
+        except OSError:
+            pass
+
     # Archive the workspace — but only if there's actually something to
     # preserve (a roster cfg to stash, or a workspace dir). Re-firing an
     # already-fired agent (no cfg, no workspace) would otherwise write a

@@ -129,7 +129,7 @@ def test_send_calls_wake_only_for_lazy_agent():
     def fake_wake(*a, **kw):
         calls["wake_if_dormant"] += 1
     with isolated_env(team={"agents": {"worker_lazy": {
-            "cli": "claude-code", "lazy": True}}}):
+            "cli": "claude-code", "lazy": True, "runner": "tmux"}}}):
         with attr_patch(wake, is_ready=fake_is_ready,
                         wake_if_dormant=fake_wake):
             with attr_patch(tmux,

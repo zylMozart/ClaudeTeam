@@ -86,7 +86,7 @@ def test_pane_env_prefix_shell_quotes_paths_with_spaces():
 def test_provision_lazy_agent_sets_待命_and_skips_spawn():
     """Lazy agents in team.json get status 待命; spawn_agent is never
     called (the pane stays at a shell prompt)."""
-    team = {"agents": {"sleepy": {"cli": "claude-code", "lazy": True}}}
+    team = {"agents": {"sleepy": {"cli": "claude-code", "lazy": True, "runner": "tmux"}}}
     spawn_calls = []
     with isolated_env(team=team), tmux_patch(
             spawn_agent=lambda t, c: spawn_calls.append((str(t), c)) or True):
@@ -115,7 +115,7 @@ def test_provision_spawn_failure_returns_spawn_failed():
 def test_provision_ready_spawns_then_injects_init_prompt():
     """Happy path: spawn succeeds, wait_until_ready true, identity init
     is injected, status flips to 进行中."""
-    team = {"agents": {"alice": {"cli": "claude-code", "model": "opus"}}}
+    team = {"agents": {"alice": {"cli": "claude-code", "model": "opus", "runner": "tmux"}}}
     spawn_calls = []
     inject_calls = []
     with isolated_env(team=team), tmux_patch(
@@ -137,7 +137,7 @@ def test_provision_sources_env_from_file_never_inline():
     """The spawn command sent to the pane must SOURCE the env file, not
     carry `KEY=value` inline — otherwise secrets (FEISHU_APP_SECRET,
     OPENAI_API_KEY) end up in the pane scrollback + the agent's context."""
-    team = {"agents": {"a": {"cli": "claude-code"}}}
+    team = {"agents": {"a": {"cli": "claude-code", "runner": "tmux"}}}
     spawn_calls = []
     with isolated_env(team=team), tmux_patch(
             spawn_agent=lambda t, c: spawn_calls.append((str(t), c)) or True,
@@ -188,7 +188,7 @@ def test_provision_ready_no_init_when_marker_never_appears():
     pane is alive — status still flips to 进行中, but the identity
     init prompt is NOT injected (no point injecting into a CLI that
     might still be loading)."""
-    team = {"agents": {"a": {"cli": "claude-code"}}}
+    team = {"agents": {"a": {"cli": "claude-code", "runner": "tmux"}}}
     inject_calls = []
     with isolated_env(team=team), tmux_patch(
             spawn_agent=lambda t, c: True,
@@ -446,7 +446,7 @@ def test_provision_codex_trusts_workdir_in_per_agent_config():
     the trust entry in the wrong file → first-run trust prompt blocks the
     pane. Trust must now land in <agent_home>/.codex/config.toml."""
     from claudeteam.agents.codex_cli import codex_home
-    team = {"agents": {"worker_codex": {"cli": "codex-cli"}}}
+    team = {"agents": {"worker_codex": {"cli": "codex-cli", "runner": "tmux"}}}
     captured = []
     with isolated_env(team=team), tmux_patch(
             spawn_agent=lambda t, c: True,

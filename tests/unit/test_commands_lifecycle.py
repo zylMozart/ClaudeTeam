@@ -105,8 +105,8 @@ def test_start_creates_session_and_one_window_per_agent():
     team = {
         "session": "MyTeam",
         "agents": {
-            "manager":      {"cli": "claude-code", "model": "opus"},
-            "worker_codex": {"cli": "codex-cli",   "model": "gpt-5.5"},
+            "manager":      {"cli": "claude-code", "model": "opus", "runner": "tmux"},
+            "worker_codex": {"cli": "codex-cli",   "model": "gpt-5.5", "runner": "tmux"},
             "worker_kimi":  {"cli": "kimi-code"},
         },
     }
@@ -160,8 +160,8 @@ def test_start_picks_correct_spawn_cmd_per_cli():
     team = {
         "session": "T",
         "agents": {
-            "w_cc":    {"cli": "claude-code", "model": "sonnet"},
-            "w_codex": {"cli": "codex-cli",   "model": "gpt-5.5"},
+            "w_cc":    {"cli": "claude-code", "model": "sonnet", "runner": "tmux"},
+            "w_codex": {"cli": "codex-cli",   "model": "gpt-5.5", "runner": "tmux"},
         },
     }
     with _isolated_team(team), _fake_tmux() as fake:
@@ -179,7 +179,7 @@ def test_start_propagates_state_dir_into_pane_env():
     inherit CLAUDETEAM_STATE_DIR. The pane must SOURCE an env file that
     sets it — not an inline KEY=value prefix, which leaked secrets into
     the scrollback + the agent's context."""
-    team = {"session": "T", "agents": {"w_cc": {"cli": "claude-code"}}}
+    team = {"session": "T", "agents": {"w_cc": {"cli": "claude-code", "runner": "tmux"}}}
     with _isolated_team(team) as tmp, _fake_tmux() as fake:
         run_cli(["start"])
         cmd = next(c[2] for c in fake["calls"] if c[0] == "spawn_agent")
@@ -230,7 +230,7 @@ def test_hire_creates_window_spawns_and_writes_status():
 
 def test_hire_lazy_agent_skips_spawn_and_marks_standby():
     team = {"session": "S",
-            "agents": {"manager": {}, "lazy_w": {"cli": "claude-code", "lazy": True}}}
+            "agents": {"manager": {}, "lazy_w": {"cli": "claude-code", "lazy": True, "runner": "tmux"}}}
     with _isolated_team(team), _fake_tmux() as fake:
         fake["session_exists"].add("S")
         rc, out, _ = run_cli(["hire", "lazy_w"])
@@ -374,7 +374,7 @@ def test_restart_rebuilds_pane_without_archiving_or_removing():
     roster removal, NO 已停止. The safe model-switch / restart path."""
     import json
     from claudeteam.runtime import paths, archive
-    team = {"session": "S", "agents": {"manager": {}, "x": {"cli": "claude-code"}}}
+    team = {"session": "S", "agents": {"manager": {}, "x": {"cli": "claude-code", "runner": "tmux"}}}
     with _isolated_team(team) as tmp, _fake_tmux() as fake:
         fake["session_exists"].add("S")
         fake["windows"].add("S:x")
@@ -422,7 +422,7 @@ def test_hire_restores_fired_agent_from_archive():
     archived _roster.json + moves the workspace back, then provisions."""
     import json
     from claudeteam.runtime import paths, archive
-    team = {"session": "S", "agents": {"manager": {}, "x": {"cli": "claude-code", "model": "opus"}}}
+    team = {"session": "S", "agents": {"manager": {}, "x": {"cli": "claude-code", "model": "opus", "runner": "tmux"}}}
     with _isolated_team(team) as tmp, _fake_tmux() as fake:
         fake["session_exists"].add("S")
         fake["windows"].add("S:x")

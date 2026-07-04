@@ -299,6 +299,39 @@ worker_to_worker  = true                      # 群里显示 worker 之间的互
 
 后七个是 **OpenAI 兼容**（BYOK）—— 凭证 + 端点见下。
 
+### ACP runner（claude-code / codex-cli）
+
+ACP 能力的 CLI 默认 `runner = "acp"`：CLI 以 headless 子进程跑在 router 里，
+走 [Agent Client Protocol](https://agentclientprotocol.com/)（stdio 上的
+JSON-RPC）——投递进磁盘队列、带 ACK、忙闲状态精确、`/stop` 确定性中断，
+不再依赖 tmux send-keys + 抓屏。agent 的 tmux 窗口变成只读 transcript
+viewer（照旧能围观干活）。
+
+装好协议适配器：
+
+```bash
+npm i -g @zed-industries/claude-code-acp @zed-industries/codex-acp
+```
+
+想保留旧的 pane 行为，给 agent 钉 `runner = "tmux"`（kimi / gemini / qwen
+等无 ACP 的 CLI 自动走 tmux）。ACP agent 的运维面：
+`state/acp/<agent>/queue.json`（投递状态机）、`transcript.log`（viewer
+内容）、`claudeteam peek <agent>` 直读 transcript。
+
+### Standup：定时进度巡视汇报
+
+团队有活儿在干的时候，router 每隔 `interval_minutes` 让 manager 巡视
+一遍全员（每人在干什么、整体进度、卡点、下一步），汇总成一条汇报发到
+群里；团队空闲时不打扰。群里发 `/standup` 立即来一轮。
+
+```toml
+[standup]
+enabled = true              # 默认开
+interval_minutes = 10       # 干活期间的汇报间隔（8~10 分钟随意）
+activity_window_minutes = 45
+target = "manager"          # 谁来巡视汇报
+```
+
 ---
 
 ## 每个 agent 的模型后端（凭证 + 端点）

@@ -44,6 +44,27 @@ def _reidentify_one(agent: str, session: str, *,
     agent inside `adapter_for_agent`. Empty `cli` falls back to the
     config-driven lookup so the single-agent error contract stays.
     """
+    # Re-render identity.md from current config BEFORE the wake prompt —
+    # the prompt only tells the agent "go read your identity.md", so a
+    # stale disk file means the LLM picks up the OLD specialty / role /
+    # notes. Edits to claudeteam.toml only land via this rewrite.
+    try:
+        identity.write(agent)
+    except Exception as e:
+        print(f"  ⚠️ {agent}: identity write failed: {e}")
+        return False
+    # ACP agent: queue the init prompt as a durable turn (the pane is just
+    # a transcript viewer — injecting there would reach nobody).
+    if config.agent_runner(agent) == "acp":
+        from claudeteam.store import acp_queue
+        try:
+            acp_queue.enqueue(agent, identity.init_prompt(agent),
+                              sender="reidentify")
+        except OSError as e:
+            print(f"  ❌ {agent}: acp enqueue failed: {e}")
+            return False
+        print(f"  ✅ {agent} (acp: identity turn queued)")
+        return True
     target = tmux.Target(session, agent)
     if not tmux.has_window(target):
         print(f"  ⏭  {agent}: no pane in session {session}")
@@ -56,16 +77,6 @@ def _reidentify_one(agent: str, session: str, *,
             adapter = adapter_for_agent(agent)
     except KeyError as e:
         print(f"  ⚠️ {agent}: {e}")
-        return False
-    # Re-render identity.md from current config BEFORE injecting the
-    # wake prompt — the prompt only tells the pane "go read your
-    # identity.md", so a stale disk file means the LLM picks up the
-    # OLD specialty / role / notes. Edits to claudeteam.toml only
-    # land in the pane via this rewrite.
-    try:
-        identity.write(agent)
-    except Exception as e:
-        print(f"  ⚠️ {agent}: identity write failed: {e}")
         return False
     if not tmux.inject(target, identity.init_prompt(agent),
                        submit_keys=adapter.submit_keys()):

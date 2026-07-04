@@ -41,6 +41,20 @@ def main(argv: list[str]) -> int:
     except KeyError:
         return error_exit(f"❌ unknown agent: {agent} (not in claudeteam.toml)")
 
+    if config.agent_runner(agent) == "acp":
+        # ACP agent: its pane is just a tail -F viewer; the transcript file
+        # is the source of truth (and works even with tmux down).
+        from claudeteam.runtime.acp_host import transcript_file
+        tf = transcript_file(agent)
+        try:
+            lines = tf.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            print(f"(no transcript yet for {agent})")
+            return 0
+        tail = "\n".join(lines[-n:]).rstrip()
+        print(tail if tail else f"(empty transcript for {agent})")
+        return 0
+
     session = config.session_name()
     target = tmux.Target(session, agent)
     if not tmux.has_window(target):

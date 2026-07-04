@@ -26,6 +26,8 @@ Supported commands:
                                        (grouped by status; intent back-link;
                                        terminal columns fold to counts unless
                                        `all`)
+    /standup                           trigger one progress-report round now
+                                       (periodic cadence: toml [standup])
 
 Dispatch is a leading-token dict lookup (`/cmd args…` → handler(args, ctx))
 so detection and execution share one path — no per-handler regex preamble.
@@ -176,6 +178,7 @@ _HELP_TEXT = """🆘 ClaudeTeam 自定义斜杠命令（零 LLM，router/hook �
 /clear <agent>           → 送 /clear + 重新入职 init_msg（相当于 rehire）
 /task [all]              → 任务看板：按状态分组（只读）；已完成/已取消
                            默认折叠为计数，加 all 展开明细
+/standup                 → 立即来一轮全员进度巡视汇报（定时见 toml [standup]）
 /shutdown [确认]         → 下线 agent panes（保留 router/订阅/watchdog，便于 /restart 唤醒）；先回卡确认
 /restart                 → 重启整队（≈down→up）；清残留后拉起，直接执行
 /login <cli> [agent]     → 触发某 CLI 重新认证，群里弹验证链接/设备码
@@ -214,11 +217,22 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
     # shared interval (not N×0.4s) so /team doesn't stall the router loop.
     fired: dict[str, str] = {}
     to_probe: dict[str, tmux.Target] = {}
+    acp_states: dict[str, str] = {}
     for agent in team_agents:
         status = local_facts.get_status(agent)
         if status and status.get("status") == "已停止":
             fired[agent] = (status.get("task") or status.get("note")
                             or status.get("blocker") or "已停止")
+            continue
+        from claudeteam.runtime import config as _config
+        if _config.agent_runner(agent) == "acp":
+            # ACP agents: state comes from the delivery queue + host pid —
+            # exact turn lifecycle, no pane scraping.
+            from claudeteam.runtime import acp_host
+            try:
+                acp_states[agent] = acp_host.probe(agent)
+            except OSError:
+                acp_states[agent] = pane_probe.IDLE
         else:
             to_probe[agent] = tmux.Target(ctx.session, agent)
     try:
@@ -233,14 +247,19 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
             rows.append((agent, "🚫", f"已停止 ({fired[agent]})"))
             tally["🚫"] += 1
             continue
-        state = states.get(to_probe[agent], pane_probe.NO_WINDOW)
-        emoji, brief = _TEAM_STATE_GLYPH.get(state, ("🔘", state))
-        # A never-woken lazy agent is a shell placeholder (probe DEAD /
-        # NO_WINDOW) — normal before its first message arrives, so flip to
-        # ⏸ (keeps the team-color check below green) instead of 🛑 CLI down.
-        if state in (pane_probe.DEAD, pane_probe.NO_WINDOW) and agent in lazy_agents:
-            emoji = "⏸"
-            brief = "lazy (waiting for first message)"
+        if agent in acp_states:
+            state = acp_states[agent]
+            emoji, brief = _TEAM_STATE_GLYPH.get(state, ("🔘", state))
+            brief += " · acp"
+        else:
+            state = states.get(to_probe[agent], pane_probe.NO_WINDOW)
+            emoji, brief = _TEAM_STATE_GLYPH.get(state, ("🔘", state))
+            # A never-woken lazy agent is a shell placeholder (probe DEAD /
+            # NO_WINDOW) — normal before its first message arrives, so flip to
+            # ⏸ (keeps the team-color check below green) instead of 🛑 CLI down.
+            if state in (pane_probe.DEAD, pane_probe.NO_WINDOW) and agent in lazy_agents:
+                emoji = "⏸"
+                brief = "lazy (waiting for first message)"
         rows.append((agent, emoji, brief))
         tally[emoji] += 1
 
@@ -637,6 +656,12 @@ def _handle_compact(args: str, ctx: SlashContext) -> str:
     agent = (parts[0] if parts else _default_agent(ctx)).strip()
     if (warn := _bad_agent(agent, ctx)):
         return warn
+    from claudeteam.runtime import config as _config
+    if _config.agent_runner(agent) == "acp":
+        # No REPL to type /compact into. The SDK auto-compacts on context
+        # pressure; the manual escape hatch is a fresh session via /clear.
+        return (f"ℹ️ {agent} 走 ACP runner，上下文由其 SDK 自动压缩；"
+                f"要手动重置用 /clear {agent}（开新会话 + 重新入职）")
     # Per-CLI compaction command: claude/codex/kimi `/compact`, gemini/qwen
     # `/compress` (CliAdapter.compact_command). Inject the agent's OWN command,
     # not a hardcoded one.
@@ -678,10 +703,19 @@ def _handle_compact(args: str, ctx: SlashContext) -> str:
 
 
 def _stop_one(agent: str, ctx: SlashContext) -> bool:
-    """Send `agent`'s CLI-specific interrupt sequence to its pane (default
-    Esc; see CliAdapter.interrupt_keys). Returns True iff the key send
-    succeeded. Adapter lookup is defensive — an unknown cli falls back to
-    Esc rather than skipping the stop."""
+    """Interrupt `agent`'s current action. ACP agents get a durable
+    `cancel` control row (the AcpHost fires session/cancel — deterministic,
+    unlike a hopeful Esc). Tmux agents get the CLI-specific interrupt key
+    (default Esc; see CliAdapter.interrupt_keys). Adapter lookup is
+    defensive — an unknown cli falls back to Esc rather than skipping."""
+    from claudeteam.runtime import config as _config
+    if _config.agent_runner(agent) == "acp":
+        from claudeteam.store import acp_queue
+        try:
+            acp_queue.enqueue(agent, "", kind="cancel")
+            return True
+        except OSError:
+            return False
     from claudeteam.agents import adapter_for_agent
     try:
         keys = adapter_for_agent(agent).interrupt_keys()
@@ -725,6 +759,19 @@ def _handle_clear(args: str, ctx: SlashContext) -> str:
     agent = args.strip().split()[0]
     if (warn := _bad_agent(agent, ctx)):
         return warn
+    from claudeteam.runtime import config as _config
+    if _config.agent_runner(agent) == "acp":
+        # ACP context reset = discard the saved session (next message opens
+        # a fresh one and re-runs the identity turn) + stop the subprocess.
+        from claudeteam.runtime import paths as _paths
+        from claudeteam.store import acp_queue
+        try:
+            acp_queue.enqueue(agent, "", kind="stop")
+            (_paths.acp_agent_dir(agent) / "session.json").unlink(missing_ok=True)
+        except OSError as e:
+            return f"❌ /clear → {agent} · acp 会话重置失败: {e}"
+        return (f"✅ /clear → {agent} · acp 会话已作废，"
+                f"下一条消息将开新会话并重新入职")
     # All five CLIs expose `/clear`, but get it from the adapter rather than
     # hardcoding — so a CLI that names it differently stays correct.
     from claudeteam.agents import adapter_for_agent
@@ -1269,6 +1316,17 @@ def _login_run_subprocess(ctx: SlashContext, argv: list, env: dict,
         pass
 
 
+def _handle_standup(args: str, ctx: SlashContext) -> str:
+    """`/standup` — trigger one 巡视汇报 immediately (and reset the
+    ticker's cadence clock). The periodic firing is configured in
+    claudeteam.toml `[standup]` and runs inside the router."""
+    from claudeteam.runtime import standup
+    if standup.trigger_now(log=lambda *a, **k: None):
+        return ("📣 /standup · 已让 manager 巡视全员并汇报进度"
+                "（定时巡视间隔见 claudeteam.toml [standup]）")
+    return "❌ /standup · 巡视请求发送失败（manager 不在 roster 或投递失败）"
+
+
 _HANDLERS: dict[str, Callable[[str, SlashContext], str]] = {
     "/help": _handle_help,
     "/team": _handle_team,
@@ -1283,11 +1341,12 @@ _HANDLERS: dict[str, Callable[[str, SlashContext], str]] = {
     "/shutdown": _handle_shutdown,
     "/restart": _handle_restart,
     "/login": _handle_login,
+    "/standup": _handle_standup,
 }
-# 13 chat slash commands: /help /team /health /usage /tmux /send
-# /compact /stop /clear /task /shutdown /restart /login. Memory commands
-# (`claudeteam recall` / `forget` / `remember`) live only as agent-pane
-# CLIs, not chat slash.
+# 14 chat slash commands: /help /team /health /usage /tmux /send
+# /compact /stop /clear /task /shutdown /restart /login /standup.
+# Memory commands (`claudeteam recall` / `forget` / `remember`) live only
+# as agent-pane CLIs, not chat slash.
 
 
 def _split_cmd(text: str) -> tuple[str, str]:

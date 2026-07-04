@@ -4,7 +4,8 @@ from __future__ import annotations
 from helpers import isolated_env, run_cli, tmux_patch
 
 
-_TEAM = {"session": "S", "agents": {"manager": {}, "worker_cc": {}}}
+_TEAM = {"session": "S", "agents": {"manager": {"runner": "tmux"},
+                                    "worker_cc": {"runner": "tmux"}}}
 
 
 def test_peek_captures_pane_buffer_to_stdout():

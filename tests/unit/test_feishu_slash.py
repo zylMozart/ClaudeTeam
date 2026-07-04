@@ -65,9 +65,9 @@ def _team_env():
     the handler replies 未知 agent instead of touching the pane."""
     from helpers import isolated_env
     return isolated_env(team={"session": "ClaudeTeam", "agents": {
-        "manager": {"cli": "claude-code"},
-        "worker_cc": {"cli": "claude-code"},
-        "worker_codex": {"cli": "codex-cli"},
+        "manager": {"cli": "claude-code", "runner": "tmux"},
+        "worker_cc": {"cli": "claude-code", "runner": "tmux"},
+        "worker_codex": {"cli": "codex-cli", "runner": "tmux"},
     }})
 
 
@@ -194,8 +194,8 @@ def test_team_card_reflects_lazy_flag_added_to_toml_live():
     states = {"manager": pane_probe.IDLE, "worker_cc": pane_probe.DEAD}
 
     team = {"session": "ClaudeTeam", "agents": {
-        "manager":   {"cli": "claude-code"},
-        "worker_cc": {"cli": "claude-code"},
+        "manager":   {"cli": "claude-code", "runner": "tmux"},
+        "worker_cc": {"cli": "claude-code", "runner": "tmux"},
     }}
     with isolated_env(team=team), _probe_states(states):
         # Before: worker_cc is not lazy, CLI down → 🛑 → yellow team
@@ -209,8 +209,8 @@ def test_team_card_reflects_lazy_flag_added_to_toml_live():
         cf = paths.config_file()
         cf.write_text(
             '[team]\nsession = "ClaudeTeam"\n\n'
-            '[team.agents.manager]\ncli = "claude-code"\n\n'
-            '[team.agents.worker_cc]\ncli = "claude-code"\nlazy = true\n',
+            '[team.agents.manager]\ncli = "claude-code"\nrunner = "tmux"\n\n'
+            '[team.agents.worker_cc]\ncli = "claude-code"\nrunner = "tmux"\nlazy = true\n',
             encoding='utf-8')
         _tun.reset_cache()
 
@@ -300,8 +300,8 @@ def test_team_card_still_yellow_for_truly_dead_pane():
     states = {"manager": pane_probe.IDLE, "worker_cc": pane_probe.DEAD}
 
     team = {"session": "ClaudeTeam", "agents": {
-        "manager": {"cli": "claude-code"},
-        "worker_cc": {"cli": "claude-code"},  # no lazy
+        "manager": {"cli": "claude-code", "runner": "tmux"},
+        "worker_cc": {"cli": "claude-code", "runner": "tmux"},  # no lazy
     }}
     with isolated_env(team=team), _probe_states(states):
         reply = slash.dispatch("/team",

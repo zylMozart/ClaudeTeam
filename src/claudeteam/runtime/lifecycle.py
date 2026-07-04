@@ -442,6 +442,33 @@ SPAWN_FAILED = "spawn_failed"
 CONFIG_ERROR = "config_error"
 
 
+def _provision_acp_viewer(agent: str, target: tmux.Target) -> str:
+    """Provision an ACP agent: its CLI runs as a subprocess of the router's
+    AcpHost, NOT in this pane — the pane becomes a read-only viewer tailing
+    the agent's transcript so the operator keeps the "watch every employee
+    work" tmux experience. The identity init turn, real session spawn, and
+    status transitions all happen host-side on first prompt.
+
+    Provision itself only (a) ensures the transcript exists so tail -F has
+    a target, (b) starts the tail, (c) marks the agent 待命. Always READY —
+    an ACP agent needs no ready-marker wait (there's no TUI to boot)."""
+    from claudeteam.runtime.acp_host import transcript_file
+    tf = transcript_file(agent)
+    try:
+        tf.parent.mkdir(parents=True, exist_ok=True)
+        tf.touch(exist_ok=True)
+    except OSError:
+        pass
+    _ensure_agent_home(agent, config.agent_cli(agent))
+    viewer = (f"clear; echo '👁  {agent} · ACP runner · read-only transcript "
+              f"(agent runs inside router)'; "
+              f"tail -n 200 -F {shlex.quote(str(tf))}")
+    if not tmux.spawn_agent(target, viewer):
+        return SPAWN_FAILED
+    local_facts.upsert_status(agent, "待命", "acp: session starts on first message")
+    return READY
+
+
 def provision_pane(agent: str, target: tmux.Target) -> str:
     """Provision a freshly-created pane for `agent`.
 
@@ -494,6 +521,8 @@ def provision_pane(agent: str, target: tmux.Target) -> str:
     # output doesn't collide in the shared repo cwd (see the workspace
     # section that identity.render injects).
     paths.agent_workspace(agent).mkdir(parents=True, exist_ok=True)
+    if config.agent_runner(agent) == "acp":
+        return _provision_acp_viewer(agent, target)
     if cfg.get("lazy"):
         local_facts.upsert_status(agent, "待命", "lazy: CLI starts on first message")
         return LAZY

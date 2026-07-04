@@ -28,7 +28,7 @@ def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
 
 def test_health_all_green_returns_zero():
     """No reds AND no warnings → green footer."""
-    team = {"session": "S", "agents": {"manager": {"cli": "claude-code"}}}
+    team = {"session": "S", "agents": {"manager": {"cli": "claude-code", "runner": "tmux"}}}
     rc_cfg = {"chat_id": "oc_x", "lark_profile": "prod"}
     with isolated_env(team=team, runtime_config=rc_cfg), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]), \
@@ -92,7 +92,7 @@ def test_health_returns_one_when_pane_window_missing():
 
 
 def test_health_warns_when_pane_up_but_no_cli_marker():
-    team = {"session": "S", "agents": {"manager": {}}}
+    team = {"session": "S", "agents": {"manager": {"runner": "tmux"}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
             session_alive=True, panes_with_cli=[], panes_without_cli=["manager"]), \
             _stub_which({"claude"}):
@@ -104,7 +104,7 @@ def test_health_warns_when_pane_up_but_no_cli_marker():
 def test_health_lazy_pane_without_marker_is_green():
     """A pane marked lazy in team.json is expected to have no ready marker
     until first message. Don't yellow-flag the operator over expected state."""
-    team = {"session": "S", "agents": {"sleeper": {"cli": "claude-code", "lazy": True}}}
+    team = {"session": "S", "agents": {"sleeper": {"cli": "claude-code", "lazy": True, "runner": "tmux"}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
             session_alive=True, panes_with_cli=[], panes_without_cli=["sleeper"]), \
             _stub_which({"claude"}):
@@ -115,7 +115,7 @@ def test_health_lazy_pane_without_marker_is_green():
 
 
 def test_health_warns_when_lark_profile_blank():
-    team = {"session": "S", "agents": {"manager": {}}}
+    team = {"session": "S", "agents": {"manager": {"runner": "tmux"}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x", "lark_profile": ""}), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]), \
             _stub_which({"claude"}):
@@ -125,7 +125,7 @@ def test_health_warns_when_lark_profile_blank():
 
 
 def test_health_warns_when_router_pid_missing():
-    team = {"session": "S", "agents": {"manager": {}}}
+    team = {"session": "S", "agents": {"manager": {"runner": "tmux"}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]), \
             _stub_which({"claude"}):
@@ -137,7 +137,7 @@ def test_health_warns_when_router_pid_missing():
 def test_health_info_when_cursor_empty():
     """Empty cursor on first run is informational, not a warning — it only
     advances on inbound events, not self-originated say calls."""
-    team = {"session": "S", "agents": {"manager": {}}}
+    team = {"session": "S", "agents": {"manager": {"runner": "tmux"}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]), \
             _stub_which({"claude"}):
@@ -178,7 +178,7 @@ def test_health_memory_section_lists_agents_with_entries():
     ≤5 agents). Doesn't change the rc — informational only."""
     from claudeteam.store import memory
     team = {"session": "S",
-            "agents": {"manager": {}, "worker_cc": {}}}
+            "agents": {"manager": {"runner": "tmux"}, "worker_cc": {"runner": "tmux"}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), \
             _stub_tmux(session_alive=True,
                        panes_with_cli=["manager", "worker_cc"]), \
@@ -248,7 +248,7 @@ def test_health_json_emits_machine_readable_object():
     """--json dumps {ok, bad, warn, lines} so CI scripts can
     branch on `ok` without grepping the formatted output."""
     import json as _json
-    team = {"session": "S", "agents": {"manager": {"cli": "claude-code"}}}
+    team = {"session": "S", "agents": {"manager": {"cli": "claude-code", "runner": "tmux"}}}
     rc_cfg = {"chat_id": "oc_x", "lark_profile": "prod"}
     with isolated_env(team=team, runtime_config=rc_cfg), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]), \

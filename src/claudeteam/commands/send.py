@@ -48,6 +48,24 @@ def main(argv: list[str]) -> int:
     print(f"📥 inbox: {to} ← {frm}  [local_id={local_id}]")
     if no_inject:
         return 0
+    # ACP recipient: durably queue the nudge for the router's AcpHost —
+    # works from ANY process (this command runs in the sender's shell,
+    # not the router) and survives a router restart, unlike a pane poke.
+    if config.agent_runner(to) == "acp":
+        if local_facts.is_retired(to):
+            print(f"  ⏸️  {to} 已停止 (fired); inbox row kept, not prompted")
+            return 0
+        from claudeteam.store import acp_queue
+        nudge = (f"📥 {frm} → {to}（{local_id}）。"
+                 f"`claudeteam inbox {to}` → 处理 → "
+                 f"`claudeteam read {local_id}` → 必要时 "
+                 f"`claudeteam say {to} \"...\" --to user`。")
+        try:
+            acp_queue.enqueue(to, nudge, sender=frm, local_id=local_id)
+            print(f"  📮 queued for {to} (acp)")
+        except OSError as e:
+            print(f"  ⚠️ acp enqueue best-effort failed for {to}: {e}")
+        return 0
     # Best-effort tmux inject so the recipient's pane sees a nudge to
     # read inbox. Failures here (no session, no pane, unknown adapter)
     # don't fail the command — the inbox row is still the canonical

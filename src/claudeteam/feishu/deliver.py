@@ -162,19 +162,37 @@ def _compose_inject_text(agent: str, decision: Decision,
 def _inject_to_pane(agent: str, decision: Decision,
                     deps: _Deps, wake_fn: Callable | None,
                     local_id: str = "") -> str:
-    """Deliver `decision.text` to the agent's pane (wrapped with a
-    routing-context hint so the agent posts replies via `claudeteam
-    say` instead of answering in pane). `local_id` is appended to the
-    hint so the agent knows which inbox row to mark read.
+    """Deliver `decision.text` to the agent (wrapped with a routing-context
+    hint so the agent posts replies via `claudeteam say` instead of
+    answering in place). `local_id` is appended to the hint so the agent
+    knows which inbox row to mark read.
+
+    Two transports, resolved per agent (config.agent_runner):
+      acp   — append a row to the agent's ACP delivery queue; the AcpHost
+              in the router daemon prompts the agent and ACKs the row.
+              "injected" here means durably queued (crash-safe), not
+              merely best-effort typed into a pane.
+      tmux  — legacy pane path: lazy-wake + send-keys.
 
     Returns a DeliveryReport field name: 'injected' / 'failed_inject' /
     'retired'. A retired agent (status 已停止 — fired) keeps its inbox row
     (written by the caller before this) so a future `hire` picks it up,
-    but its pane is NOT woken/injected — firing means stay down.
+    but is NOT woken/prompted — firing means stay down.
     """
     if local_facts.is_retired(agent):
         print(f"  ⏸️  {agent} 已停止 (fired); inbox row kept, pane not revived")
         return "retired"
+    if config.agent_runner(agent) == "acp":
+        from claudeteam.store import acp_queue
+        try:
+            text = _compose_inject_text(agent, decision, local_id=local_id)
+            acp_queue.enqueue(agent, text,
+                              sender=decision.sender or "user",
+                              local_id=local_id)
+        except OSError as e:
+            print(f"  ⚠️ acp enqueue failed for {agent}: {e}")
+            return "failed_inject"
+        return "injected"
     target = tmux.Target(deps.session, agent)
     try:
         adapter = deps.adapter_for_agent(agent)

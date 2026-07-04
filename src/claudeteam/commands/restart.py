@@ -20,7 +20,7 @@ isn't running (use `up`).
 """
 from __future__ import annotations
 
-from claudeteam.runtime import config, lifecycle, tmux
+from claudeteam.runtime import config, lifecycle, paths, tmux
 from claudeteam.util import error_exit, maybe_print_help, usage_error, warn
 
 
@@ -47,6 +47,19 @@ def main(argv: list[str]) -> int:
             f"❌ tmux session {session} not running; run `claudeteam up` first")
 
     target = tmux.Target(session, agent)
+    # ACP agent: the CLI lives inside the router's AcpHost, not the pane.
+    # Recycle it — a durable `stop` row tears the subprocess down, and
+    # dropping session.json forces a FRESH session (new model / cli from
+    # the roster takes effect + identity turn re-runs) instead of a
+    # session/load resume of the old config.
+    if config.agent_runner(agent) == "acp":
+        from claudeteam.store import acp_queue
+        try:
+            acp_queue.enqueue(agent, "", kind="stop")
+            (paths.acp_agent_dir(agent) / "session.json").unlink(missing_ok=True)
+            print(f"♻️  {agent}: ACP subprocess recycled (fresh session on next message)")
+        except OSError as e:
+            warn(f"⚠️ ACP recycle best-effort failed: {e}")
     # Kill the existing pane if present — no archive, no roster change, no
     # 已停止 — then re-create the window so provision starts from a clean
     # shell prompt (same contract provision_pane expects from hire/start).

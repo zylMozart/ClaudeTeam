@@ -209,7 +209,7 @@ def test_route_mixed_retired_and_live_targets():
 # ── lazy wake integration ──────────────────────────────────────
 
 
-_WAKE_TEAM = {"agents": {"worker_a": {"cli": "claude-code", "model": "opus"}}}
+_WAKE_TEAM = {"agents": {"worker_a": {"cli": "claude-code", "model": "opus", "runner": "tmux"}}}
 
 
 def test_wake_fn_called_per_target_with_spawn_cmd():

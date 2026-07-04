@@ -196,6 +196,28 @@ def _check_binaries(rep: HealthReport, agents: list[str]) -> None:
             rep.ok(f"{binary}: {path}  (used by {users})")
         else:
             rep.fail(f"{binary}: not on PATH  (used by {users})")
+    # ACP agents additionally need their protocol adapter binary
+    # (claude-code-acp / codex-acp) — the CLI itself being present isn't
+    # enough for the router's AcpHost to spawn the agent.
+    acp_seen: dict[str, list[str]] = {}
+    for agent in agents:
+        if config.agent_runner(agent) != "acp":
+            continue
+        cli = agents_dict.get(agent, {}).get("cli", "claude-code")
+        try:
+            argv = get_adapter(cli).acp_argv(agent, "")
+        except Exception:
+            continue
+        if argv:
+            acp_seen.setdefault(argv[0], []).append(agent)
+    for binary, used_by in sorted(acp_seen.items()):
+        users = ", ".join(used_by)
+        path = shutil.which(binary)
+        if path:
+            rep.ok(f"{binary}: {path}  (acp runner for {users})")
+        else:
+            rep.fail(f"{binary}: not on PATH  (acp runner for {users}; "
+                     f"npm i -g, or pin runner = \"tmux\")")
 
 
 def _check_proxy_env(rep: HealthReport) -> None:

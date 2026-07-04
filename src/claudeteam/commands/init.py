@@ -57,6 +57,10 @@ session = "{session}"
 #                     渲染进 identity (叠加在团队协议之上)。现成模板见 templates/
 #   card_color  可选  飞书 v2 色: blue/green/red/yellow/purple/orange/grey
 #   lazy        可选  true=首消息触发起 CLI; 默认 false
+#   runner      可选  acp | tmux。缺省: CLI 有 ACP 适配器 (claude-code /
+#                     codex-cli, 需 npm i -g @zed-industries/claude-code-acp
+#                     或 codex-acp) 走 acp——投递有 ACK、状态精确、/stop 确定；
+#                     其余 CLI 自动走 tmux。钉 "tmux" 可强制旧行为
 [team.agents.manager]
 cli   = "claude-code"
 model = "opus"
@@ -91,6 +95,15 @@ manager_to_worker = true
 worker_to_manager = true
 worker_to_user    = true
 worker_to_worker  = true
+
+# ── [standup]  定时进度巡视汇报 ───────────────────────────
+# 有活儿在干时, router 每隔 interval_minutes 让 target 巡视全员并向老板
+# 汇报 (每人在干什么/整体进度/卡点/下一步)。空闲时静默。/standup 立即触发。
+[standup]
+enabled = true
+interval_minutes = 10
+activity_window_minutes = 45
+target = "manager"
 
 # ── [limits]  消息长度上限 ────────────────────────────────
 [limits]

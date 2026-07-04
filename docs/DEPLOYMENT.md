@@ -344,6 +344,43 @@ The default team is all `claude-code`, so `claude` alone runs it.
 | Hermes | `hermes` | `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash -s -- --skip-setup` |
 | Pi | `pi` | `npm i -g @mariozechner/pi-coding-agent` |
 
+### ACP runner (claude-code / codex-cli)
+
+Agents on ACP-capable CLIs default to `runner = "acp"`: the CLI runs
+headless as a router subprocess speaking the
+[Agent Client Protocol](https://agentclientprotocol.com/) (JSON-RPC over
+stdio), which gives durable queued delivery with ACKs, exact busy/idle
+state, and a deterministic `/stop` — instead of tmux send-keys + screen
+scraping. The agent's tmux window becomes a read-only transcript viewer.
+
+Install the adapters next to the CLIs:
+
+```bash
+npm i -g @zed-industries/claude-code-acp @zed-industries/codex-acp
+```
+
+Pin `runner = "tmux"` on an agent in `claudeteam.toml` to keep the legacy
+pane behavior (CLIs without ACP support — kimi, gemini, qwen, … — use it
+automatically). Ops surface for ACP agents: `state/acp/<agent>/queue.json`
+(delivery states), `transcript.log` (what the viewer shows),
+`claudeteam peek <agent>` reads the transcript directly.
+
+### Standup: periodic progress reports
+
+While the team is actively working, the router nudges the manager every
+`interval_minutes` to inspect every agent and post one consolidated
+progress report (who's doing what, overall progress, blockers, next
+steps) to the group. Idle team → no reports. `/standup` in chat triggers
+one immediately.
+
+```toml
+[standup]
+enabled = true              # default true
+interval_minutes = 10       # report cadence while work is in flight
+activity_window_minutes = 45
+target = "manager"          # who inspects and reports
+```
+
 The last seven are **OpenAI-compatible** (BYOK) — credentials + endpoint below.
 
 ---

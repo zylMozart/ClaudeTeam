@@ -52,8 +52,8 @@ def _fake_chat_send():
 _TEAM = {
     "session": "SmokeTeam",
     "agents": {
-        "manager":      {"cli": "claude-code"},
-        "worker_codex": {"cli": "codex-cli"},
+        "manager":      {"cli": "claude-code", "runner": "tmux"},
+        "worker_codex": {"cli": "codex-cli", "runner": "tmux"},
         "worker_kimi":  {"cli": "kimi-code"},
     },
 }
