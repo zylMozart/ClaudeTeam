@@ -10,9 +10,9 @@
 
 | 序 | 任务 | 原编号 | 成本 | 排序理由 |
 |---|------|-------|------|---------|
-| T0 🟨 | Mock sidecar E2E 测试框架 | P1-2 | S | fake ACP agent（tests/fake_acp_agent.py）已落地并驱动 22 个新单测；mock sidecar 事件注入待补 |
-| T1 🟨 | 消息投递状态机 + 重试 | P0-1 | M | **经 ACP 路线落地**（feat/acp-runner 分支）：store/acp_queue = pending→prompting→done/failed 状态机，崩溃后 recover_stuck 重臂，ACK 写 logs.jsonl |
-| T2 🟨 | Agent 心跳上报 | P0-2 | M | **经 ACP 路线落地**：turn 生命周期 + 流式 update 驱动 heartbeat/status，acp_host.probe 替代抓屏（ACP agents）；tmux 兜底 agents 仍抓屏 |
+| T0 ✅ | Mock sidecar E2E 测试框架 | P1-2 | S | 2026-07-05 完成：fake ACP agent + NDJSON 事件注入驱动全链路离线 E2E（tests/integration/test_acp_chain.py），另有离线飞书 harness（假 sidecar shim）支撑真实 agent 验收 |
+| T1 ✅ | 消息投递状态机 + 重试 | P0-1 | M | 2026-07-05 验收通过：router kill -9 实测消息恰好一次；store/acp_queue 状态机 + recover_stuck + logs.jsonl ACK。tmux 兜底路线仍是尽力而为（接受） |
+| T2 ✅ | Agent 心跳上报 | P0-2 | M | 2026-07-05 验收通过：/team 实测 working·acp/idle·acp 与队列状态同刻一致；health 改读队列+pid（F-2 修复）。tmux 兜底 agents 仍抓屏（接受） |
 | T3 ⬜ | Manager 单点降级 | P0-3 | S-M | 依赖 T2 心跳信号，有信号后本体不难 |
 | T4 ⬜ | 日志聚合 | P1-1 | S | 复用 T1 的持久化 DeliveryReport 和 T2 的 status 数据，顺手收割 |
 | T5 ⬜ | 小债打包（msg_id 过期 / @解析 / quoting 审计） | P1-3 | S | 攒一个 PR 一起清 |
@@ -53,6 +53,11 @@
 
 - **现状**：72 个测试文件全是进程内模拟；`tests/scenarios/*.md` 是人工回归剧本
 - **修法**：mock sidecar（伪造 NDJSON 事件流）驱动的自动化 E2E，覆盖 router→deliver→inbox 全链路；接入 CI
+
+### ⬜ P1-4 kimi pane 长文本注入疑似掉字（验收 F-9，2026-07-05）
+
+- **现状**：验收观察到 kimi pane 内注入文本偶发掉字（"say"→"sny"），中等置信度；疑似 tmux send-keys -l 长文本或 kimi TUI 渲染问题
+- **修法**：tmux.send_text 改 load-buffer + paste-buffer 注入，或注入后回读校验；只影响 tmux 兜底路线
 
 ### ⬜ P1-3 小型技术债
 

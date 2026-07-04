@@ -49,6 +49,8 @@ defects-and-fix-plan.md 里的 T1（投递状态机）和 T2（心跳）是对 #
 
 原则：不动 router 的纯决策层（`classify_event` 不变），只替换 deliver 的「执行侧」。引入 **Runner 抽象**，tmux 路线降级为兜底而非删除。
 
+> ✅ 2026-07-05 验收通过：零背景用户模拟验收（离线飞书 harness + 真实 claude-sonnet/codex/kimi 混编）10 项清单 9 PASS，唯一 FAIL（kimi 提交键 F-1）及 F-2~F-8 已修复复验，全量 1183 测试 0 失败。核心保证实测兑现：router kill -9 后 ~26s 自愈且消息恰好一次、/stop 确定性 cancelled、standup 2 分钟节拍精准。待办：F-9 kimi pane 长文本疑似掉字（中置信度，建议改 paste-buffer 注入）；真飞书链路复验需要老板扫一次码。
+>
 > 🟨 2026-07-04 实施中（分支 feat/acp-runner）：阶段 0-2 已落地——runtime/acp.py（JSON-RPC 客户端）、store/acp_queue（磁盘投递队列 = 跨进程 + 崩溃安全，代替原方案的进程内 Runner 对象）、runtime/acp_host（router 内 per-agent worker）、deliver/send//stop//team/peek/restart/health 全部接线，viewer pane 保留。真实 claude-code-acp 0.16.1 + codex-acp 冒烟通过（loadSession 可用）。与原方案的偏差：没有建正式的 Runner 抽象类（two-use rule——deliver 里一个 if 分支足够），"spawn 队列宿主"从设想的独立 daemon 简化为 router 内线程。
 
 ### 阶段 0 — Spike（小）✅（并入实施）
