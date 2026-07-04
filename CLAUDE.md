@@ -15,7 +15,10 @@ Business logic lives in `src/claudeteam/` only.  There is **no** parallel
 src/claudeteam/cli.py           ← top-level dispatch + COMMANDS registry
 src/claudeteam/commands/X.py    ← one module per subcommand, ~30 LOC each
 src/claudeteam/store/           ← file-backed local state (no DB)
+                                   acp_queue.py = ACP delivery state machine
 src/claudeteam/runtime/         ← config / paths / tmux / watchdog
+                                   acp.py = JSON-RPC stdio client,
+                                   acp_host.py = per-agent ACP workers
 src/claudeteam/feishu/          ← lark-cli wrapper + router pipeline
 src/claudeteam/agents/          ← CliAdapter base + per-CLI adapters
 ```
@@ -98,15 +101,27 @@ Feishu chat               feishu/subscribe.py    ←─── node scripts/feish
                              ▼
        ┌─────────────────────────────────────────────┐
        │ feishu/deliver.py                           │  side-effects:
-       │   apply(decision, …) → DeliveryReport       │  inbox + tmux inject
-       └────────┬───────────────────────────┬────────┘
-                │                           │
-                ▼                           ▼
-   store/local_facts                 runtime/tmux + agents/
-       inbox.json                    inject text into pane
-       status.json                   using each adapter's submit_keys
-       logs.jsonl
+       │   apply(decision, …) → DeliveryReport       │  inbox + delivery
+       └────────┬──────────────┬────────────┬────────┘
+                │              │            │
+                ▼              ▼            ▼
+   store/local_facts   store/acp_queue   runtime/tmux + agents/
+       inbox.json      queue.json row    inject text into pane
+       status.json     (runner=acp,      (runner=tmux, adapter
+       logs.jsonl       durable + ACK)    submit_keys)
+                               │
+                               ▼
+                    runtime/acp_host.AcpHost   (inside `claudeteam router`)
+                      one worker per ACP agent: claim row →
+                      ACP session/prompt over stdio (runtime/acp) →
+                      settle(done|failed, stopReason)  ← the ACK
+                      transcript.log ← streamed output (viewer pane tails it)
 ```
+
+Which transport an agent uses: `config.agent_runner(agent)` — explicit
+`runner = "acp" | "tmux"` in claudeteam.toml, else "acp" when the CLI has
+an ACP adapter (claude-code, codex-cli), else "tmux". ACP agents' CLIs run
+as router subprocesses; their tmux window is a read-only `tail -F` viewer.
 
 `commands/router.py` is the daemon entry that wraps `subscribe.process_lines`
 around `node scripts/feishu_channel/sidecar.js run` stdout (official
@@ -145,6 +160,56 @@ Tests use a list-of-lines fixture instead of a real subprocess.
   - DeepSeek / OpenAI / a local server are just *examples* set via the
     deployment's env (`docker -e`) + `tests/scenarios/*.md`, never source.
 
+## Maintenance recipes (follow these literally)
+
+These are the three changes this repo sees most. Each is a checklist —
+work through it top to bottom and you can't go far wrong, no deep
+context needed.
+
+**Add a chat slash command** (`/foo` in Feishu):
+1. Write `_handle_foo(args, ctx) -> str | dict` in `feishu/slash.py`
+   (str = text reply, dict = card).  Runner-aware? Branch on
+   `config.agent_runner(agent)` — see `_handle_stop` for the pattern.
+2. Register it in `_HANDLERS` and bump the count comment below it.
+3. Add one line to BOTH help texts (the English block at the top of
+   slash.py and the Chinese `/help` body).
+4. Tests in `tests/unit/test_feishu_slash.py`; scenario step if
+   operator-visible.
+
+**Add a `claudeteam <cmd>` subcommand:**
+1. New file `commands/<cmd>.py` with `main(argv) -> int`, a `USAGE`
+   string, `maybe_print_help` first line.  Copy the shape of
+   `commands/health.py` (the canonical command).
+2. Register in `cli.py` COMMANDS.
+3. Same-commit: `tests/unit/test_commands_<cmd>.py` +
+   `tests/scenarios/<cmd>.md` (Given/When/Then).
+4. Business logic goes in `runtime/` or `store/`, not in the command
+   file — commands are thin argv adapters (~30 LOC).
+
+**Add a new agent CLI adapter:**
+1. New file `agents/<name>.py` subclassing `CliAdapter`; implement
+   `spawn_cmd` / `ready_markers` / `process_name`; override
+   `auth_slots()` if the CLI has credentials, `acp_argv()`/`acp_env()`
+   if it speaks ACP (then it gets the acp runner by default).
+   NEVER hardcode an endpoint / API key / vendor model name (see the
+   provider-agnostic rules below).
+2. Register in `agents/__init__.py` `_REGISTRY` (+ alias if the package
+   name differs).
+3. Add a row to the install table in `docs/DEPLOYMENT.md` AND
+   `docs/DEPLOYMENT_zh.md`.
+4. `tests/unit/test_agents_<name>.py`.
+
+**Debug a live deployment** — everything is a file under
+`$CLAUDETEAM_STATE_DIR` (default `./state`):
+- `facts/inbox.json` — every routed message (canonical record)
+- `facts/status.json` / `heartbeats.json` — agent self-reports + liveness
+- `facts/logs.jsonl` — append-only audit (incl. `acp_turn` ACKs)
+- `acp/<agent>/queue.json` — ACP delivery states (pending→prompting→done)
+- `acp/<agent>/transcript.log` — the agent's streamed output
+- `router.log` / `watchdog.log` — daemon output; `router.seen` — dedup
+- `claudeteam health` first, always; `claudeteam peek <agent>` for
+  "what is it doing right now".
+
 ## What NOT to do
 
 - Don't put business logic under `scripts/` at the repo root.
@@ -156,5 +221,9 @@ Tests use a list-of-lines fixture instead of a real subprocess.
   they have their own `package.json` / runtime and never import claudeteam.
 - Don't reach into other modules' module-level globals from tests.
   Use the injectable kwargs (`run=`, `popen=`, `tmux_inject=`).
-- Don't add docs/ subfolders for every concern.  This file + README.md
-  + `tests/scenarios/*.md` is the documentation surface.
+- Don't add docs/ subfolders for every concern.  The documentation
+  surface is: this file + the per-package `CLAUDE.md` under
+  `src/claudeteam/*/` (folder-local invariants, auto-loaded when working
+  there) + README.md + `tests/scenarios/*.md` + `docs/DEPLOYMENT*.md`.
+  `docs/advisor/` holds strategy/roadmap notes.  Anything else needs a
+  strong reason.
