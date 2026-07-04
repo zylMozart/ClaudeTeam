@@ -10,7 +10,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover — project pins >=3.10 but stdlib tomllib is 3.11+
     import tomli as tomllib  # type: ignore[no-redef]
 
-from .base import CliAdapter, MULTILINE_SUBMIT_KEYS
+from .base import CliAdapter
 
 
 # Substrings that mark a model name as kimi/Moonshot-native (vs the team's
@@ -107,4 +107,11 @@ class KimiCodeAdapter(CliAdapter):
         return "kimi"
 
     def submit_keys(self) -> list[str]:
-        return list(MULTILINE_SUBMIT_KEYS)
+        # kimi-cli 1.47's TUI submits on plain Enter; M-Enter (the old
+        # primary via MULTILINE_SUBMIT_KEYS) is NOT a submit in this
+        # version, so `tmux.inject` — which presses only submit_keys[0] —
+        # left every routed message sitting in the composer forever
+        # (acceptance F-1: worker_kimi never submitted, identity turn never
+        # ran; a manual bare Enter committed it immediately). C-m stays as
+        # the equivalent escalation for inject_and_confirm paths.
+        return ["Enter", "C-m"]

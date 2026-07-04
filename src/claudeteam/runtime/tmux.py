@@ -66,11 +66,16 @@ def _ok(args: list[str], run: Callable) -> bool:
 
 
 def has_session(session: str, *, run: Callable = _default_run) -> bool:
-    return _ok(["tmux", "has-session", "-t", session], run)
+    # `=` forces an exact session-name match. Without it tmux prefix-matches,
+    # so with only `ClaudeTeam-other` running, has_session("ClaudeTeam")
+    # answered True — health went green against ANOTHER team's session
+    # (acceptance F-3). Existence checks gate every downstream tmux call,
+    # so exactness here protects the fuzzy-target calls too.
+    return _ok(["tmux", "has-session", "-t", f"={session}"], run)
 
 
 def has_window(target: Target, *, run: Callable = _default_run) -> bool:
-    return _ok(["tmux", "has-session", "-t", str(target)], run)
+    return _ok(["tmux", "has-session", "-t", f"={target}"], run)
 
 
 def capture_pane(target: Target, *, lines: int = 80, run: Callable = _default_run) -> str:

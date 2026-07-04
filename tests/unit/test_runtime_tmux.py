@@ -39,7 +39,9 @@ class _Recorder:
 def test_has_session_returns_true_on_zero_exit():
     rec = _Recorder([_FakeResult(returncode=0)])
     assert has_session("S", run=rec) is True
-    assert rec.calls == [["tmux", "has-session", "-t", "S"]]
+    # `=` prefix = exact session match; without it tmux prefix-matches and
+    # health can go green against ANOTHER team's session (acceptance F-3).
+    assert rec.calls == [["tmux", "has-session", "-t", "=S"]]
 
 
 def test_capture_pane_returns_stdout_when_ok():

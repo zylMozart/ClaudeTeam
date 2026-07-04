@@ -70,7 +70,7 @@ class HealthReport:
 
 
 def _check_state_dir(rep: HealthReport) -> None:
-    src = "env" if env_str("CLAUDETEAM_STATE_DIR") else "default (~/.claudeteam)"
+    src = "env" if env_str("CLAUDETEAM_STATE_DIR") else "default (state/ beside claudeteam.toml)"
     rep.note(f"state_dir: {paths.state_dir()}  ({src})")
 
 
@@ -146,6 +146,25 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
             continue
         cfg = agents_dict.get(agent, {})
         cli = cfg.get("cli", "claude-code")
+        # ACP agent: its pane is a transcript viewer with no CLI banner, so
+        # the ready-marker scrape below would flag a perfectly healthy agent
+        # yellow forever (acceptance F-2). Judge it by what's real for this
+        # runner: the delivery queue + host subprocess pid.
+        if config.agent_runner(agent) == "acp":
+            from claudeteam.runtime import acp_host, pane_probe
+            try:
+                state = acp_host.probe(agent)
+            except OSError:
+                state = pane_probe.IDLE
+            if state == pane_probe.DEAD:
+                rep.fail(f"  {agent}: acp queue has pending work but no live "
+                         f"host subprocess — is the router up?{hb_suffix}")
+            elif state == pane_probe.BUSY:
+                rep.ok(f"  {agent}: acp turn in flight ({cli}){hb_suffix}")
+            else:
+                rep.ok(f"  {agent}: acp ready ({cli}; session starts on "
+                       f"demand){hb_suffix}")
+            continue
         try:
             # Resolve adapter from `cli` directly — not via
             # `adapter_for_agent(agent)`, which would re-read the team

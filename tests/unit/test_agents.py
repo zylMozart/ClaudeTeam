@@ -74,10 +74,12 @@ def test_default_submit_keys_are_enter_variants():
     codex = CodexCliAdapter().submit_keys()
     assert codex[0] == "Enter"
     assert "C-j" not in codex
-    # Kimi's TUI still commits the buffer on M-Enter.
+    # Kimi 1.47's TUI submits on plain Enter — M-Enter is NOT a submit in
+    # this version (acceptance F-1: the old M-Enter primary left every
+    # message unsubmitted in the composer).
     kimi = KimiCodeAdapter().submit_keys()
-    assert kimi[0] == "M-Enter"
-    assert "Enter" in kimi
+    assert kimi[0] == "Enter"
+    assert "M-Enter" not in kimi
 
 
 def test_interrupt_keys_are_uniform_escape_across_every_cli():

@@ -49,12 +49,17 @@ python3 -m venv .venv && source .venv/bin/activate    # macOS's built-in 3.9 is 
 pip install -e .
 
 # External tools pip can't install:
-#   macOS:  brew install tmux node && npm i -g @larksuite/cli @anthropic-ai/claude-code
-#   Debian: sudo apt install -y tmux nodejs npm && npm i -g @larksuite/cli @anthropic-ai/claude-code
+#   macOS:  brew install tmux node && npm i -g @anthropic-ai/claude-code @zed-industries/claude-code-acp
+#   Debian: sudo apt install -y tmux nodejs npm && npm i -g @anthropic-ai/claude-code @zed-industries/claude-code-acp
 ```
 
 > Install only the agent CLIs you'll use. The default team is all `claude-code`,
-> so `claude` alone runs it; add `codex` etc. only if you want them.
+> so `claude` + its ACP adapter (`claude-code-acp`, above) runs it. Adding
+> `codex`? Also add `@zed-industries/codex-acp`. Other CLIs (kimi / gemini /
+> qwen / …) need no extra adapter — they run on the tmux pane runner.
+> `lark-cli` (`@larksuite/cli`) is OPTIONAL: the bot's inbound + outbound
+> both ride the bundled sidecar; you only need lark-cli for `--as user`
+> sends (e.g. the operator-run scenarios in tests/scenarios/).
 
 > The `.venv` above is just *one* way. conda / pipx / system-python all work too
 > — the only requirement is that `claudeteam` **and** your agent CLIs resolve on
@@ -484,7 +489,7 @@ pane; the boss can also send them — they zero-LLM dispatch through the router)
 | `/tmux [agent] [N]` | Capture last N lines of a pane |
 | `/send <agent> <msg>` | Inject a message into a pane |
 | `/compact [agent]` | Compact the CLI's context + scheduled re-identify |
-| `/stop [agent]` | Interrupt the agent (Esc; pane stays alive) |
+| `/stop [agent]` | Interrupt the agent (acp: session/cancel; tmux: Esc — agent stays alive) |
 | `/clear <agent>` | `/clear` the CLI + re-inject identity |
 | `/task [all]` | Read-only task kanban |
 | `/shutdown [confirm]` | Panes offline, keep router/watchdog for `/restart` |
@@ -523,6 +528,16 @@ block; the two fixes it points to:
 
 Ingress works the moment the sidecar connects; if it IS connected but the group is
 still silent, check the manager's `claude` login (entries below).
+
+### A tmux agent's message sits in its input box, never submitted
+
+`tmux attach`, select the agent's window: if routed text is visible inside the
+CLI's composer (e.g. kimi's `── input ──` frame) and nothing happens for
+minutes, the adapter's submit key doesn't match your CLI version's TUI. Quick
+confirm: press Enter in that pane yourself — if the text submits, that's it.
+Fix: update that adapter's `submit_keys()` (see `agents/CLAUDE.md`), or move
+the agent to the ACP runner if its CLI has an adapter (no keys involved).
+Watch out for this after any CLI version upgrade — TUI keybindings drift.
 
 ### `claude: not found` / `codex: not found` in a pane
 

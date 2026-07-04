@@ -41,12 +41,16 @@ python3 -m venv .venv && source .venv/bin/activate    # macOS 系统自带的 3.
 pip install -e .
 
 # pip 装不了的外部工具：
-#   macOS ： brew install tmux node && npm i -g @larksuite/cli @anthropic-ai/claude-code
-#   Debian： sudo apt install -y tmux nodejs npm && npm i -g @larksuite/cli @anthropic-ai/claude-code
+#   macOS ： brew install tmux node && npm i -g @anthropic-ai/claude-code @zed-industries/claude-code-acp
+#   Debian： sudo apt install -y tmux nodejs npm && npm i -g @anthropic-ai/claude-code @zed-industries/claude-code-acp
 ```
 
-> 只装/用你需要的 agent CLI。默认团队全是 `claude-code`，所以装个 `claude` 就能跑通；
-> `codex` 等其它 CLI 按需再装。
+> 只装/用你需要的 agent CLI。默认团队全是 `claude-code`，所以 `claude` + 它的 ACP
+> 适配器（上面的 `claude-code-acp`）就能跑通。要加 `codex` 的话，同时装
+> `@zed-industries/codex-acp`；kimi / gemini / qwen 等其它 CLI 不需要适配器
+> （走 tmux pane 路线）。`lark-cli`（`@larksuite/cli`）是**可选**的：机器人的
+> 收发都走内置 sidecar，只有 `--as user` 发消息（如 tests/scenarios/ 的人工
+> 剧本）才用得到它。
 
 > 上面的 `.venv` 只是*一种*装法。conda / pipx / 系统 python 都行——唯一要求是：你 `up` 的那个
 > shell 里 `claudeteam` **和**你的 agent CLI 都能在 `PATH` 上解析到。所以下面的 PATH 修法说的是
@@ -426,7 +430,7 @@ cd /path/to/team-b && claudeteam up
 | `/tmux [agent] [N]` | 抓某个 pane 的最后 N 行 |
 | `/send <agent> <msg>` | 往某个 pane 注入一条消息 |
 | `/compact [agent]` | 压缩 CLI 上下文 + 排期重新 identify |
-| `/stop [agent]` | 打断 agent（Esc；pane 仍活着） |
+| `/stop [agent]` | 打断 agent（acp 走 session/cancel；tmux 送 Esc——agent 仍活着） |
 | `/clear <agent>` | `/clear` 这个 CLI + 重注入身份 |
 | `/task [all]` | 只读任务看板 |
 | `/shutdown [confirm]` | pane 下线，保留 router/watchdog 以便 `/restart` |
@@ -457,6 +461,15 @@ cd /path/to/team-b && claudeteam up
 
 入站只要 sidecar 连上就通；若 sidecar 连上了、群里还是没反应，才去查 manager 的 `claude`
 登录态（见下条）。
+
+### tmux agent 的消息停在输入框里，一直不提交
+
+`tmux attach` 选中该 agent 窗口：如果路由过来的文本卡在 CLI 的输入框里
+（比如 kimi 的 `── input ──` 框）几分钟不动，说明适配器的提交键和你这个
+CLI 版本的 TUI 对不上。快速确认：你自己在那个 pane 按一下 Enter——文本提交
+了就是这个问题。修法：改该适配器的 `submit_keys()`（见 `agents/CLAUDE.md`），
+或者该 CLI 有 ACP 适配器的话把 agent 挪到 acp runner（不走按键）。CLI 升级
+后要特别留意——TUI 键位会漂。
 
 ### pane 里 `claude: not found` / `codex: not found`
 

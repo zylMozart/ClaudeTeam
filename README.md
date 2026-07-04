@@ -129,7 +129,7 @@ role = "数据分析员工"
 - **`[chat.publish]` filter** — sender→receiver visibility per channel; silence noisy traffic without losing the audit log.
 - **Per-agent space + shared brain** — every agent gets its own `workspace/` scratch dir and isolated CLI home; the team shares a pooled experience log (`remember --team`) and a reusable `skills/` library, both surfaced on wake.
 - **Slash commands from chat** — `/help /team /health /usage /tmux /send /compact /stop /clear /task` + operational `/restart /shutdown /login`.
-- **Almost zero deps** — standard-library Python (a `tomli` backport only on Python < 3.11); the only external runtime is `lark-cli` (Node).
+- **Almost zero deps** — standard-library Python (a `tomli` backport only on Python < 3.11); the only external runtime is Node, which powers the bundled Feishu sidecar and the ACP adapters (`lark-cli` is optional — only `--as user` sends need it).
 
 ---
 

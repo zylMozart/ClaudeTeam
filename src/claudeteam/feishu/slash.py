@@ -702,26 +702,30 @@ def _handle_compact(args: str, ctx: SlashContext) -> str:
             f"{int(_REIDENTIFY_DELAY_S)}s 后自动重注 identity")
 
 
-def _stop_one(agent: str, ctx: SlashContext) -> bool:
+def _stop_one(agent: str, ctx: SlashContext) -> tuple[bool, str]:
     """Interrupt `agent`'s current action. ACP agents get a durable
     `cancel` control row (the AcpHost fires session/cancel — deterministic,
     unlike a hopeful Esc). Tmux agents get the CLI-specific interrupt key
     (default Esc; see CliAdapter.interrupt_keys). Adapter lookup is
-    defensive — an unknown cli falls back to Esc rather than skipping."""
+    defensive — an unknown cli falls back to Esc rather than skipping.
+
+    Returns (ok, method) so the chat receipt can say what ACTUALLY
+    happened — telling the operator "已送中断键（Esc）" for an ACP cancel
+    misleads any later audit (acceptance F-6)."""
     from claudeteam.runtime import config as _config
     if _config.agent_runner(agent) == "acp":
         from claudeteam.store import acp_queue
         try:
             acp_queue.enqueue(agent, "", kind="cancel")
-            return True
+            return True, "acp session/cancel"
         except OSError:
-            return False
+            return False, "acp session/cancel"
     from claudeteam.agents import adapter_for_agent
     try:
         keys = adapter_for_agent(agent).interrupt_keys()
     except Exception:
         keys = ["Escape"]
-    return tmux.send_keys(tmux.Target(ctx.session, agent), *keys)
+    return tmux.send_keys(tmux.Target(ctx.session, agent), *keys), f"中断键 {keys[0]}"
 
 
 def _handle_stop(args: str, ctx: SlashContext) -> str:
@@ -737,18 +741,19 @@ def _handle_stop(args: str, ctx: SlashContext) -> str:
         names, _, _, _ = _live_agents()
         if not names:
             return "⚠️ 团队里没有 agent 可停止"
-        results = [(n, _stop_one(n, ctx)) for n in names]
-        ok_n = sum(1 for _, ok in results if ok)
+        results = [(n, *_stop_one(n, ctx)) for n in names]
+        ok_n = sum(1 for _, ok, _ in results if ok)
         lines = "\n".join(
-            f"{'✅' if ok else '❌'} {ctx.session}:{n}" for n, ok in results)
-        return (f"🛑 /stop 全员 · 已向 {len(results)} 个 agent 送中断键（Esc），"
+            f"{'✅' if ok else '❌'} {ctx.session}:{n}（{method}）"
+            for n, ok, method in results)
+        return (f"🛑 /stop 全员 · 已向 {len(results)} 个 agent 发中断，"
                 f"{ok_n}/{len(results)} 成功\n{lines}")
     agent = arg.split()[0]
     if (warn := _bad_agent(agent, ctx)):
         return warn
-    ok = _stop_one(agent, ctx)
+    ok, method = _stop_one(agent, ctx)
     glyph = "✅" if ok else "❌"
-    return f"{glyph} /stop → {ctx.session}:{agent} · 已送中断键（Esc）"
+    return f"{glyph} /stop → {ctx.session}:{agent} · 已发中断（{method}）"
 
 
 def _handle_clear(args: str, ctx: SlashContext) -> str:
