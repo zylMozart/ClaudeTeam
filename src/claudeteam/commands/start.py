@@ -23,6 +23,32 @@ def main(argv: list[str]) -> int:
     agent_list = sorted(agents)
     first = agent_list[0]
 
+    # Headless mode: no tmux on this host (Windows native, or a minimal
+    # server). ACP agents don't need it — their CLIs live inside the
+    # router; the pane is only a cosmetic viewer. Provision the ACP part
+    # of the roster and refuse only the pane-bound agents, loudly.
+    if not tmux.available():
+        acp = [a for a in agent_list if config.agent_runner(a) == "acp"]
+        pane_bound = [a for a in agent_list if a not in acp]
+        if not acp:
+            return error_exit(
+                "❌ tmux not found and no agent uses the acp runner — "
+                "install tmux, or move agents to ACP-capable CLIs "
+                "(claude-code / codex-cli)")
+        print(f"🕶  headless mode: tmux not found — {len(acp)} acp agent(s) "
+              f"run inside the router, no viewer panes")
+        if pane_bound:
+            warn(f"⚠️  skipping tmux-runner agent(s) {', '.join(pane_bound)} "
+                 f"— they need tmux (install it, or switch their cli)")
+        for agent in acp:
+            if local_facts.is_retired(agent):
+                print(f"  ⏸️  {agent} 已停止 (fired); skipping")
+                continue
+            lifecycle.provision_headless(agent)
+            cli = agents.get(agent, {}).get("cli", "claude-code")
+            print(f"  → {agent} ({cli}) ready (acp, headless)")
+        return 0
+
     if tmux.has_session(session):
         print(f"⚠️  session {session} already running; refusing to start over")
         return 1

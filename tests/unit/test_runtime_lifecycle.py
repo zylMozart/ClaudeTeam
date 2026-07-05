@@ -102,11 +102,24 @@ def test_provision_lazy_agent_sets_待命_and_skips_spawn():
 
 
 def test_provision_spawn_failure_returns_spawn_failed():
-    team = {"agents": {"a": {"cli": "claude-code"}}}
+    # tmux runner: a CLI that fails to spawn IS a failed provision.
+    team = {"agents": {"a": {"cli": "claude-code", "runner": "tmux"}}}
     with isolated_env(team=team), tmux_patch(
             spawn_agent=lambda t, c: False):
         outcome = provision_pane("a", tmux.Target("S", "a"))
     assert outcome == SPAWN_FAILED
+
+
+def test_provision_acp_viewer_failure_is_cosmetic_ready():
+    """ACP runner: the pane is only a tail viewer — its spawn failing must
+    NOT fail the provision (the agent lives in the router; headless hosts
+    have no viewer at all)."""
+    team = {"agents": {"a": {"cli": "claude-code"}}}   # acp by default
+    with isolated_env(team=team), tmux_patch(
+            spawn_agent=lambda t, c: False):
+        outcome = provision_pane("a", tmux.Target("S", "a"))
+        assert outcome == READY
+        assert local_facts.get_status("a")["status"] == "待命"
 
 
 # ── provision_pane: READY (happy path) ────────────────────────────

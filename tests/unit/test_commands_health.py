@@ -17,6 +17,7 @@ def _stub_tmux(*, session_alive: bool, panes_with_cli: list[str] = (),
         return "$ "
 
     return tmux_patch(
+        available=lambda: True,
         has_session=lambda s: session_alive,
         has_window=lambda target: target.window in all_panes,
         capture_pane=capture_pane,

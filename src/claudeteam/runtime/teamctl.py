@@ -85,12 +85,13 @@ def spawn_detached(subcommand: list[str], *, popen=subprocess.Popen) -> None:
     subsequent `down` (which SIGTERMs the router's process group) can't
     take it down with the daemon. stdio is detached to DEVNULL — the
     runner reports back via `notify`, not stdout."""
+    from claudeteam.util import detached_popen_kwargs
     popen(
         _cli_argv() + list(subcommand),
-        start_new_session=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        **detached_popen_kwargs(),
     )
 
 

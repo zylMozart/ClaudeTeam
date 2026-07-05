@@ -7,12 +7,23 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         # Matches the floor declared in pyproject.toml / README.
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        os: [ubuntu-latest]
+        include:
+          # One leg per extra platform keeps the matrix cheap: macOS is a
+          # first-class host target; Windows is experimental (headless
+          # acp-only) — its leg is informational, not a merge gate.
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,8 +31,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # The runtime shells out to tmux; unit tests stub it, but install
       # it so nothing in the suite can trip over a missing binary.
-      - name: Install tmux
+      # (Windows: no tmux — that's exactly what its leg exercises.)
+      - name: Install tmux (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install tmux (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux
       # Python 3.10 has no stdlib tomllib (added in 3.11); the TOML config
       # loader (runtime/tunables.py + runtime/config.py) and kimi_code.py fall
       # back to the third-party tomli, so install it for the 3.10 leg only.

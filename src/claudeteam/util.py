@@ -6,12 +6,20 @@ belongs in its own module under runtime/, store/, or feishu/.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
+
+# File locking is platform-split: fcntl on POSIX (macOS / Linux), msvcrt
+# region-locking on Windows. Imported conditionally so a bare
+# `import claudeteam` doesn't die on Windows at import time.
+if sys.platform == "win32":  # pragma: no cover — exercised on Windows CI
+    import msvcrt
+else:
+    import fcntl
 
 
 def usage_error(usage: str) -> int:
@@ -137,20 +145,88 @@ def pop_bool_flag(rest: list[str], flag: str) -> bool:
 
 @contextlib.contextmanager
 def flock(lock_path: Path):
-    """Hold an exclusive fcntl lock on `lock_path` for the body's lifetime.
+    """Hold an exclusive file lock on `lock_path` for the body's lifetime.
 
     Creates the lock file (and parent dirs) on demand. Used by
     `store/local_facts.py` and `store/tasks.py` to serialize mutations
-    to their JSON files. Single-host only — fcntl semantics are
+    to their JSON files. Single-host only — the semantics are
     process-local, not network-mounted.
+
+    POSIX: blocking fcntl.flock. Windows: msvcrt.locking on the first
+    byte — LK_LOCK gives up after ~10s, so we loop until acquired to
+    keep the blocking contract identical across platforms.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        if sys.platform == "win32":  # pragma: no cover — Windows CI
+            fh.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        else:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def detached_popen_kwargs() -> dict:
+    """Extra subprocess.Popen kwargs that put the child in its own
+    session / process group, so (a) it can outlive the parent and (b)
+    the parent can take the whole tree out in one call.
+
+    POSIX: start_new_session=True (setsid). Windows: new process group +
+    detached console — the closest equivalent (there is no setsid)."""
+    if sys.platform == "win32":  # pragma: no cover — Windows CI
+        return {"creationflags":
+                (subprocess.CREATE_NEW_PROCESS_GROUP
+                 | getattr(subprocess, "DETACHED_PROCESS", 0x00000008))}
+    return {"start_new_session": True}
+
+
+def terminate_process_group(proc, *, grace_s: float = 3.0) -> None:
+    """Terminate `proc` AND its descendants, cross-platform.
+
+    POSIX: SIGTERM the process group (child must have been spawned with
+    `detached_popen_kwargs()`), escalating to SIGKILL after `grace_s`.
+    Windows: `taskkill /T` takes the tree out (a bare terminate() would
+    orphan grandchildren, e.g. the sidecar's node child)."""
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":  # pragma: no cover — Windows CI
         try:
-            yield
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        return
+    import signal as _signal
+    try:
+        os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 def read_json(path: Path, default):

@@ -127,26 +127,14 @@ def _make_apply_with_wake(*, session: str, chat_id: str, profile: str,
 
 
 def _terminate_subscribe_group(proc: subprocess.Popen) -> None:
-    """Kill the entire subscribe process group (npx + node + lark-cli).
+    """Kill the entire subscribe process tree (npx + node + lark-cli).
 
     A plain proc.terminate() only signals npx; the lark-cli grandchild
-    then lives on as an orphan after each up/down cycle.
-    Putting the subprocess in its own session (start_new_session=True at
-    Popen time) means we can take the whole group out with one killpg.
-    """
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        return
-    try:
-        proc.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+    then lives on as an orphan after each up/down cycle. The child was
+    spawned with `util.detached_popen_kwargs()` so the whole tree goes
+    in one call (killpg on POSIX, taskkill /T on Windows)."""
+    from claudeteam.util import terminate_process_group
+    terminate_process_group(proc)
 
 
 def _load_seen_msg_ids() -> set[str]:
@@ -437,6 +425,7 @@ def main(argv: list[str]) -> int:
         # - start_new_session=True puts the npx → node → lark-cli chain in its
         #   own process group so SIGTERMing the router can kill the whole tree
         #   in one killpg call (otherwise grandchildren are orphaned).
+        from claudeteam.util import detached_popen_kwargs
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -444,7 +433,7 @@ def main(argv: list[str]) -> int:
             text=True,
             bufsize=1,  # line-buffered
             env=lark.subprocess_env(),
-            start_new_session=True,
+            **detached_popen_kwargs(),
         )
     except FileNotFoundError:
         pidlock.release(pid_file)

@@ -121,6 +121,18 @@ def _check_session(rep: HealthReport, session: str) -> bool:
     if tmux.has_session(session):
         rep.ok(f"tmux session: {session}")
         return True
+    if not tmux.available():
+        # Headless host (Windows native / minimal server): an all-ACP team
+        # runs fine without tmux — the agents live in the router. Only a
+        # roster with tmux-runner agents is actually broken here.
+        agents = config.agent_names()
+        if agents and all(config.agent_runner(a) == "acp" for a in agents):
+            rep.yellow("tmux not installed — headless mode (all agents acp; "
+                       "viewer panes unavailable)")
+        else:
+            rep.fail("tmux not installed and the roster has tmux-runner "
+                     "agents — install tmux or move them to ACP-capable CLIs")
+        return False
     rep.fail(f"tmux session {session} not running (run `claudeteam start`)")
     return False
 

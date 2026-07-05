@@ -49,7 +49,9 @@ def _kill_pid_file(name: str, pid_file) -> int:
             return 0
         time.sleep(0.1)
     try:
-        os.kill(pid, signal.SIGKILL)
+        # SIGKILL doesn't exist on Windows — os.kill there maps any
+        # signal onto TerminateProcess, so SIGTERM is the same hard stop.
+        os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
     except ProcessLookupError:
         print(f"🛑 {name}: pid {pid} stopped")
         pid_file.unlink(missing_ok=True)

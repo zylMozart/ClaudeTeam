@@ -1282,10 +1282,11 @@ def _login_run_subprocess(ctx: SlashContext, argv: list, env: dict,
         os.close(fd)
         try:
             out = open(out_path, "wb")
+            from claudeteam.util import detached_popen_kwargs
             proc = subprocess.Popen(argv, env=env, stdout=out,
                                     stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL,
-                                    start_new_session=True)
+                                    **detached_popen_kwargs())
             out.close()   # child keeps its dup'd fd; parent handle not needed
         except (OSError, ValueError) as e:
             _login_post_card(

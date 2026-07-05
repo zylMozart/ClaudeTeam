@@ -442,6 +442,22 @@ SPAWN_FAILED = "spawn_failed"
 CONFIG_ERROR = "config_error"
 
 
+def provision_headless(agent: str) -> str:
+    """Provision an ACP agent with NO tmux at all (Windows native / a
+    server without tmux): identity + workspace + agent home + status.
+    Everything the AcpHost needs; only the cosmetic viewer is missing.
+    Always READY."""
+    cfg = config.load_team().get("agents", {}).get(agent, {})
+    cli = cfg.get("cli", "claude-code")
+    model = (cfg.get("model") or env_str("CLAUDETEAM_DEFAULT_MODEL")
+             or config.load_team().get("default_model", "opus"))
+    identity.write(agent, role=cfg.get("role") or agent, cli=cli, model=model)
+    paths.agent_workspace(agent).mkdir(parents=True, exist_ok=True)
+    _ensure_agent_home(agent, cli)
+    local_facts.upsert_status(agent, "待命", "acp: session starts on first message")
+    return READY
+
+
 def _provision_acp_viewer(agent: str, target: tmux.Target) -> str:
     """Provision an ACP agent: its CLI runs as a subprocess of the router's
     AcpHost, NOT in this pane — the pane becomes a read-only viewer tailing
@@ -464,7 +480,11 @@ def _provision_acp_viewer(agent: str, target: tmux.Target) -> str:
               f"(agent runs inside router)'; "
               f"tail -n 200 -F {shlex.quote(str(tf))}")
     if not tmux.spawn_agent(target, viewer):
-        return SPAWN_FAILED
+        # The viewer is cosmetic — the agent itself lives in the router and
+        # works fine without it. Warn, never fail the provision over it.
+        import sys
+        print(f"  ⚠️ {agent}: viewer pane didn't start (agent unaffected; "
+              f"`claudeteam peek {agent}` still works)", file=sys.stderr)
     local_facts.upsert_status(agent, "待命", "acp: session starts on first message")
     return READY
 

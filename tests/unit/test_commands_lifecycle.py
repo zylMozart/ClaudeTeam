@@ -87,7 +87,8 @@ def _fake_tmux():
 
     # No-op sleep: provision's inject_and_confirm always settles once before
     # checking for motion; without this each provisioned pane paid ~1s.
-    with tmux_patch(has_session=has_session, has_window=has_window,
+    with tmux_patch(available=lambda: True,
+                    has_session=has_session, has_window=has_window,
                     new_session=new_session, new_window=new_window,
                     kill_window=kill_window, spawn_agent=spawn_agent,
                     send_keys=send_keys, capture_pane=capture_pane,

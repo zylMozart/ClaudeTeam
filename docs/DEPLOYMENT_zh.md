@@ -14,6 +14,18 @@
 
 ---
 
+## 平台支持
+
+| 平台 | 状态 | 说明 |
+| --- | --- | --- |
+| **macOS** | ✅ 完整 | 原生 host 部署；CI 覆盖 |
+| **Linux / Ubuntu** | ✅ 完整 | 原生 host 或 [Docker](DEPLOYMENT_docker_zh.md)；CI 覆盖 |
+| **Windows（WSL2 / Docker）** | ✅ 完整 | 在 WSL2 或 Docker Desktop 里照 Linux 步骤走——Windows 的推荐路径 |
+| **Windows（原生）** | 🧪 实验性 | **headless 纯 acp**：ACP agent（claude-code / codex）无 tmux 也能跑——没有 viewer pane，tmux 路线的 CLI（kimi / gemini / qwen …）不可用。文件锁 / 进程控制有 Windows 实现且 CI 有专门一腿跑测试，但没经过真实部署浸泡——会有毛边，优先 WSL2 |
+
+headless 模式不限于 Windows：任何没装 tmux 的主机上，全 ACP 编制照样能跑
+（`claudeteam start` 会打印 `🕶 headless mode`；`peek` 直读 transcript）。
+
 ## 开始之前
 
 装这几样（`pip` 装不了的）：

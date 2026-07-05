@@ -65,6 +65,15 @@ def _ok(args: list[str], run: Callable) -> bool:
     return run(args).returncode == 0
 
 
+def available() -> bool:
+    """True iff the tmux binary is on PATH. The headless gate: hosts
+    without tmux (Windows native, minimal servers) can still run all-ACP
+    teams — callers branch on this instead of calling shutil.which
+    directly so tests can stub one seam (`tmux_patch(available=...)`)."""
+    import shutil
+    return shutil.which("tmux") is not None
+
+
 def has_session(session: str, *, run: Callable = _default_run) -> bool:
     # `=` forces an exact session-name match. Without it tmux prefix-matches,
     # so with only `ClaudeTeam-other` running, has_session("ClaudeTeam")

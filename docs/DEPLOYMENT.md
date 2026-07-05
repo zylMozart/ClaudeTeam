@@ -17,6 +17,19 @@ on Docker / a server → see [Docker deploy](DEPLOYMENT_docker.md).
 
 ---
 
+## Platform support
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| **macOS** | ✅ full | native host deploy; CI-tested |
+| **Linux / Ubuntu** | ✅ full | native host deploy or [Docker](DEPLOYMENT_docker.md); CI-tested |
+| **Windows (WSL2 / Docker)** | ✅ full | run the Linux instructions inside WSL2 or Docker Desktop — the recommended Windows path |
+| **Windows (native)** | 🧪 experimental | **headless acp-only**: ACP agents (claude-code / codex) work with no tmux — no viewer panes, and tmux-runner CLIs (kimi / gemini / qwen / …) are unavailable. File locking / process control have Windows implementations and a CI leg runs the suite there, but it hasn't had real-deployment soak — expect edges, prefer WSL2 |
+
+Headless mode is not Windows-specific: on any host without tmux, an
+all-ACP roster still runs (`claudeteam start` prints `🕶 headless mode`;
+`peek` reads transcripts directly).
+
 ## Before you begin
 
 Install these (the bits `pip` can't):

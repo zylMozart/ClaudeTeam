@@ -202,9 +202,10 @@ def respawn(spec: ProcessSpec, *,
     # alive, fd points at router.log, but file size 0 indefinitely.
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    from claudeteam.util import detached_popen_kwargs
     try:
-        runner(spec.spawn_cmd, start_new_session=True,
-               stdout=stdout, stderr=stderr, env=env)
+        runner(spec.spawn_cmd, stdout=stdout, stderr=stderr, env=env,
+               **detached_popen_kwargs())
         return True
     except (OSError, ValueError) as e:
         print(f"  ⚠️ {spec.name} respawn failed: {e}")

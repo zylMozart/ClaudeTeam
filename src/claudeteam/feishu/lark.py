@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Callable
+
+if sys.platform != "win32":
+    import pwd  # POSIX-only; subprocess_env's HOME reset has a Windows branch
 
 from claudeteam.util import env_str
 
@@ -237,7 +240,10 @@ def subprocess_env() -> dict[str, str]:
     if no_proxy:
         for key in _PROXY_KEYS:
             env.pop(key, None)
-    env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
+    if sys.platform == "win32":  # pragma: no cover — Windows CI
+        env["HOME"] = os.environ.get("USERPROFILE", os.path.expanduser("~"))
+    else:
+        env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
     token = _ensure_tenant_token()
     if token:
         # lark-cli refuses to start if TENANT_ACCESS_TOKEN is set without a

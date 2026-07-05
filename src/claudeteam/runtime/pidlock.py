@@ -43,12 +43,24 @@ def read_pid(pid_file: Path) -> int | None:
 
 
 def pid_alive(pid: int) -> bool:
-    """True if `pid` exists and we can signal it (kill 0).
+    """True if `pid` exists and we can signal it.
 
-    OSError covers ProcessLookupError (no such pid), PermissionError
-    (not ours — but daemons here are always owned by the same user
-    so this rarely fires), and other variants. Either way: not usable.
-    """
+    POSIX: kill(pid, 0) — OSError covers ProcessLookupError (no such
+    pid), PermissionError (not ours), and other variants. Windows has no
+    signal-0 probe; OpenProcess + a 0ms wait distinguishes live from
+    exited (an exited-but-open handle reports WAIT_OBJECT_0)."""
+    import sys
+    if sys.platform == "win32":  # pragma: no cover — Windows CI
+        import ctypes
+        SYNCHRONIZE = 0x00100000
+        h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if not h:
+            return False
+        try:
+            # WAIT_TIMEOUT (0x102) = still running; WAIT_OBJECT_0 = exited
+            return ctypes.windll.kernel32.WaitForSingleObject(h, 0) == 0x102
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
     try:
         os.kill(pid, 0)
     except OSError:
