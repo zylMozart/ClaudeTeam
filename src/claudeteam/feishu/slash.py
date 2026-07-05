@@ -714,12 +714,8 @@ def _stop_one(agent: str, ctx: SlashContext) -> tuple[bool, str]:
     misleads any later audit (acceptance F-6)."""
     from claudeteam.runtime import config as _config
     if _config.agent_runner(agent) == "acp":
-        from claudeteam.store import acp_queue
-        try:
-            acp_queue.enqueue(agent, "", kind="cancel")
-            return True, "acp session/cancel"
-        except OSError:
-            return False, "acp session/cancel"
+        from claudeteam.runtime import acp_host
+        return acp_host.request_cancel(agent), "acp session/cancel"
     from claudeteam.agents import adapter_for_agent
     try:
         keys = adapter_for_agent(agent).interrupt_keys()
@@ -768,13 +764,9 @@ def _handle_clear(args: str, ctx: SlashContext) -> str:
     if _config.agent_runner(agent) == "acp":
         # ACP context reset = discard the saved session (next message opens
         # a fresh one and re-runs the identity turn) + stop the subprocess.
-        from claudeteam.runtime import paths as _paths
-        from claudeteam.store import acp_queue
-        try:
-            acp_queue.enqueue(agent, "", kind="stop")
-            (_paths.acp_agent_dir(agent) / "session.json").unlink(missing_ok=True)
-        except OSError as e:
-            return f"❌ /clear → {agent} · acp 会话重置失败: {e}"
+        from claudeteam.runtime import acp_host
+        if not acp_host.recycle(agent):
+            return f"❌ /clear → {agent} · acp 会话重置失败"
         return (f"✅ /clear → {agent} · acp 会话已作废，"
                 f"下一条消息将开新会话并重新入职")
     # All five CLIs expose `/clear`, but get it from the adapter rather than

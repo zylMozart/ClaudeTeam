@@ -164,6 +164,25 @@ def test_agent_crash_rearms_row_and_respawns():
         assert prompts.count("[init w]") == 2
 
 
+def test_request_cancel_enqueues_control_row():
+    with isolated_env(team=_TEAM):
+        assert acp_host.request_cancel("w")
+        rows = acp_queue.rows("w")
+        assert [r["kind"] for r in rows] == ["cancel"]
+
+
+def test_recycle_stops_subprocess_and_drops_session():
+    """The shared client op behind restart / fire / /clear: a durable stop
+    row + the saved session invalidated so the next message opens fresh."""
+    with isolated_env(team=_TEAM):
+        sess = acp_host._session_file("w")
+        sess.parent.mkdir(parents=True, exist_ok=True)
+        sess.write_text('{"session_id": "sess-old"}')
+        assert acp_host.recycle("w")
+        assert not sess.exists()
+        assert [r["kind"] for r in acp_queue.rows("w")] == ["stop"]
+
+
 def test_retired_agent_is_not_prompted():
     with isolated_env(team=_TEAM) as tmp:
         with _identity_stub(tmp):

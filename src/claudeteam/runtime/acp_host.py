@@ -240,7 +240,7 @@ class AgentWorker:
                 continue
             if not self.ensure_session():
                 # can't run it now — un-claim so the row isn't stranded
-                acp_queue.settle(self.agent, row["qid"], acp_queue.PENDING)
+                acp_queue.requeue(self.agent, row["qid"])
                 self.stop_event.wait(backoff_s)
                 continue
             self._run_turn(row)
@@ -270,8 +270,7 @@ class AgentWorker:
                                           f"ACP turn failed: {e}",
                                           blocker=str(e)[:120])
             else:
-                acp_queue.settle(self.agent, row["qid"], acp_queue.PENDING,
-                                 error=str(e))
+                acp_queue.requeue(self.agent, row["qid"], error=str(e))
                 self.log(f"  ⚠️ {self.agent}: turn error ({e}); row re-armed")
             return
         acp_queue.settle(self.agent, row["qid"], acp_queue.DONE,
@@ -320,6 +319,30 @@ class AgentWorker:
 
 def _ts() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def request_cancel(agent: str) -> bool:
+    """Interrupt `agent`'s in-flight turn: durable cancel row, consumed by
+    the host control thread which fires session/cancel. The client-side op
+    behind `/stop` for ACP agents."""
+    try:
+        acp_queue.enqueue(agent, "", kind="cancel")
+        return True
+    except OSError:
+        return False
+
+
+def recycle(agent: str) -> bool:
+    """Tear down `agent`'s ACP subprocess AND invalidate its saved session,
+    so the next message opens a fresh session (new roster config takes
+    effect + identity turn re-runs). The shared client-side op behind
+    `restart`, `fire`, and `/clear` for ACP agents."""
+    try:
+        acp_queue.enqueue(agent, "", kind="stop")
+        _session_file(agent).unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
 
 
 def probe(agent: str) -> str:

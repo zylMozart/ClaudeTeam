@@ -137,6 +137,13 @@ def settle(agent: str, qid: str, state: str, *,
     return False
 
 
+def requeue(agent: str, qid: str, *, error: str = "") -> bool:
+    """Put a claimed row back to pending for another attempt (turn errored
+    but the message must not be lost). The explicit name for what would
+    otherwise read as a confusing settle-to-PENDING."""
+    return settle(agent, qid, PENDING, error=error)
+
+
 def recover_stuck(agent: str) -> list[dict]:
     """On host restart: any row still `prompting` was in flight when the
     previous host died. Re-arm it (→ pending) unless it already burned
