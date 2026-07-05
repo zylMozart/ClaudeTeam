@@ -51,6 +51,7 @@ from datetime import datetime
 from typing import Callable
 
 from claudeteam.agents import identity
+from claudeteam.runtime import config as _config
 from claudeteam.runtime import pane_probe
 from claudeteam.feishu.cards import (
     beijing_stamp, column_set_2, column_set_3, fenced_block, load_color,
@@ -128,7 +129,6 @@ def _live_agents() -> tuple[list[str], frozenset[str], frozenset[str], dict]:
     ctx.agent_set / ctx.lazy_agents so editing claudeteam.toml takes
     effect immediately (no router restart). One disk read per slash
     event — negligible vs the per-agent tmux subprocesses below."""
-    from claudeteam.runtime import config as _config
     agents_dict = _config.load_team().get("agents", {})
     names = list(agents_dict.keys())
     return (names, frozenset(names),
@@ -224,15 +224,15 @@ def _handle_team(args: str, ctx: SlashContext) -> dict:
             fired[agent] = (status.get("task") or status.get("note")
                             or status.get("blocker") or "已停止")
             continue
-        from claudeteam.runtime import config as _config
         if _config.agent_runner(agent) == "acp":
             # ACP agents: state comes from the delivery queue + host pid —
-            # exact turn lifecycle, no pane scraping.
+            # exact turn lifecycle, no pane scraping. A failed probe renders
+            # as its own state, never as healthy-idle.
             from claudeteam.runtime import acp_host
             try:
                 acp_states[agent] = acp_host.probe(agent)
             except OSError:
-                acp_states[agent] = pane_probe.IDLE
+                acp_states[agent] = "probe_failed"
         else:
             to_probe[agent] = tmux.Target(ctx.session, agent)
     try:
@@ -630,6 +630,17 @@ def _handle_send(args: str, ctx: SlashContext) -> str:
     agent, msg = parts[0].strip(), parts[1].strip()
     if (warn := _bad_agent(agent, ctx)):
         return warn
+    if _config.agent_runner(agent) == "acp":
+        # The pane is a read-only tail viewer — send-keys into it "succeeds"
+        # at the tmux level while the agent never sees a byte. Queue it.
+        from claudeteam.store import acp_queue
+        if local_facts.is_retired(agent):
+            return f"⏸ /send → {agent} · 已停止 (fired)，不投递"
+        try:
+            acp_queue.enqueue(agent, msg, sender="user")
+        except OSError as e:
+            return f"❌ /send → {agent} · acp 入队失败: {e}"
+        return f"✅ /send → {agent}（acp 已入队）\n内容: {msg}"
     target = tmux.Target(ctx.session, agent)
     ok = tmux.inject(target, msg)
     glyph = "✅" if ok else "❌"
@@ -656,7 +667,6 @@ def _handle_compact(args: str, ctx: SlashContext) -> str:
     agent = (parts[0] if parts else _default_agent(ctx)).strip()
     if (warn := _bad_agent(agent, ctx)):
         return warn
-    from claudeteam.runtime import config as _config
     if _config.agent_runner(agent) == "acp":
         # No REPL to type /compact into. The SDK auto-compacts on context
         # pressure; the manual escape hatch is a fresh session via /clear.
@@ -712,7 +722,6 @@ def _stop_one(agent: str, ctx: SlashContext) -> tuple[bool, str]:
     Returns (ok, method) so the chat receipt can say what ACTUALLY
     happened — telling the operator "已送中断键（Esc）" for an ACP cancel
     misleads any later audit (acceptance F-6)."""
-    from claudeteam.runtime import config as _config
     if _config.agent_runner(agent) == "acp":
         from claudeteam.runtime import acp_host
         return acp_host.request_cancel(agent), "acp session/cancel"
@@ -760,7 +769,6 @@ def _handle_clear(args: str, ctx: SlashContext) -> str:
     agent = args.strip().split()[0]
     if (warn := _bad_agent(agent, ctx)):
         return warn
-    from claudeteam.runtime import config as _config
     if _config.agent_runner(agent) == "acp":
         # ACP context reset = discard the saved session (next message opens
         # a fresh one and re-runs the identity turn) + stop the subprocess.

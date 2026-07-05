@@ -89,6 +89,13 @@ def list_messages(agent: str, *, unread_only: bool = False) -> list[dict]:
     return sorted(rows, key=lambda m: m.get("created_at", 0))
 
 
+def all_messages() -> list[dict]:
+    """Every inbox row, unfiltered and unsorted — for whole-team scans
+    (standup's activity check) that would otherwise re-parse the shared
+    inbox file once per agent."""
+    return list(read_json(_inbox_file(), {"messages": []}).get("messages", []))
+
+
 def mark_read(local_id: str) -> bool:
     with _locked():
         path = _inbox_file()

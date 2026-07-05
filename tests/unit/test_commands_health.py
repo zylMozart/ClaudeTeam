@@ -80,7 +80,8 @@ def test_health_returns_one_when_team_config_missing():
 
 
 def test_health_returns_one_when_pane_window_missing():
-    team = {"session": "S", "agents": {"manager": {}, "missing_w": {}}}
+    team = {"session": "S", "agents": {"manager": {"runner": "tmux"},
+                                       "missing_w": {"runner": "tmux"}}}
     with isolated_env(team=team, runtime_config={"chat_id": "oc_x"}), _stub_tmux(
             session_alive=True, panes_with_cli=["manager"]):
         rc, out, _ = run_cli(["health"])

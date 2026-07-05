@@ -204,7 +204,15 @@ class AcpClient:
                 msg = json.loads(line)
             except ValueError:
                 continue  # adapter debug noise on stdout — ignore
-            self._dispatch(msg)
+            try:
+                self._dispatch(msg)
+            except Exception:
+                # The reader is the only thread that can resolve pending
+                # requests — if a dispatch error (e.g. replying to an agent
+                # request while its stdin is closing) killed it here, a
+                # worker blocked in prompt() would hang the full turn
+                # timeout instead of failing fast at stdout-EOF below.
+                continue
         self._fail_all_pending("agent stdout closed (process died?)")
 
     def _dispatch(self, msg: dict) -> None:
@@ -237,12 +245,18 @@ class AcpClient:
                 result = self.permission_handler(msg.get("params") or {})
             except Exception:
                 result = {"outcome": {"outcome": "cancelled"}}
-            self._write({"jsonrpc": "2.0", "id": rid, "result": result})
+            try:
+                self._write({"jsonrpc": "2.0", "id": rid, "result": result})
+            except AcpError:
+                pass  # agent dying mid-request; EOF will fail pending turns
             return
         # fs/terminal methods we declined in clientCapabilities, or unknowns
-        self._write({"jsonrpc": "2.0", "id": rid,
-                     "error": {"code": -32601,
-                               "message": f"client does not support {method}"}})
+        try:
+            self._write({"jsonrpc": "2.0", "id": rid,
+                         "error": {"code": -32601,
+                                   "message": f"client does not support {method}"}})
+        except AcpError:
+            pass
 
     def _fail_all_pending(self, reason: str) -> None:
         with self._pending_lock:

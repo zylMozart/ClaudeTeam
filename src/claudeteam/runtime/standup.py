@@ -49,6 +49,16 @@ def _state_file():
     return paths.state_file("standup.json")
 
 
+def _locked():
+    """Serialise the check-interval→send→mark sequence: the ticker thread
+    and a `/standup` slash dispatch run in the same router process, and an
+    unguarded read-check-write let both pass the interval gate at once →
+    duplicate 巡视 prompts back-to-back (store/CLAUDE.md's flock rule)."""
+    from claudeteam.util import flock
+    paths.ensure_state_dir()
+    return flock(paths.state_file(".standup.lock"))
+
+
 def last_report_at() -> int:
     return int(read_json(_state_file(), {}).get("last_report_at_ms", 0))
 
@@ -77,12 +87,16 @@ def report_prompt(agents: list[str]) -> str:
 def team_active(agents: list[str], *, window_ms: int,
                 now: Callable[[], int] = now_ms) -> bool:
     """Durable-signal activity check — see module docstring for why
-    heartbeats are excluded."""
+    heartbeats are excluded. The shared inbox is parsed ONCE (it holds
+    every agent's rows and grows for the team's lifetime; a per-agent
+    list_messages loop re-parsed it N times per tick)."""
     t = now()
+    roster = set(agents)
+    for m in local_facts.all_messages():
+        if (m.get("to") in roster and m.get("from") != SENDER
+                and t - int(m.get("created_at", 0)) < window_ms):
+            return True
     for agent in agents:
-        for m in local_facts.list_messages(agent):
-            if m.get("from") != SENDER and t - int(m.get("created_at", 0)) < window_ms:
-                return True
         try:
             for r in acp_queue.rows(agent):
                 if r.get("sender") != SENDER and t - int(r.get("enq_at", 0)) < window_ms:
@@ -111,12 +125,19 @@ def deliver_report_request(target: str, agents: list[str], *,
         except OSError as e:
             log(f"  ⚠️ standup enqueue failed: {e}")
             return False
-    # tmux target: best-effort pane inject (same posture as deliver)
+    # tmux target: inject ONLY into a ready CLI. Without the gate, a lazy /
+    # crashed target is a bare shell — the multi-line 巡视 prompt gets typed
+    # into it and the shell EXECUTES fragments of it, while inject's True
+    # marks the round reported. A standup isn't worth booting a dormant CLI
+    # for either — skip, return False, and the ticker retries next round.
     from claudeteam.agents import adapter_for_agent
-    from claudeteam.runtime import tmux
+    from claudeteam.runtime import tmux, wake
     try:
         adapter = adapter_for_agent(target)
         tgt = tmux.Target(config.session_name(), target)
+        if not wake.is_ready(tgt, adapter):
+            log(f"  ⏭  standup: {target} CLI not ready; skipping this round")
+            return False
         return bool(tmux.inject(tgt, prompt, submit_keys=adapter.submit_keys()))
     except Exception as e:
         log(f"  ⚠️ standup inject failed for {target}: {e}")
@@ -136,13 +157,14 @@ def tick(*, now: Callable[[], int] = now_ms, log: Callable = print) -> bool:
     agents = config.agent_names()
     if target not in agents:
         return False
-    if now() - last_report_at() < interval_ms:
-        return False
-    if not team_active(agents, window_ms=window_ms, now=now):
-        return False
-    if not deliver_report_request(target, agents, log=log):
-        return False
-    _mark_reported()
+    with _locked():
+        if now() - last_report_at() < interval_ms:
+            return False
+        if not team_active(agents, window_ms=window_ms, now=now):
+            return False
+        if not deliver_report_request(target, agents, log=log):
+            return False
+        _mark_reported()
     log(f"  📣 standup: 巡视请求已发给 {target}")
     return True
 
@@ -156,9 +178,10 @@ def trigger_now(*, log: Callable = print) -> bool:
     if target not in agents:
         log(f"  ⚠️ standup target {target!r} not in roster")
         return False
-    if not deliver_report_request(target, agents, log=log):
-        return False
-    _mark_reported()
+    with _locked():
+        if not deliver_report_request(target, agents, log=log):
+            return False
+        _mark_reported()
     return True
 
 

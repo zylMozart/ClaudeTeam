@@ -72,6 +72,11 @@ def main(argv: list[str]) -> int:
         from claudeteam.runtime import acp_host
         if acp_host.recycle(agent):
             print(f"  ⏹  {agent}: ACP subprocess stop queued")
+        else:
+            # A silent recycle failure would let the saved session survive
+            # into a rehire — the fired agent would resume its old context.
+            warn(f"⚠️  {agent}: ACP recycle failed — state/acp/{agent}/"
+                 f"session.json may survive into a rehire; remove it by hand")
 
     # Archive the workspace — but only if there's actually something to
     # preserve (a roster cfg to stash, or a workspace dir). Re-firing an

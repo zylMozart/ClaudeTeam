@@ -37,6 +37,16 @@ def _shutdown_agents() -> int:
 
     Best-effort like `down`: a not-running session is success (0); only a
     kill that actually fails sets rc=1."""
+    # ACP agents live inside the router, not the panes — killing the tmux
+    # session alone only removes their viewers while they keep consuming
+    # queues. Pause the fleet first (sessions stay on disk, so a later
+    # /restart resumes context via session/load).
+    from claudeteam.runtime import acp_host
+    if acp_host.pause_all():
+        print("⏸  ACP agents paused (queues held; sessions kept for /restart)")
+    else:
+        warn("⚠️  failed to pause ACP agents (state dir unwritable?)")
+
     session = config.session_name()
     if not tmux.has_session(session):
         print(f"⏭  tmux session {session} not running")

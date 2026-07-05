@@ -95,6 +95,11 @@ def main(argv: list[str]) -> int:
             "   先运行 `claudeteam feishu connect` 引导注册自建应用并自动建群，"
             "再 `claudeteam up`。")
 
+    # A fresh bring-up always clears a /shutdown pause — otherwise the ACP
+    # fleet would stay dormant while every pane and daemon looks healthy.
+    from claudeteam.runtime import acp_host
+    acp_host.resume_all()
+
     # Fresh bring-up (session didn't exist yet) → the manager runs the roll-call
     # once everything's live. Restarts/idempotent `up` skip it (no re-spam).
     fresh = not tmux.has_session(config.session_name())

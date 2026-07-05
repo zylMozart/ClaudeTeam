@@ -44,24 +44,27 @@ def _reidentify_one(agent: str, session: str, *,
     agent inside `adapter_for_agent`. Empty `cli` falls back to the
     config-driven lookup so the single-agent error contract stays.
     """
-    # Re-render identity.md from current config BEFORE the wake prompt —
-    # the prompt only tells the agent "go read your identity.md", so a
-    # stale disk file means the LLM picks up the OLD specialty / role /
-    # notes. Edits to claudeteam.toml only land via this rewrite.
-    try:
-        identity.write(agent)
-    except Exception as e:
-        print(f"  ⚠️ {agent}: identity write failed: {e}")
+    # Order matters: run the SKIP gates (retired / no pane / bad adapter)
+    # before identity.write — a run that reports failure must be
+    # side-effect-free, or a half-baked roster edit lands on disk and
+    # silently onboards the next wake despite the all-fail output.
+    from claudeteam.store import local_facts
+    if local_facts.is_retired(agent):
+        print(f"  ⏸  {agent}: 已停止 (fired); skipped")
         return False
-    # ACP agent: queue the init prompt as a durable turn (the pane is just
-    # a transcript viewer — injecting there would reach nobody).
     if config.agent_runner(agent) == "acp":
+        # Queue the init prompt as a durable turn (the pane is just a
+        # transcript viewer — injecting there would reach nobody).
         from claudeteam.store import acp_queue
         try:
+            identity.write(agent)
             acp_queue.enqueue(agent, identity.init_prompt(agent),
                               sender="reidentify")
         except OSError as e:
             print(f"  ❌ {agent}: acp enqueue failed: {e}")
+            return False
+        except Exception as e:
+            print(f"  ⚠️ {agent}: identity write failed: {e}")
             return False
         print(f"  ✅ {agent} (acp: identity turn queued)")
         return True
@@ -77,6 +80,14 @@ def _reidentify_one(agent: str, session: str, *,
             adapter = adapter_for_agent(agent)
     except KeyError as e:
         print(f"  ⚠️ {agent}: {e}")
+        return False
+    # Re-render identity.md from current config BEFORE the wake prompt —
+    # the prompt only tells the pane "go read your identity.md", so a
+    # stale disk file means the LLM picks up the OLD specialty / role.
+    try:
+        identity.write(agent)
+    except Exception as e:
+        print(f"  ⚠️ {agent}: identity write failed: {e}")
         return False
     if not tmux.inject(target, identity.init_prompt(agent),
                        submit_keys=adapter.submit_keys()):

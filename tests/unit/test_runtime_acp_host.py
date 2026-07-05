@@ -183,6 +183,106 @@ def test_recycle_stops_subprocess_and_drops_session():
         assert [r["kind"] for r in acp_queue.rows("w")] == ["stop"]
 
 
+def test_probe_ignores_control_rows_and_checks_pid_liveness():
+    import os
+    from claudeteam.runtime import pane_probe
+    with isolated_env(team=_TEAM):
+        # empty queue → idle
+        assert acp_host.probe("w") == pane_probe.IDLE
+        # a leftover stop row (out-of-router restart) is NOT work
+        acp_queue.enqueue("w", "", kind="stop")
+        assert acp_host.probe("w") == pane_probe.IDLE
+        # pending prompt + no live subprocess → dead
+        acp_queue.enqueue("w", "hi")
+        assert acp_host.probe("w") == pane_probe.DEAD
+        # live pid → busy; SIGKILL'd host mid-turn (dead pid) → dead
+        pidf = acp_host._pid_file("w")
+        pidf.parent.mkdir(parents=True, exist_ok=True)
+        pidf.write_text(str(os.getpid()))
+        assert acp_host.probe("w") == pane_probe.BUSY
+        acp_queue.claim_next("w")
+        pidf.write_text("999999999")
+        assert acp_host.probe("w") == pane_probe.DEAD
+
+
+def test_paused_worker_holds_queue_and_resume_releases():
+    with isolated_env(team=_TEAM) as tmp:
+        with _identity_stub(tmp):
+            acp_host.pause_all()
+            w = _worker()
+            acp_queue.enqueue("w", "held while paused")
+            w.start()
+            try:
+                time.sleep(1.2)
+                assert acp_queue.rows("w", state=acp_queue.DONE) == []
+                acp_host.resume_all()
+                assert _wait(lambda: acp_queue.rows("w", state=acp_queue.DONE))
+            finally:
+                w.stop()
+
+
+def test_unstartable_agent_parks_row_failed_with_visible_status():
+    """Missing adapter binary must not ping-pong the row forever with a
+    green delivery receipt — after MAX_ATTEMPTS it parks FAILED + 阻塞."""
+    from helpers import env_patch
+
+    class NoAcpAdapter(FakeAcpAdapter):
+        def acp_argv(self, agent, model):
+            return None
+
+    with isolated_env(team=_TEAM):
+        with env_patch(CLAUDETEAM_ACP_SPAWN_BACKOFF_S="0.05",
+                       CLAUDETEAM_ACP_QUEUE_POLL_S="0.05"):
+            w = acp_host.AgentWorker("w", adapter=NoAcpAdapter(),
+                                     log=lambda *a, **k: None)
+            acp_queue.enqueue("w", "will never run")
+            w.start()
+            try:
+                assert _wait(lambda: acp_queue.rows("w", state=acp_queue.FAILED),
+                             timeout_s=10)
+            finally:
+                w.stop()
+        assert local_facts.get_status("w")["status"] == "阻塞"
+
+
+def test_identity_failure_discards_session_instead_of_persisting_it():
+    """If turn 0 fails, session.json must NOT exist — a saved identity-less
+    session would be resumed forever (fresh=False on session/load) and the
+    agent would never re-onboard."""
+    from helpers import env_patch
+    with isolated_env(team=_TEAM) as tmp:
+        with _identity_stub(tmp):
+            # identity turn stalls 5s but the init timeout is 0.3s → AcpError
+            with env_patch(CLAUDETEAM_ACP_INIT_TIMEOUT_S="0.3"):
+                w = _worker({"FAKE_ACP_TURN_DELAY_S": "5"})
+                assert w.ensure_session() is False
+            assert not acp_host._session_file("w").exists()
+            w.stop()
+
+
+def test_host_sync_workers_follows_live_roster():
+    import json as _json
+    from claudeteam.runtime import config as _cfg
+    with isolated_env(team={"agents": {"a": {"cli": "claude-code"}}}):
+        host = acp_host.AcpHost(log=lambda *a, **k: None)
+        host._sync_workers()
+        try:
+            assert set(host.workers) == {"a"}
+            # hire b mid-flight: rewrite the live team file; config re-reads
+            _cfg.team_file().write_text(_json.dumps(
+                {"agents": {"a": {"cli": "claude-code"},
+                            "b": {"cli": "claude-code"}}}))
+            host._sync_workers()
+            assert set(host.workers) == {"a", "b"}
+            # fire b from the roster → worker withdrawn
+            _cfg.team_file().write_text(_json.dumps(
+                {"agents": {"a": {"cli": "claude-code"}}}))
+            host._sync_workers()
+            assert set(host.workers) == {"a"}
+        finally:
+            host.stop()
+
+
 def test_retired_agent_is_not_prompted():
     with isolated_env(team=_TEAM) as tmp:
         with _identity_stub(tmp):

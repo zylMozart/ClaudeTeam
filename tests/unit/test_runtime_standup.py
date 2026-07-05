@@ -118,6 +118,29 @@ def test_trigger_now_bypasses_interval_and_activity():
         assert len(rows) == 1
 
 
+def test_tmux_target_not_ready_skips_round_without_marking():
+    """A lazy / crashed tmux target is a bare shell — injecting the 巡视
+    prompt there would EXECUTE fragments of it. The round must skip and
+    stay unmarked so the ticker retries."""
+    from helpers import attr_patch, tmux_patch
+    from claudeteam.runtime import tmux as _tmux, wake as _wake
+    team = {"agents": {"manager": {"cli": "claude-code", "runner": "tmux"}}}
+    with isolated_env(team=team):
+        local_facts.append_message("manager", "user", "干活")
+        inject_calls = []
+        with attr_patch(_wake, is_ready=lambda t, a, **k: False), \
+             tmux_patch(inject=lambda *a, **k: inject_calls.append(a) or True):
+            assert not standup.tick(log=lambda *a, **k: None)
+        assert inject_calls == []
+        assert standup.last_report_at() == 0
+        # ready pane → inject happens and the round is marked
+        with attr_patch(_wake, is_ready=lambda t, a, **k: True), \
+             tmux_patch(inject=lambda *a, **k: inject_calls.append(a) or True):
+            assert standup.tick(log=lambda *a, **k: None)
+        assert len(inject_calls) == 1
+        assert standup.last_report_at() > 0
+
+
 def test_report_prompt_lists_teammates_not_target():
     text = standup.report_prompt(["worker_a", "worker_b"])
     assert "worker_a" in text and "worker_b" in text

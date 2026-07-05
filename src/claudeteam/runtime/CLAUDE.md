@@ -33,7 +33,17 @@
 - 至少一次投递：host 崩溃时 in-flight 行会被下一个 host `recover_stuck`
   重臂重跑；所以 turn 必须容忍重放（幂等性由 LLM 语义兜底，别在
   这里做去重——去重是 router 层 msg_id 的活）。
-- 每个 fresh session 先跑 identity turn 0，然后才消费队列；
-  session/load 成功则跳过（上下文还在）。
+- 每个 fresh session 先跑 identity turn 0，**成功后才持久化 session.json
+  和消费队列**——identity 失败的 session 必须整个作废（否则 session/load
+  会永远恢复一个不知道自己是谁的 agent）。session/load 成功则跳过
+  identity（上下文还在）。
 - cancel 必须能打断 in-flight turn → 它走 host 级 control 线程，
   不走被阻塞的 worker 线程。这个分工别破坏。
+- worker 花名册跟随 LIVE roster（control 线程定期 _sync_workers）——
+  运行中 hire/fire/改 runner 都会生效，别改回启动时冻结。
+- claimed 行必须 settle 或 requeue，无一例外（worker 循环有兜底
+  try/except 就是为这个）；起不来的 agent 满 MAX_ATTEMPTS 停放
+  FAILED + 阻塞 status，不许 pending↔prompting 无限乒乓。
+- `/shutdown` 靠 `pause_all()`（state/acp/paused 标记文件）让 worker
+  蛰伏——只杀 tmux session 关不掉住在 router 里的 ACP agent。`up`
+  无条件 resume。

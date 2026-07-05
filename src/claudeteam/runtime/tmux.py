@@ -75,7 +75,13 @@ def has_session(session: str, *, run: Callable = _default_run) -> bool:
 
 
 def has_window(target: Target, *, run: Callable = _default_run) -> bool:
-    return _ok(["tmux", "has-session", "-t", f"={target}"], run)
+    # `=` on BOTH parts: tmux prefix-matches window names too, so with only
+    # `worker_kimi` alive, has_window(...:worker) said True and fire/restart
+    # would then fuzzy-kill worker_kimi's pane. Verified live: tmux
+    # has-session -t '=s:=w' → rc=1 "can't find window" for a prefix-only
+    # match, rc=0 for the exact name.
+    return _ok(["tmux", "has-session", "-t",
+                f"={target.session}:={target.window}"], run)
 
 
 def capture_pane(target: Target, *, lines: int = 80, run: Callable = _default_run) -> str:

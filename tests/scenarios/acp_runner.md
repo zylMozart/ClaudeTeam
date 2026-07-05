@@ -68,7 +68,23 @@ and send it a new message
 the fresh session (visible in the transcript), and answers the message.
 `claudeteam restart <agent>` likewise recycles it deliberately.
 
-## 7. Mixed team non-interference
+## 7. Hire while running
+
+**Given** the team is up
+**When** you add a new claude-code agent to `claudeteam.toml` and
+`claudeteam hire <name>` WITHOUT restarting the router, then @ it in the group
+**Then** within ~5s (roster refresh) a worker picks up its queue and it
+answers — no router restart needed.
+
+## 8. /shutdown actually silences ACP agents
+
+**Given** the team is up
+**When** you post `/shutdown 确认`, then (as a test) `claudeteam send <acp-agent> user "还在吗"`
+**Then** the message queues but is NOT consumed (agent paused, no reply,
+no token spend); after `/restart` the agent wakes, resumes its old session
+context, and drains the held message.
+
+## 9. Mixed team non-interference
 
 **Given** a team with both an ACP agent and a tmux agent (e.g. kimi)
 **When** you `@` each of them in one message ("@worker_cc @worker_kimi 各自报到")

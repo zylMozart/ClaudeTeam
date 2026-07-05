@@ -83,17 +83,28 @@ def _reap_stale_agent(agent: str, expected_argv0: str) -> None:
         pass
 
 
+def _queue_stat(agent: str):
+    """(st_mtime_ns, st_size) of the agent's queue file, or None. The
+    pollers remember the last value and skip flock+parse while unchanged —
+    an idle team then costs os.stat instead of lock traffic that contends
+    with producers."""
+    try:
+        st = os.stat(acp_queue.queue_path(agent))
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 class AgentWorker:
     """One ACP agent: subprocess lifecycle + queue consumption."""
 
-    def __init__(self, agent: str, *, host_environ: dict | None = None,
+    def __init__(self, agent: str, *,
                  popen: Callable | None = None,
                  adapter=None,
                  log: Callable = print):
         self.agent = agent
         self.log = log
         self._popen = popen
-        self._host_environ = host_environ
         self._adapter = adapter          # injectable for tests
         self.client: AcpClient | None = None
         self.session_id: str = ""
@@ -107,8 +118,7 @@ class AgentWorker:
         from claudeteam.runtime import agent_auth
         from claudeteam.runtime.lifecycle import _PROPAGATED_ENV
         from claudeteam.util import env_str
-        env = dict(self._host_environ if self._host_environ is not None
-                   else os.environ)
+        env = dict(os.environ)
         env["CLAUDETEAM_STATE_DIR"] = str(paths.state_dir())
         for var in _PROPAGATED_ENV:
             val = env_str(var)
@@ -196,19 +206,27 @@ class AgentWorker:
                 self.log(f"  ⚠️ {self.agent}: session/new failed: {e}")
                 client.stop()
                 return False
+        # Identity turn BEFORE the session is persisted or published: if it
+        # fails, this session must not survive — a saved-but-identity-less
+        # session would be resumed forever via session/load (fresh=False)
+        # and the agent would permanently not know the `claudeteam say`
+        # protocol. Fail the whole ensure_session instead; the row requeues
+        # and the next attempt starts clean.
+        if fresh and not self._identity_turn(client, sid):
+            client.stop()
+            return False
         with self._turn_lock:
             self.client = client
             self.session_id = sid
         write_json(_session_file(self.agent),
                    {"session_id": sid, "cwd": cwd, "updated_at": now_ms()})
-        if fresh:
-            self._identity_turn(client, sid)
         return True
 
-    def _identity_turn(self, client: AcpClient, sid: str) -> None:
+    def _identity_turn(self, client: AcpClient, sid: str) -> bool:
         """Turn 0 on every FRESH session: feed the identity init prompt so
         the agent knows who it is before real messages arrive. (A loaded
-        session already carries its identity in-context.)"""
+        session already carries its identity in-context.) Returns False on
+        failure — the caller must then discard the session."""
         from claudeteam.agents import identity
         from claudeteam.runtime import tunables
         _append_transcript(self.agent, f"\n===== identity init {_ts()} =====\n")
@@ -216,8 +234,10 @@ class AgentWorker:
             client.prompt(sid, identity.init_prompt(self.agent),
                           timeout_s=float(tunables.tunable(
                               "acp.init_timeout_s", 600.0)))
+            return True
         except AcpError as e:
             self.log(f"  ⚠️ {self.agent}: identity init turn failed: {e}")
+            return False
 
     # ── the consume loop ──────────────────────────────────────────
 
@@ -229,25 +249,65 @@ class AgentWorker:
         from claudeteam.runtime import tunables
         poll_s = float(tunables.tunable("acp.queue_poll_s", 0.5))
         backoff_s = float(tunables.tunable("acp.spawn_backoff_s", 15.0))
+        last_stat = object()   # sentinel ≠ any real stat → first pass parses
         while not self.stop_event.is_set():
-            if local_facts.is_retired(self.agent):
+            if is_paused() or local_facts.is_retired(self.agent):
                 self._teardown_client()
                 self.stop_event.wait(poll_s * 4)
                 continue
-            row = acp_queue.claim_next(self.agent)
-            if row is None:
+            # Fast path: queue file unchanged since the last empty claim →
+            # skip the flock+parse entirely.
+            cur_stat = _queue_stat(self.agent)
+            if cur_stat == last_stat:
                 self.stop_event.wait(poll_s)
                 continue
-            if not self.ensure_session():
-                # can't run it now — un-claim so the row isn't stranded
-                acp_queue.requeue(self.agent, row["qid"])
-                self.stop_event.wait(backoff_s)
+            row = acp_queue.claim_next(self.agent)
+            if row is None:
+                last_stat = cur_stat
+                self.stop_event.wait(poll_s)
                 continue
-            self._run_turn(row)
+            last_stat = object()  # we mutate the file below — force re-check
+            # A claimed row must ALWAYS be settled or re-armed — an
+            # unexpected exception killing this thread would otherwise
+            # strand it PROMPTING and wedge the agent until router restart.
+            try:
+                if not self.ensure_session():
+                    self._park_or_requeue(row, "agent could not start")
+                    self.stop_event.wait(backoff_s)
+                    continue
+                self._run_turn(row)
+            except Exception as e:
+                self.log(f"  ⚠️ {self.agent}: worker error: {e}")
+                self._teardown_client()
+                self._park_or_requeue(row, f"worker error: {e}")
+                self.stop_event.wait(backoff_s)
         self._teardown_client()
 
+    def _park_or_requeue(self, row: dict, reason: str) -> None:
+        """Re-arm a claimed row, or after MAX_ATTEMPTS park it FAILED with a
+        visible 阻塞 status — an unstartable agent (missing adapter binary,
+        bad auth) must surface to /team instead of ping-ponging its rows
+        pending↔prompting forever with a green delivery receipt."""
+        if int(row.get("attempts", 0)) >= acp_queue.MAX_ATTEMPTS:
+            acp_queue.settle(self.agent, row["qid"], acp_queue.FAILED,
+                             error=reason)
+            local_facts.append_log(self.agent, "acp_turn",
+                                   f"failed: {reason}", ref=row["qid"])
+            local_facts.upsert_status(self.agent, "阻塞", reason[:80],
+                                      blocker=reason[:120])
+        else:
+            acp_queue.requeue(self.agent, row["qid"], error=reason)
+
     def _run_turn(self, row: dict) -> None:
-        client, sid = self.client, self.session_id
+        # Snapshot under the lock — the control thread's stop/recycle can
+        # _teardown_client() between ensure_session() and here; a torn read
+        # would crash the worker on client=None.
+        with self._turn_lock:
+            client, sid = self.client, self.session_id
+        if client is None or not sid:
+            acp_queue.requeue(self.agent, row["qid"],
+                              error="client torn down before turn")
+            return
         preview = row["text"].strip().splitlines()[0][:60] if row["text"].strip() else "(empty)"
         local_facts.upsert_status(self.agent, "进行中", preview)
         _append_transcript(
@@ -321,6 +381,38 @@ def _ts() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _paused_file() -> Path:
+    return paths.state_dir() / "acp" / "paused"
+
+
+def is_paused() -> bool:
+    """True while /shutdown has the ACP fleet dormant. Workers see this and
+    tear down instead of consuming; sessions stay on disk so /restart
+    resumes context via session/load."""
+    return _paused_file().exists()
+
+
+def pause_all() -> bool:
+    """`/shutdown` for ACP agents: without this, killing the tmux session
+    only removes the viewer panes — the real agents live in the router and
+    would keep consuming queues while the operator believes the team is
+    offline."""
+    try:
+        _paused_file().parent.mkdir(parents=True, exist_ok=True)
+        _paused_file().touch()
+        return True
+    except OSError:
+        return False
+
+
+def resume_all() -> bool:
+    try:
+        _paused_file().unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def request_cancel(agent: str) -> bool:
     """Interrupt `agent`'s in-flight turn: durable cancel row, consumed by
     the host control thread which fires session/cancel. The client-side op
@@ -350,42 +442,68 @@ def probe(agent: str) -> str:
     `pane_probe` so /team and `claudeteam team` render both runners with one
     glyph map. No screen scraping: the queue + pid file ARE the state.
 
-      busy  — a turn is in flight (claimed row), or work is queued and the
-              subprocess is up
-      dead  — work is queued but the host subprocess is down (router died?)
-      idle  — no work; subprocess up or will spawn on demand (both healthy)
+      busy  — a PROMPT turn is in flight or queued, with a live subprocess
+      dead  — prompt work exists (in flight or queued) but the subprocess
+              is down (router died / SIGKILL'd mid-turn)
+      idle  — no prompt work; subprocess up or will spawn on demand
+
+    Control rows (cancel/stop) are NOT work — an out-of-router `restart`
+    leaves a pending stop row behind, and counting it flagged perfectly
+    healthy idle agents DEAD. One queue read serves both facts.
     """
     from claudeteam.runtime import pane_probe, pidlock
-    if acp_queue.has_inflight(agent):
-        return pane_probe.BUSY
+    all_rows = acp_queue.rows(agent)
+    prompts = [r for r in all_rows if r.get("kind") == "prompt"]
+    inflight = any(r.get("state") == acp_queue.PROMPTING for r in prompts)
+    pending = any(r.get("state") == acp_queue.PENDING for r in prompts)
+    if not inflight and not pending:
+        return pane_probe.IDLE
     pid = pidlock.read_pid(_pid_file(agent))
     alive = pid is not None and pidlock.pid_alive(pid)
-    if acp_queue.rows(agent, state=acp_queue.PENDING):
-        return pane_probe.BUSY if alive else pane_probe.DEAD
-    return pane_probe.IDLE
+    return pane_probe.BUSY if alive else pane_probe.DEAD
+
+
+def _acp_roster() -> list[str]:
+    return [a for a in config.agent_names() if config.agent_runner(a) == "acp"]
 
 
 class AcpHost:
-    """All ACP workers + the control-scan thread. One per router daemon."""
+    """All ACP workers + the control-scan thread. One per router daemon.
+
+    The worker set follows the LIVE roster (runtime/CLAUDE.md's no-config-
+    caching rule): `claudeteam hire` or a toml `runner` flip while the
+    router runs gets a worker within one roster-refresh tick — producers
+    already resolve `agent_runner()` live, so a boot-frozen consumer set
+    meant hired-later agents queued messages nobody ever claimed."""
 
     def __init__(self, agents: list[str] | None = None, *,
                  popen: Callable | None = None, log: Callable = print):
-        if agents is None:
-            agents = [a for a in config.agent_names()
-                      if config.agent_runner(a) == "acp"]
-        self.workers = {a: AgentWorker(a, popen=popen, log=log)
-                        for a in agents}
+        self._pinned_agents = agents      # tests pin a fixed set; prod follows toml
+        self._popen = popen
+        self.workers: dict[str, AgentWorker] = {}
         self.log = log
         self._stop = threading.Event()
         self._control_thread: threading.Thread | None = None
 
-    def start(self) -> None:
-        if not self.workers:
-            return
-        self.log(f"🔌 AcpHost: {len(self.workers)} ACP agent(s): "
-                 f"{', '.join(sorted(self.workers))}")
-        for w in self.workers.values():
+    def _sync_workers(self) -> None:
+        want = set(self._pinned_agents if self._pinned_agents is not None
+                   else _acp_roster())
+        for agent in sorted(want - set(self.workers)):
+            self.log(f"🔌 AcpHost: worker up for {agent}")
+            w = AgentWorker(agent, popen=self._popen, log=self.log)
+            self.workers[agent] = w
             w.start()
+        for agent in sorted(set(self.workers) - want):
+            self.log(f"🔌 AcpHost: worker down for {agent} (left roster)")
+            self.workers.pop(agent).stop()
+
+    def start(self) -> None:
+        self._sync_workers()
+        if self.workers:
+            self.log(f"🔌 AcpHost: {len(self.workers)} ACP agent(s): "
+                     f"{', '.join(sorted(self.workers))}")
+        # Control thread runs even with zero workers at boot — it is also
+        # the roster watcher, so an agent hired later still gets a worker.
         self._control_thread = threading.Thread(
             target=self._control_loop, daemon=True, name="acp-control")
         self._control_thread.start()
@@ -393,13 +511,31 @@ class AcpHost:
     def _control_loop(self) -> None:
         from claudeteam.runtime import tunables
         tick = float(tunables.tunable("acp.control_poll_s", 0.5))
+        refresh_s = float(tunables.tunable("acp.roster_refresh_s", 5.0))
+        last_sync = 0.0
+        stats: dict = {}   # agent → last seen queue stat (skip-unchanged)
         while not self._stop.wait(tick):
-            for agent, worker in self.workers.items():
+            now = time.monotonic()
+            if now - last_sync >= refresh_s:
+                last_sync = now
                 try:
-                    for row in acp_queue.take_control_rows(agent):
-                        worker.handle_control(row)
+                    self._sync_workers()
+                except Exception as e:
+                    self.log(f"  ⚠️ AcpHost roster sync error: {e}")
+            for agent, worker in list(self.workers.items()):
+                cur = _queue_stat(agent)
+                if cur == stats.get(agent, object()):
+                    continue
+                try:
+                    rows = acp_queue.take_control_rows(agent)
                 except OSError:
                     continue
+                if not rows:
+                    stats[agent] = cur   # settled view — skip until it moves
+                else:
+                    stats.pop(agent, None)  # we consumed → file changed again
+                for row in rows:
+                    worker.handle_control(row)
 
     def stop(self) -> None:
         self._stop.set()

@@ -41,8 +41,14 @@ MAX_ATTEMPTS = 3
 KEEP_SETTLED = 200
 
 
-def _queue_file(agent: str) -> Path:
+def queue_path(agent: str) -> Path:
+    """Public path accessor so pollers can cheap-check st_mtime_ns/st_size
+    before paying flock + full-parse (the host polls every agent 2×/second
+    forever; on an idle team that's all wasted lock traffic)."""
     return acp_agent_dir(agent) / "queue.json"
+
+
+_queue_file = queue_path
 
 
 def _locked(agent: str):

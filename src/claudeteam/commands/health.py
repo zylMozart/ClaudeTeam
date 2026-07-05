@@ -138,32 +138,34 @@ def _check_agents(rep: HealthReport, session: str, agents: list[str],
         target = tmux.Target(session, agent)
         hb = heartbeats.get(agent)
         hb_suffix = f"  ♥ {ago_ms(hb)}" if hb else "  ♥ never"
-        if not session_alive:
-            rep.yellow(f"  {agent}: session down, skip{hb_suffix}")
-            continue
-        if not tmux.has_window(target):
-            rep.fail(f"  {agent}: no tmux window{hb_suffix}")
-            continue
         cfg = agents_dict.get(agent, {})
         cli = cfg.get("cli", "claude-code")
-        # ACP agent: its pane is a transcript viewer with no CLI banner, so
-        # the ready-marker scrape below would flag a perfectly healthy agent
-        # yellow forever (acceptance F-2). Judge it by what's real for this
-        # runner: the delivery queue + host subprocess pid.
+        # ACP agent: judged FIRST, before any tmux checks — its pane is only
+        # a cosmetic transcript viewer (no CLI banner, and a killed viewer
+        # window is not an agent failure). What's real for this runner is
+        # the delivery queue + host subprocess pid (acceptance F-2).
         if config.agent_runner(agent) == "acp":
             from claudeteam.runtime import acp_host, pane_probe
             try:
                 state = acp_host.probe(agent)
-            except OSError:
-                state = pane_probe.IDLE
+            except OSError as e:
+                # A probe that can't run must never render green.
+                rep.yellow(f"  {agent}: acp probe failed — {e}{hb_suffix}")
+                continue
             if state == pane_probe.DEAD:
-                rep.fail(f"  {agent}: acp queue has pending work but no live "
+                rep.fail(f"  {agent}: acp queue has prompt work but no live "
                          f"host subprocess — is the router up?{hb_suffix}")
             elif state == pane_probe.BUSY:
                 rep.ok(f"  {agent}: acp turn in flight ({cli}){hb_suffix}")
             else:
                 rep.ok(f"  {agent}: acp ready ({cli}; session starts on "
                        f"demand){hb_suffix}")
+            continue
+        if not session_alive:
+            rep.yellow(f"  {agent}: session down, skip{hb_suffix}")
+            continue
+        if not tmux.has_window(target):
+            rep.fail(f"  {agent}: no tmux window{hb_suffix}")
             continue
         try:
             # Resolve adapter from `cli` directly — not via
