@@ -75,10 +75,11 @@
   - **深耕国内**：优先钉钉/企业微信 adapter
 - 决策依据：先看现有用户/star 来源分布再定
 
-### ⬜ P2-2 Windows 支持
+### 🟨 P2-2 Windows 支持（2026-07-05 大幅推进）
 
-- tmux 硬依赖导致 Windows 不可用（WSL2 变通）；国内用户 Windows 占比高，伤害真实存在，但修复成本高（需抽象 pane 运行时）
-- 暂缓，除非国内深耕路线确定且用户反馈集中
+- **ACP 迁移把这项的成本砍掉了大半**：pane 运行时抽象已经因 ACP 存在，tmux 变为可选。
+- 已落地（feat/acp-runner）：flock/进程控制/pid 探活的 Windows 实现、headless 无 tmux 模式（全 ACP 编制可跑）、CI windows leg（informational）。macOS+Linux（含无 tmux）双实证 1197/0。
+- 剩余到「原生 Windows 完整支持」：真机部署浸泡（sidecar/node/信号处理边缘）、路径/编码毛边、把 CI leg 升为门禁。WSL2/Docker 路径已是完整支持并写入文档。
 
 ## 修复顺序建议
 
